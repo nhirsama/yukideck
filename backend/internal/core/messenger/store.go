@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"yukideck/internal/core/messenger/sqlcgen"
 )
 
 type ChannelRecord struct {
@@ -58,299 +60,244 @@ type Store interface {
 }
 
 type PGStore struct {
-	pool *pgxpool.Pool
+	q *sqlcgen.Queries
 }
 
 func NewPGStore(pool *pgxpool.Pool) Store {
-	return &PGStore{pool: pool}
+	return &PGStore{q: sqlcgen.New(pool)}
+}
+
+func toChannelRecord(r sqlcgen.UserChannel) ChannelRecord {
+	return ChannelRecord{
+		ID:                r.ID,
+		UserID:            r.UserID,
+		Type:              r.Type,
+		Name:              r.Name,
+		EnableOutbound:    r.EnableOutbound,
+		EnableInbound:     r.EnableInbound,
+		IsDefaultOutbound: r.IsDefaultOutbound,
+		Enabled:           r.Enabled,
+		WebhookSecret:     r.WebhookSecret,
+		ConfigEnc:         r.ConfigEnc,
+		CreatedAt:         r.CreatedAt,
+		UpdatedAt:         r.UpdatedAt,
+	}
+}
+
+func toPushEndpointRecord(r sqlcgen.PushEndpoint) PushEndpointRecord {
+	targetIDs := r.TargetChannelIds
+	if targetIDs == nil {
+		targetIDs = []int64{}
+	}
+	return PushEndpointRecord{
+		ID:               r.ID,
+		UserID:           r.UserID,
+		Name:             r.Name,
+		TokenHash:        r.TokenHash,
+		TokenEnc:         r.TokenEnc,
+		TargetMode:       r.TargetMode,
+		TargetChannelIDs: targetIDs,
+		Enabled:          r.Enabled,
+		LastCalledAt:     r.LastCalledAt,
+		CreatedAt:        r.CreatedAt,
+		UpdatedAt:        r.UpdatedAt,
+	}
 }
 
 func (s *PGStore) ListChannels(ctx context.Context, userID int64) ([]ChannelRecord, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, user_id, type, name, enable_outbound, enable_inbound, is_default_outbound,
-		       enabled, webhook_secret, config_enc, created_at, updated_at
-		FROM user_channels
-		WHERE user_id = $1
-		ORDER BY id ASC
-	`, userID)
+	rows, err := s.q.ListChannels(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list user channels: %w", err)
 	}
-	defer rows.Close()
-
-	var out []ChannelRecord
-	for rows.Next() {
-		var r ChannelRecord
-		if err := rows.Scan(
-			&r.ID, &r.UserID, &r.Type, &r.Name, &r.EnableOutbound, &r.EnableInbound,
-			&r.IsDefaultOutbound, &r.Enabled, &r.WebhookSecret, &r.ConfigEnc, &r.CreatedAt, &r.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
+	out := make([]ChannelRecord, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, toChannelRecord(r))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *PGStore) GetChannel(ctx context.Context, userID, id int64) (*ChannelRecord, error) {
-	var r ChannelRecord
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, user_id, type, name, enable_outbound, enable_inbound, is_default_outbound,
-		       enabled, webhook_secret, config_enc, created_at, updated_at
-		FROM user_channels
-		WHERE user_id = $1 AND id = $2
-	`, userID, id).Scan(
-		&r.ID, &r.UserID, &r.Type, &r.Name, &r.EnableOutbound, &r.EnableInbound,
-		&r.IsDefaultOutbound, &r.Enabled, &r.WebhookSecret, &r.ConfigEnc, &r.CreatedAt, &r.UpdatedAt,
-	)
+	row, err := s.q.GetChannel(ctx, sqlcgen.GetChannelParams{
+		UserID: userID,
+		ID:     id,
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	return &r, nil
+	rec := toChannelRecord(row)
+	return &rec, nil
 }
 
 func (s *PGStore) GetChannelByID(ctx context.Context, id int64) (*ChannelRecord, error) {
-	var r ChannelRecord
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, user_id, type, name, enable_outbound, enable_inbound, is_default_outbound,
-		       enabled, webhook_secret, config_enc, created_at, updated_at
-		FROM user_channels
-		WHERE id = $1
-	`, id).Scan(
-		&r.ID, &r.UserID, &r.Type, &r.Name, &r.EnableOutbound, &r.EnableInbound,
-		&r.IsDefaultOutbound, &r.Enabled, &r.WebhookSecret, &r.ConfigEnc, &r.CreatedAt, &r.UpdatedAt,
-	)
+	row, err := s.q.GetChannelByID(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	return &r, nil
+	rec := toChannelRecord(row)
+	return &rec, nil
 }
 
 func (s *PGStore) CreateChannel(ctx context.Context, rec ChannelRecord) (*ChannelRecord, error) {
-	var r ChannelRecord
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO user_channels (
-			user_id, type, name, enable_outbound, enable_inbound, is_default_outbound,
-			enabled, webhook_secret, config_enc
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING id, user_id, type, name, enable_outbound, enable_inbound, is_default_outbound,
-		          enabled, webhook_secret, config_enc, created_at, updated_at
-	`, rec.UserID, rec.Type, rec.Name, rec.EnableOutbound, rec.EnableInbound,
-		rec.IsDefaultOutbound, rec.Enabled, rec.WebhookSecret, rec.ConfigEnc,
-	).Scan(
-		&r.ID, &r.UserID, &r.Type, &r.Name, &r.EnableOutbound, &r.EnableInbound,
-		&r.IsDefaultOutbound, &r.Enabled, &r.WebhookSecret, &r.ConfigEnc, &r.CreatedAt, &r.UpdatedAt,
-	)
+	row, err := s.q.CreateChannel(ctx, sqlcgen.CreateChannelParams{
+		UserID:            rec.UserID,
+		Type:              rec.Type,
+		Name:              rec.Name,
+		EnableOutbound:    rec.EnableOutbound,
+		EnableInbound:     rec.EnableInbound,
+		IsDefaultOutbound: rec.IsDefaultOutbound,
+		Enabled:           rec.Enabled,
+		WebhookSecret:     rec.WebhookSecret,
+		ConfigEnc:         rec.ConfigEnc,
+	})
 	if err != nil {
 		return nil, err
 	}
-	return &r, nil
+	out := toChannelRecord(row)
+	return &out, nil
 }
 
 func (s *PGStore) UpdateChannel(ctx context.Context, rec ChannelRecord) (*ChannelRecord, error) {
-	var r ChannelRecord
-	err := s.pool.QueryRow(ctx, `
-		UPDATE user_channels
-		SET name = $3,
-		    enable_outbound = $4,
-		    enable_inbound = $5,
-		    is_default_outbound = $6,
-		    enabled = $7,
-		    webhook_secret = $8,
-		    config_enc = $9,
-		    updated_at = NOW()
-		WHERE user_id = $1 AND id = $2
-		RETURNING id, user_id, type, name, enable_outbound, enable_inbound, is_default_outbound,
-		          enabled, webhook_secret, config_enc, created_at, updated_at
-	`, rec.UserID, rec.ID, rec.Name, rec.EnableOutbound, rec.EnableInbound,
-		rec.IsDefaultOutbound, rec.Enabled, rec.WebhookSecret, rec.ConfigEnc,
-	).Scan(
-		&r.ID, &r.UserID, &r.Type, &r.Name, &r.EnableOutbound, &r.EnableInbound,
-		&r.IsDefaultOutbound, &r.Enabled, &r.WebhookSecret, &r.ConfigEnc, &r.CreatedAt, &r.UpdatedAt,
-	)
+	row, err := s.q.UpdateChannel(ctx, sqlcgen.UpdateChannelParams{
+		UserID:            rec.UserID,
+		ID:                rec.ID,
+		Name:              rec.Name,
+		EnableOutbound:    rec.EnableOutbound,
+		EnableInbound:     rec.EnableInbound,
+		IsDefaultOutbound: rec.IsDefaultOutbound,
+		Enabled:           rec.Enabled,
+		WebhookSecret:     rec.WebhookSecret,
+		ConfigEnc:         rec.ConfigEnc,
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	return &r, nil
+	out := toChannelRecord(row)
+	return &out, nil
 }
 
 func (s *PGStore) DeleteChannel(ctx context.Context, userID, id int64) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM user_channels WHERE user_id = $1 AND id = $2`, userID, id)
-	return err
+	return s.q.DeleteChannel(ctx, sqlcgen.DeleteChannelParams{
+		UserID: userID,
+		ID:     id,
+	})
 }
 
 func (s *PGStore) ListPushEndpoints(ctx context.Context, userID int64) ([]PushEndpointRecord, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, user_id, name, token_hash, token_enc, target_mode, target_channel_ids,
-		       enabled, last_called_at, created_at, updated_at
-		FROM push_endpoints
-		WHERE user_id = $1
-		ORDER BY id ASC
-	`, userID)
+	rows, err := s.q.ListPushEndpoints(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var out []PushEndpointRecord
-	for rows.Next() {
-		var r PushEndpointRecord
-		if err := rows.Scan(
-			&r.ID, &r.UserID, &r.Name, &r.TokenHash, &r.TokenEnc, &r.TargetMode,
-			&r.TargetChannelIDs, &r.Enabled, &r.LastCalledAt, &r.CreatedAt, &r.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		if r.TargetChannelIDs == nil {
-			r.TargetChannelIDs = []int64{}
-		}
-		out = append(out, r)
+	out := make([]PushEndpointRecord, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, toPushEndpointRecord(r))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *PGStore) GetPushEndpoint(ctx context.Context, userID, id int64) (*PushEndpointRecord, error) {
-	var r PushEndpointRecord
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, user_id, name, token_hash, token_enc, target_mode, target_channel_ids,
-		       enabled, last_called_at, created_at, updated_at
-		FROM push_endpoints
-		WHERE user_id = $1 AND id = $2
-	`, userID, id).Scan(
-		&r.ID, &r.UserID, &r.Name, &r.TokenHash, &r.TokenEnc, &r.TargetMode,
-		&r.TargetChannelIDs, &r.Enabled, &r.LastCalledAt, &r.CreatedAt, &r.UpdatedAt,
-	)
+	row, err := s.q.GetPushEndpoint(ctx, sqlcgen.GetPushEndpointParams{
+		UserID: userID,
+		ID:     id,
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if r.TargetChannelIDs == nil {
-		r.TargetChannelIDs = []int64{}
-	}
-	return &r, nil
+	rec := toPushEndpointRecord(row)
+	return &rec, nil
 }
 
 func (s *PGStore) GetPushEndpointByTokenHash(ctx context.Context, tokenHash string) (*PushEndpointRecord, error) {
-	var r PushEndpointRecord
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, user_id, name, token_hash, token_enc, target_mode, target_channel_ids,
-		       enabled, last_called_at, created_at, updated_at
-		FROM push_endpoints
-		WHERE token_hash = $1
-	`, tokenHash).Scan(
-		&r.ID, &r.UserID, &r.Name, &r.TokenHash, &r.TokenEnc, &r.TargetMode,
-		&r.TargetChannelIDs, &r.Enabled, &r.LastCalledAt, &r.CreatedAt, &r.UpdatedAt,
-	)
+	row, err := s.q.GetPushEndpointByTokenHash(ctx, tokenHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if r.TargetChannelIDs == nil {
-		r.TargetChannelIDs = []int64{}
-	}
-	return &r, nil
+	rec := toPushEndpointRecord(row)
+	return &rec, nil
 }
 
 func (s *PGStore) CreatePushEndpoint(ctx context.Context, rec PushEndpointRecord) (*PushEndpointRecord, error) {
-	if rec.TargetChannelIDs == nil {
-		rec.TargetChannelIDs = []int64{}
+	targetIDs := rec.TargetChannelIDs
+	if targetIDs == nil {
+		targetIDs = []int64{}
 	}
-	var r PushEndpointRecord
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO push_endpoints (user_id, name, token_hash, token_enc, target_mode, target_channel_ids, enabled)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id, user_id, name, token_hash, token_enc, target_mode, target_channel_ids,
-		          enabled, last_called_at, created_at, updated_at
-	`, rec.UserID, rec.Name, rec.TokenHash, rec.TokenEnc, rec.TargetMode, rec.TargetChannelIDs, rec.Enabled,
-	).Scan(
-		&r.ID, &r.UserID, &r.Name, &r.TokenHash, &r.TokenEnc, &r.TargetMode,
-		&r.TargetChannelIDs, &r.Enabled, &r.LastCalledAt, &r.CreatedAt, &r.UpdatedAt,
-	)
+	row, err := s.q.CreatePushEndpoint(ctx, sqlcgen.CreatePushEndpointParams{
+		UserID:           rec.UserID,
+		Name:             rec.Name,
+		TokenHash:        rec.TokenHash,
+		TokenEnc:         rec.TokenEnc,
+		TargetMode:       rec.TargetMode,
+		TargetChannelIds: targetIDs,
+		Enabled:          rec.Enabled,
+	})
 	if err != nil {
 		return nil, err
 	}
-	if r.TargetChannelIDs == nil {
-		r.TargetChannelIDs = []int64{}
-	}
-	return &r, nil
+	out := toPushEndpointRecord(row)
+	return &out, nil
 }
 
 func (s *PGStore) UpdatePushEndpoint(ctx context.Context, rec PushEndpointRecord) (*PushEndpointRecord, error) {
-	if rec.TargetChannelIDs == nil {
-		rec.TargetChannelIDs = []int64{}
+	targetIDs := rec.TargetChannelIDs
+	if targetIDs == nil {
+		targetIDs = []int64{}
 	}
-	var r PushEndpointRecord
-	err := s.pool.QueryRow(ctx, `
-		UPDATE push_endpoints
-		SET name = $3,
-		    target_mode = $4,
-		    target_channel_ids = $5,
-		    enabled = $6,
-		    updated_at = NOW()
-		WHERE user_id = $1 AND id = $2
-		RETURNING id, user_id, name, token_hash, token_enc, target_mode, target_channel_ids,
-		          enabled, last_called_at, created_at, updated_at
-	`, rec.UserID, rec.ID, rec.Name, rec.TargetMode, rec.TargetChannelIDs, rec.Enabled,
-	).Scan(
-		&r.ID, &r.UserID, &r.Name, &r.TokenHash, &r.TokenEnc, &r.TargetMode,
-		&r.TargetChannelIDs, &r.Enabled, &r.LastCalledAt, &r.CreatedAt, &r.UpdatedAt,
-	)
+	row, err := s.q.UpdatePushEndpoint(ctx, sqlcgen.UpdatePushEndpointParams{
+		UserID:           rec.UserID,
+		ID:               rec.ID,
+		Name:             rec.Name,
+		TargetMode:       rec.TargetMode,
+		TargetChannelIds: targetIDs,
+		Enabled:          rec.Enabled,
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if r.TargetChannelIDs == nil {
-		r.TargetChannelIDs = []int64{}
-	}
-	return &r, nil
+	out := toPushEndpointRecord(row)
+	return &out, nil
 }
 
 func (s *PGStore) RotatePushEndpointToken(ctx context.Context, userID, id int64, tokenHash, tokenEnc string) (*PushEndpointRecord, error) {
-	var r PushEndpointRecord
-	err := s.pool.QueryRow(ctx, `
-		UPDATE push_endpoints
-		SET token_hash = $3, token_enc = $4, updated_at = NOW()
-		WHERE user_id = $1 AND id = $2
-		RETURNING id, user_id, name, token_hash, token_enc, target_mode, target_channel_ids,
-		          enabled, last_called_at, created_at, updated_at
-	`, userID, id, tokenHash, tokenEnc,
-	).Scan(
-		&r.ID, &r.UserID, &r.Name, &r.TokenHash, &r.TokenEnc, &r.TargetMode,
-		&r.TargetChannelIDs, &r.Enabled, &r.LastCalledAt, &r.CreatedAt, &r.UpdatedAt,
-	)
+	row, err := s.q.RotatePushEndpointToken(ctx, sqlcgen.RotatePushEndpointTokenParams{
+		UserID:    userID,
+		ID:        id,
+		TokenHash: tokenHash,
+		TokenEnc:  tokenEnc,
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if r.TargetChannelIDs == nil {
-		r.TargetChannelIDs = []int64{}
-	}
-	return &r, nil
+	out := toPushEndpointRecord(row)
+	return &out, nil
 }
 
 func (s *PGStore) TouchPushEndpointCalled(ctx context.Context, id int64) error {
-	_, err := s.pool.Exec(ctx, `UPDATE push_endpoints SET last_called_at = NOW() WHERE id = $1`, id)
-	return err
+	return s.q.TouchPushEndpointCalled(ctx, id)
 }
 
 func (s *PGStore) DeletePushEndpoint(ctx context.Context, userID, id int64) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM push_endpoints WHERE user_id = $1 AND id = $2`, userID, id)
-	return err
+	return s.q.DeletePushEndpoint(ctx, sqlcgen.DeletePushEndpointParams{
+		UserID: userID,
+		ID:     id,
+	})
 }

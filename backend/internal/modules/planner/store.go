@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"yukideck/internal/modules/planner/sqlcgen"
 )
 
 type ItemRecord struct {
@@ -59,37 +61,35 @@ type Store interface {
 }
 
 type PGStore struct {
-	pool *pgxpool.Pool
+	q *sqlcgen.Queries
 }
 
 func NewPGStore(pool *pgxpool.Pool) Store {
-	return &PGStore{pool: pool}
+	return &PGStore{q: sqlcgen.New(pool)}
 }
 
-func scanItem(row pgx.Row) (*ItemRecord, error) {
-	var (
-		r            ItemRecord
-		repeatCfgRaw []byte
-		offsetsRaw   []byte
-	)
-	err := row.Scan(
-		&r.ID, &r.UserID, &r.Title, &r.Note, &r.Status,
-		&r.TargetAt, &r.Timezone, &r.CalendarType,
-		&r.RepeatType, &repeatCfgRaw, &r.AutoAdvance,
-		&offsetsRaw, &r.ChannelIDs, &r.NextTriggerAt,
-		&r.CreatedAt, &r.UpdatedAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
+func toItemRecord(row sqlcgen.PlannerItem) ItemRecord {
+	r := ItemRecord{
+		ID:            row.ID,
+		UserID:        row.UserID,
+		Title:         row.Title,
+		Note:          row.Note,
+		Status:        row.Status,
+		TargetAt:      row.TargetAt,
+		Timezone:      row.Timezone,
+		CalendarType:  row.CalendarType,
+		RepeatType:    row.RepeatType,
+		AutoAdvance:   row.AutoAdvance,
+		ChannelIDs:    row.ChannelIds,
+		NextTriggerAt: row.NextTriggerAt,
+		CreatedAt:     row.CreatedAt,
+		UpdatedAt:     row.UpdatedAt,
 	}
-	if err != nil {
-		return nil, err
+	if len(row.RepeatConfig) > 0 {
+		_ = json.Unmarshal(row.RepeatConfig, &r.RepeatConfig)
 	}
-	if len(repeatCfgRaw) > 0 {
-		_ = json.Unmarshal(repeatCfgRaw, &r.RepeatConfig)
-	}
-	if len(offsetsRaw) > 0 {
-		_ = json.Unmarshal(offsetsRaw, &r.RemindOffsets)
+	if len(row.RemindOffsets) > 0 {
+		_ = json.Unmarshal(row.RemindOffsets, &r.RemindOffsets)
 	}
 	if r.RemindOffsets == nil {
 		r.RemindOffsets = []RemindOffset{}
@@ -97,149 +97,139 @@ func scanItem(row pgx.Row) (*ItemRecord, error) {
 	if r.ChannelIDs == nil {
 		r.ChannelIDs = []int64{}
 	}
-	return &r, nil
+	return r
 }
 
-const itemColumns = `
-	id, user_id, title, note, status,
-	target_at, timezone, calendar_type,
-	repeat_type, repeat_config, auto_advance,
-	remind_offsets, channel_ids, next_trigger_at,
-	created_at, updated_at
-`
+func toLogRecord(row sqlcgen.PlannerLog) LogRecord {
+	return LogRecord{
+		ID:           row.ID,
+		UserID:       row.UserID,
+		ItemID:       row.ItemID,
+		ItemTitle:    row.ItemTitle,
+		TriggerKey:   row.TriggerKey,
+		TriggerLabel: row.TriggerLabel,
+		Status:       row.Status,
+		Error:        row.Error,
+		SentAt:       row.SentAt,
+	}
+}
 
 func (s *PGStore) ListItems(ctx context.Context, userID int64) ([]ItemRecord, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT `+itemColumns+`
-		FROM planner_items
-		WHERE user_id = $1
-		ORDER BY
-			CASE WHEN status = 'pending' THEN 0 ELSE 1 END ASC,
-			target_at ASC NULLS LAST,
-			id DESC
-	`, userID)
+	rows, err := s.q.ListItems(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list planner items: %w", err)
 	}
-	defer rows.Close()
-
-	var out []ItemRecord
-	for rows.Next() {
-		item, err := scanItem(rows)
-		if err != nil {
-			return nil, err
-		}
-		if item != nil {
-			out = append(out, *item)
-		}
+	out := make([]ItemRecord, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toItemRecord(row))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *PGStore) GetItem(ctx context.Context, userID, id int64) (*ItemRecord, error) {
-	row := s.pool.QueryRow(ctx, `
-		SELECT `+itemColumns+`
-		FROM planner_items
-		WHERE user_id = $1 AND id = $2
-	`, userID, id)
-	return scanItem(row)
+	row, err := s.q.GetItem(ctx, sqlcgen.GetItemParams{
+		UserID: userID,
+		ID:     id,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	rec := toItemRecord(row)
+	return &rec, nil
 }
 
 func (s *PGStore) CreateItem(ctx context.Context, rec ItemRecord) (*ItemRecord, error) {
 	repeatJSON, _ := json.Marshal(rec.RepeatConfig)
 	offsetsJSON, _ := json.Marshal(rec.RemindOffsets)
-	if rec.ChannelIDs == nil {
-		rec.ChannelIDs = []int64{}
+	channelIDs := rec.ChannelIDs
+	if channelIDs == nil {
+		channelIDs = []int64{}
 	}
-	row := s.pool.QueryRow(ctx, `
-		INSERT INTO planner_items (
-			user_id, title, note, status,
-			target_at, timezone, calendar_type,
-			repeat_type, repeat_config, auto_advance,
-			remind_offsets, channel_ids, next_trigger_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-		RETURNING `+itemColumns,
-		rec.UserID, rec.Title, rec.Note, rec.Status,
-		rec.TargetAt, rec.Timezone, rec.CalendarType,
-		rec.RepeatType, repeatJSON, rec.AutoAdvance,
-		offsetsJSON, rec.ChannelIDs, rec.NextTriggerAt,
-	)
-	return scanItem(row)
+	row, err := s.q.CreateItem(ctx, sqlcgen.CreateItemParams{
+		UserID:        rec.UserID,
+		Title:         rec.Title,
+		Note:          rec.Note,
+		Status:        rec.Status,
+		TargetAt:      rec.TargetAt,
+		Timezone:      rec.Timezone,
+		CalendarType:  rec.CalendarType,
+		RepeatType:    rec.RepeatType,
+		RepeatConfig:  repeatJSON,
+		AutoAdvance:   rec.AutoAdvance,
+		RemindOffsets: offsetsJSON,
+		ChannelIds:    channelIDs,
+		NextTriggerAt: rec.NextTriggerAt,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := toItemRecord(row)
+	return &out, nil
 }
 
 func (s *PGStore) UpdateItem(ctx context.Context, rec ItemRecord) (*ItemRecord, error) {
 	repeatJSON, _ := json.Marshal(rec.RepeatConfig)
 	offsetsJSON, _ := json.Marshal(rec.RemindOffsets)
-	if rec.ChannelIDs == nil {
-		rec.ChannelIDs = []int64{}
+	channelIDs := rec.ChannelIDs
+	if channelIDs == nil {
+		channelIDs = []int64{}
 	}
-	row := s.pool.QueryRow(ctx, `
-		UPDATE planner_items
-		SET title = $3,
-		    note = $4,
-		    status = $5,
-		    target_at = $6,
-		    timezone = $7,
-		    calendar_type = $8,
-		    repeat_type = $9,
-		    repeat_config = $10,
-		    auto_advance = $11,
-		    remind_offsets = $12,
-		    channel_ids = $13,
-		    next_trigger_at = $14,
-		    updated_at = NOW()
-		WHERE user_id = $1 AND id = $2
-		RETURNING `+itemColumns,
-		rec.UserID, rec.ID, rec.Title, rec.Note, rec.Status,
-		rec.TargetAt, rec.Timezone, rec.CalendarType,
-		rec.RepeatType, repeatJSON, rec.AutoAdvance,
-		offsetsJSON, rec.ChannelIDs, rec.NextTriggerAt,
-	)
-	return scanItem(row)
+	row, err := s.q.UpdateItem(ctx, sqlcgen.UpdateItemParams{
+		UserID:        rec.UserID,
+		ID:            rec.ID,
+		Title:         rec.Title,
+		Note:          rec.Note,
+		Status:        rec.Status,
+		TargetAt:      rec.TargetAt,
+		Timezone:      rec.Timezone,
+		CalendarType:  rec.CalendarType,
+		RepeatType:    rec.RepeatType,
+		RepeatConfig:  repeatJSON,
+		AutoAdvance:   rec.AutoAdvance,
+		RemindOffsets: offsetsJSON,
+		ChannelIds:    channelIDs,
+		NextTriggerAt: rec.NextTriggerAt,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := toItemRecord(row)
+	return &out, nil
 }
 
 func (s *PGStore) DeleteItem(ctx context.Context, userID, id int64) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM planner_items WHERE user_id = $1 AND id = $2`, userID, id)
-	return err
+	return s.q.DeleteItem(ctx, sqlcgen.DeleteItemParams{
+		UserID: userID,
+		ID:     id,
+	})
 }
 
 // ListDueItems uses the partial B-Tree index idx_planner_items_due.
 func (s *PGStore) ListDueItems(ctx context.Context, now time.Time) ([]ItemRecord, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT `+itemColumns+`
-		FROM planner_items
-		WHERE status = 'pending'
-		  AND next_trigger_at IS NOT NULL
-		  AND next_trigger_at <= $1
-		ORDER BY next_trigger_at ASC
-		LIMIT 200
-	`, now.UTC())
+	nowUTC := now.UTC()
+	rows, err := s.q.ListDueItems(ctx, &nowUTC)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var out []ItemRecord
-	for rows.Next() {
-		item, err := scanItem(rows)
-		if err != nil {
-			return nil, err
-		}
-		if item != nil {
-			out = append(out, *item)
-		}
+	out := make([]ItemRecord, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toItemRecord(row))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // MinNextTriggerAt reads the leftmost leaf of partial index idx_planner_items_due in O(log N).
 func (s *PGStore) MinNextTriggerAt(ctx context.Context) (*time.Time, error) {
-	var t *time.Time
-	err := s.pool.QueryRow(ctx, `
-		SELECT MIN(next_trigger_at)
-		FROM planner_items
-		WHERE status = 'pending' AND next_trigger_at IS NOT NULL
-	`).Scan(&t)
+	t, err := s.q.MinNextTriggerAt(ctx)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -247,45 +237,39 @@ func (s *PGStore) MinNextTriggerAt(ctx context.Context) (*time.Time, error) {
 }
 
 func (s *PGStore) ListSentTriggerKeys(ctx context.Context, itemID int64) (map[string]struct{}, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT trigger_key FROM planner_logs WHERE item_id = $1
-	`, itemID)
+	id := itemID
+	keys, err := s.q.ListSentTriggerKeys(ctx, &id)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	out := make(map[string]struct{})
-	for rows.Next() {
-		var k string
-		if err := rows.Scan(&k); err != nil {
-			return nil, err
-		}
+	out := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
 		out[k] = struct{}{}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // InsertLogAndPrune atomically inserts a deduplicated log row and prunes older rows beyond maxKeep per user.
 // Returns inserted=false if this (item_id, trigger_key) was already recorded.
 func (s *PGStore) InsertLogAndPrune(ctx context.Context, rec LogRecord, maxKeep int) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO planner_logs (user_id, item_id, item_title, trigger_key, trigger_label, status, error)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (item_id, trigger_key) WHERE item_id IS NOT NULL DO NOTHING
-	`, rec.UserID, rec.ItemID, rec.ItemTitle, rec.TriggerKey, rec.TriggerLabel, rec.Status, rec.Error)
+	rowsAffected, err := s.q.InsertLog(ctx, sqlcgen.InsertLogParams{
+		UserID:       rec.UserID,
+		ItemID:       rec.ItemID,
+		ItemTitle:    rec.ItemTitle,
+		TriggerKey:   rec.TriggerKey,
+		TriggerLabel: rec.TriggerLabel,
+		Status:       rec.Status,
+		Error:        rec.Error,
+	})
 	if err != nil {
 		return false, err
 	}
-	inserted := tag.RowsAffected() > 0
+	inserted := rowsAffected > 0
 	if inserted && maxKeep > 0 {
-		_, _ = s.pool.Exec(ctx, `
-			DELETE FROM planner_logs
-			WHERE user_id = $1
-			  AND id NOT IN (
-				SELECT id FROM planner_logs WHERE user_id = $1 ORDER BY sent_at DESC, id DESC LIMIT $2
-			  )
-		`, rec.UserID, maxKeep)
+		_ = s.q.PruneUserLogs(ctx, sqlcgen.PruneUserLogsParams{
+			UserID: rec.UserID,
+			Limit:  int32(maxKeep),
+		})
 	}
 	return inserted, nil
 }
@@ -294,25 +278,16 @@ func (s *PGStore) ListLogs(ctx context.Context, userID int64, limit int) ([]LogR
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, user_id, item_id, item_title, trigger_key, trigger_label, status, error, sent_at
-		FROM planner_logs
-		WHERE user_id = $1
-		ORDER BY sent_at DESC, id DESC
-		LIMIT $2
-	`, userID, limit)
+	rows, err := s.q.ListLogs(ctx, sqlcgen.ListLogsParams{
+		UserID: userID,
+		Limit:  int32(limit),
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	out := make([]LogRecord, 0)
-	for rows.Next() {
-		var r LogRecord
-		if err := rows.Scan(&r.ID, &r.UserID, &r.ItemID, &r.ItemTitle, &r.TriggerKey, &r.TriggerLabel, &r.Status, &r.Error, &r.SentAt); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
+	out := make([]LogRecord, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toLogRecord(row))
 	}
-	return out, rows.Err()
+	return out, nil
 }

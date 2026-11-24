@@ -7,6 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"yukideck/internal/modules/storage/sqlcgen"
 )
 
 type ConfigRecord struct {
@@ -29,61 +31,55 @@ type ConfigStore interface {
 }
 
 type PGConfigStore struct {
-	pool *pgxpool.Pool
+	q *sqlcgen.Queries
 }
 
 func NewPGConfigStore(pool *pgxpool.Pool) ConfigStore {
-	return &PGConfigStore{pool: pool}
+	return &PGConfigStore{q: sqlcgen.New(pool)}
+}
+
+func toConfigRecord(r sqlcgen.UserStorageConfig) *ConfigRecord {
+	return &ConfigRecord{
+		UserID:         r.UserID,
+		Endpoint:       r.Endpoint,
+		Region:         r.Region,
+		Bucket:         r.Bucket,
+		AccessKey:      r.AccessKey,
+		SecretKeyEnc:   r.SecretKeyEnc,
+		PublicBaseURL:  r.PublicBaseUrl,
+		HashLength:     int(r.HashLength),
+		ForcePathStyle: r.ForcePathStyle,
+		UploadMode:     r.UploadMode,
+		UpdatedAt:      r.UpdatedAt,
+	}
 }
 
 func (s *PGConfigStore) GetConfig(ctx context.Context, userID int64) (*ConfigRecord, error) {
-	var r ConfigRecord
-	err := s.pool.QueryRow(ctx, `
-		SELECT user_id, endpoint, region, bucket, access_key, secret_key_enc,
-		       public_base_url, hash_length, force_path_style, upload_mode, updated_at
-		FROM user_storage_configs
-		WHERE user_id = $1
-	`, userID).Scan(
-		&r.UserID, &r.Endpoint, &r.Region, &r.Bucket, &r.AccessKey, &r.SecretKeyEnc,
-		&r.PublicBaseURL, &r.HashLength, &r.ForcePathStyle, &r.UploadMode, &r.UpdatedAt,
-	)
+	row, err := s.q.GetStorageConfig(ctx, userID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	return &r, nil
+	return toConfigRecord(row), nil
 }
 
 func (s *PGConfigStore) UpsertConfig(ctx context.Context, rec ConfigRecord) (*ConfigRecord, error) {
-	var r ConfigRecord
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO user_storage_configs (
-			user_id, endpoint, region, bucket, access_key, secret_key_enc,
-			public_base_url, hash_length, force_path_style, upload_mode
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		ON CONFLICT (user_id) DO UPDATE SET
-			endpoint = EXCLUDED.endpoint,
-			region = EXCLUDED.region,
-			bucket = EXCLUDED.bucket,
-			access_key = EXCLUDED.access_key,
-			secret_key_enc = EXCLUDED.secret_key_enc,
-			public_base_url = EXCLUDED.public_base_url,
-			hash_length = EXCLUDED.hash_length,
-			force_path_style = EXCLUDED.force_path_style,
-			upload_mode = EXCLUDED.upload_mode,
-			updated_at = NOW()
-		RETURNING user_id, endpoint, region, bucket, access_key, secret_key_enc,
-		          public_base_url, hash_length, force_path_style, upload_mode, updated_at
-	`, rec.UserID, rec.Endpoint, rec.Region, rec.Bucket, rec.AccessKey, rec.SecretKeyEnc,
-		rec.PublicBaseURL, rec.HashLength, rec.ForcePathStyle, rec.UploadMode,
-	).Scan(
-		&r.UserID, &r.Endpoint, &r.Region, &r.Bucket, &r.AccessKey, &r.SecretKeyEnc,
-		&r.PublicBaseURL, &r.HashLength, &r.ForcePathStyle, &r.UploadMode, &r.UpdatedAt,
-	)
+	row, err := s.q.UpsertStorageConfig(ctx, sqlcgen.UpsertStorageConfigParams{
+		UserID:         rec.UserID,
+		Endpoint:       rec.Endpoint,
+		Region:         rec.Region,
+		Bucket:         rec.Bucket,
+		AccessKey:      rec.AccessKey,
+		SecretKeyEnc:   rec.SecretKeyEnc,
+		PublicBaseUrl:  rec.PublicBaseURL,
+		HashLength:     int32(rec.HashLength),
+		ForcePathStyle: rec.ForcePathStyle,
+		UploadMode:     rec.UploadMode,
+	})
 	if err != nil {
 		return nil, err
 	}
-	return &r, nil
+	return toConfigRecord(row), nil
 }

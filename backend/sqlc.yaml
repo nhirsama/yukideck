@@ -1,4 +1,88 @@
 version: "2"
-# Ready for Stage 2+ business modules to generate type-safe pgx/v5 queries from SQL.
-# Each new module adds an entry pointing at its own migrations/ and queries.sql.
-sql: []
+sql:
+  - engine: "postgresql"
+    schema:
+      - "internal/core/auth/migrations"
+    queries: "internal/core/auth/queries.sql"
+    gen:
+      go:
+        package: "sqlcgen"
+        out: "internal/core/auth/sqlcgen"
+        sql_package: "pgx/v5"
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true
+        overrides:
+          - db_type: "timestamptz"
+            go_type: "time.Time"
+          - db_type: "timestamptz"
+            nullable: true
+            go_type:
+              import: "time"
+              type: "Time"
+              pointer: true
+
+  - engine: "postgresql"
+    schema:
+      - "internal/core/auth/migrations"
+      - "internal/core/messenger/migrations"
+    queries: "internal/core/messenger/queries.sql"
+    gen:
+      go:
+        package: "sqlcgen"
+        out: "internal/core/messenger/sqlcgen"
+        sql_package: "pgx/v5"
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true
+        overrides:
+          - db_type: "timestamptz"
+            go_type: "time.Time"
+          - db_type: "timestamptz"
+            nullable: true
+            go_type:
+              import: "time"
+              type: "Time"
+              pointer: true
+
+  - engine: "postgresql"
+    schema:
+      - "internal/core/auth/migrations"
+      - "internal/modules/storage/migrations"
+    queries: "internal/modules/storage/queries.sql"
+    gen:
+      go:
+        package: "sqlcgen"
+        out: "internal/modules/storage/sqlcgen"
+        sql_package: "pgx/v5"
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true
+        overrides:
+          - db_type: "timestamptz"
+            go_type: "time.Time"
+          - db_type: "timestamptz"
+            nullable: true
+            go_type:
+              import: "time"
+              type: "Time"
+              pointer: true
+
+  - engine: "postgresql"
+    schema:
+      - "internal/core/auth/migrations"
+      - "internal/modules/planner/migrations"
+    queries: "internal/modules/planner/queries.sql"
+    gen:
+      go:
+        package: "sqlcgen"
+        out: "internal/modules/planner/sqlcgen"
+        sql_package: "pgx/v5"
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true
+        overrides:
+          - db_type: "timestamptz"
+            go_type: "time.Time"
+          - db_type: "timestamptz"
+            nullable: true
+            go_type:
+              import: "time"
+              type: "Time"
+              pointer: true

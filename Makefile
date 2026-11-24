@@ -1,4 +1,7 @@
-.PHONY: dev-backend dev-frontend build-frontend build-embed build-api test clean
+.PHONY: dev-backend dev-frontend build-frontend build-embed build-api sqlc test clean
+
+sqlc:
+	cd backend && sqlc generate
 
 dev-backend:
 	cd backend && go run ./cmd/server

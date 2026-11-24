@@ -20,6 +20,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"yukideck/internal/config"
+	"yukideck/internal/core/auth/sqlcgen"
 	"yukideck/internal/core/crypto"
 	"yukideck/internal/core/httpx"
 )
@@ -47,44 +48,47 @@ type UserStore interface {
 }
 
 type pgUserStore struct {
-	pool *pgxpool.Pool
+	q *sqlcgen.Queries
 }
 
 func NewPGUserStore(pool *pgxpool.Pool) UserStore {
-	return &pgUserStore{pool: pool}
+	return &pgUserStore{q: sqlcgen.New(pool)}
 }
 
 func (s *pgUserStore) UpsertByOIDCSub(ctx context.Context, sub, username, email, avatarURL string) (*User, error) {
-	u := &User{}
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO users (oidc_sub, username, email, avatar_url)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (oidc_sub) DO UPDATE
-		SET username = EXCLUDED.username,
-		    email = EXCLUDED.email,
-		    avatar_url = EXCLUDED.avatar_url,
-		    updated_at = NOW()
-		RETURNING id, oidc_sub, username, email, avatar_url
-	`, sub, username, email, avatarURL).Scan(&u.ID, &u.OIDCSub, &u.Username, &u.Email, &u.AvatarURL)
+	row, err := s.q.UpsertUserByOIDCSub(ctx, sqlcgen.UpsertUserByOIDCSubParams{
+		OidcSub:   sub,
+		Username:  username,
+		Email:     email,
+		AvatarUrl: avatarURL,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("upsert oidc user: %w", err)
 	}
-	return u, nil
+	return &User{
+		ID:        row.ID,
+		OIDCSub:   row.OidcSub,
+		Username:  row.Username,
+		Email:     row.Email,
+		AvatarURL: row.AvatarUrl,
+	}, nil
 }
 
 func (s *pgUserStore) FindByID(ctx context.Context, id int64) (*User, error) {
-	u := &User{}
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, oidc_sub, username, email, avatar_url
-		FROM users WHERE id = $1
-	`, id).Scan(&u.ID, &u.OIDCSub, &u.Username, &u.Email, &u.AvatarURL)
+	row, err := s.q.FindUserByID(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("find user by id: %w", err)
 	}
-	return u, nil
+	return &User{
+		ID:        row.ID,
+		OIDCSub:   row.OidcSub,
+		Username:  row.Username,
+		Email:     row.Email,
+		AvatarURL: row.AvatarUrl,
+	}, nil
 }
 
 type sessionPayload struct {
