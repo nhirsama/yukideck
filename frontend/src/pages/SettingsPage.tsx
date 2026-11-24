@@ -1,11 +1,27 @@
-import { Suspense, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAppMeta, useEnabledModules } from '@/core/module';
 
 export function SettingsPage() {
   const { data: meta } = useAppMeta();
   const modules = useEnabledModules();
   const modulePanels = modules.filter((m) => Boolean(m.settingsPanel));
-  const [activeTab, setActiveTab] = useState<string>('general');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialTab = searchParams.get('tab') || 'general';
+  const [activeTab, setActiveTab] = useState<string>(initialTab);
+
+  useEffect(() => {
+    const param = searchParams.get('tab');
+    if (param && param !== activeTab) {
+      setActiveTab(param);
+    }
+  }, [searchParams, activeTab]);
+
+  const selectTab = (tab: string) => {
+    setActiveTab(tab);
+    if (tab === 'general') setSearchParams({});
+    else setSearchParams({ tab });
+  };
 
   const activeModule = modulePanels.find((m) => m.id === activeTab);
 
@@ -21,7 +37,7 @@ export function SettingsPage() {
       <div className="flex gap-1 border-b border-slate-200 overflow-x-auto">
         <button
           type="button"
-          onClick={() => setActiveTab('general')}
+          onClick={() => selectTab('general')}
           className={`px-4 py-2 text-sm font-medium border-b-2 whitespace-nowrap ${
             activeTab === 'general'
               ? 'border-slate-900 text-slate-900'
@@ -34,7 +50,7 @@ export function SettingsPage() {
           <button
             key={m.id}
             type="button"
-            onClick={() => setActiveTab(m.id)}
+            onClick={() => selectTab(m.id)}
             className={`px-4 py-2 text-sm font-medium border-b-2 whitespace-nowrap ${
               activeTab === m.id
                 ? 'border-slate-900 text-slate-900'
