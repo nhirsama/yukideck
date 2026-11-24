@@ -1,0 +1,4 @@
+version: "2"
+# Ready for Stage 2+ business modules to generate type-safe pgx/v5 queries from SQL.
+# Each new module adds an entry pointing at its own migrations/ and queries.sql.
+sql: []

@@ -1,0 +1,19 @@
+# Binaries & build artifacts
+/backend/bin/
+/backend/internal/webui/dist/
+!/backend/internal/webui/dist/.gitkeep
+/frontend/dist/
+/frontend/node_modules/
+
+# Env & local secrets
+.env
+.env.local
+*.local
+
+# IDE & OS
+.DS_Store
+.idea/
+.vscode/
+*.log
+*.out
+coverage.txt
