@@ -2,6 +2,7 @@ package app
 
 import (
 	"yukideck/internal/core/module"
+	"yukideck/internal/modules/planner"
 	"yukideck/internal/modules/storage"
 )
 
@@ -11,6 +12,6 @@ import (
 func BuildModules(deps module.Deps) []module.Module {
 	return []module.Module{
 		storage.New(deps),
-		// Stage 3: cron / assets ...
+		planner.New(deps),
 	}
 }

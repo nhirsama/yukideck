@@ -3,6 +3,7 @@ module yukideck
 go 1.24
 
 require (
+	github.com/6tail/lunar-go v1.4.3
 	github.com/aws/aws-sdk-go-v2 v1.36.1
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.59
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.76.1

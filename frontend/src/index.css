@@ -8,3 +8,37 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 }
+
+/* Harmonize FullCalendar with YukiDeck slate design tokens */
+.fc {
+  --fc-border-color: #e2e8f0;
+  --fc-today-bg-color: #f8fafc;
+  --fc-button-bg-color: #0f172a;
+  --fc-button-border-color: #0f172a;
+  --fc-button-hover-bg-color: #1e293b;
+  --fc-button-hover-border-color: #1e293b;
+  --fc-button-active-bg-color: #334155;
+  --fc-button-active-border-color: #334155;
+  --fc-event-bg-color: #0f172a;
+  --fc-event-border-color: #0f172a;
+  font-size: 0.8125rem;
+}
+
+.fc .fc-toolbar-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.fc .fc-button {
+  font-size: 0.75rem;
+  padding: 0.35rem 0.65rem;
+  border-radius: 0.5rem;
+}
+
+.fc .fc-daygrid-day-top {
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 6px 2px;
+}
