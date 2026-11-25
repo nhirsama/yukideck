@@ -149,9 +149,11 @@ impl CollectorConfig {
 }
 
 pub fn detect_hostname() -> String {
-    if let Ok(h) = std::env::var("HOSTNAME") {
-        if !h.trim().is_empty() {
-            return h.trim().to_string();
+    for key in ["HOSTNAME", "COMPUTERNAME"] {
+        if let Ok(h) = std::env::var(key) {
+            if !h.trim().is_empty() {
+                return h.trim().to_string();
+            }
         }
     }
     if let Ok(h) = fs::read_to_string("/etc/hostname") {

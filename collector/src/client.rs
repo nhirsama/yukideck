@@ -10,6 +10,11 @@ use std::io::Write;
 use std::thread;
 use std::time::Duration;
 
+pub const COLLECTOR_VERSION: &str = match option_env!("YUKIDECK_COLLECTOR_VERSION") {
+    Some(v) if !v.is_empty() => v,
+    _ => env!("CARGO_PKG_VERSION"),
+};
+
 #[derive(Debug, Clone, Serialize)]
 pub struct IngestDevice {
     pub device_id: String,
@@ -45,7 +50,7 @@ impl YukiDeckClient {
     pub fn new(cfg: &CollectorConfig) -> Result<Self> {
         let http = Client::builder()
             .timeout(Duration::from_secs(60))
-            .user_agent(format!("yukideck-collector/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("yukideck-collector/{COLLECTOR_VERSION}"))
             .build()
             .context("failed building HTTP client")?;
         let endpoint = format!("{}/api/v1/ai-usage/ingest", cfg.server_url.trim_end_matches('/'));
@@ -55,7 +60,7 @@ impl YukiDeckClient {
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
             hostname: detect_hostname(),
-            collector_version: env!("CARGO_PKG_VERSION").to_string(),
+            collector_version: COLLECTOR_VERSION.to_string(),
         };
         Ok(Self {
             http,

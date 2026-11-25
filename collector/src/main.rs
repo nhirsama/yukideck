@@ -17,7 +17,7 @@ use uuid::Uuid;
 #[derive(Parser)]
 #[command(
     name = "yukideck-collector",
-    version,
+    version = crate::client::COLLECTOR_VERSION,
     about = "Lightweight oneshot AI Agent usage probe for YukiDeck"
 )]
 struct Cli {
