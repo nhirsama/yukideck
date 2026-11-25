@@ -1,0 +1,38 @@
+packages:
+  - path: "yukideck/internal/core/module"
+    include_files:
+      - "dto.go"
+    output_path: "../frontend/src/core/generated/module.gen.ts"
+
+  - path: "yukideck/internal/app"
+    include_files:
+      - "dto.go"
+    frontmatter: |
+      import type * as module from './module.gen';
+    type_mappings:
+      module.Meta: "module.Meta"
+    output_path: "../frontend/src/core/generated/app.gen.ts"
+
+  - path: "yukideck/internal/core/auth"
+    include_files:
+      - "dto.go"
+    output_path: "../frontend/src/core/generated/auth.gen.ts"
+
+  - path: "yukideck/internal/core/messenger"
+    include_files:
+      - "dto.go"
+    type_mappings:
+      time.Time: "string"
+    output_path: "../frontend/src/core/generated/messenger.gen.ts"
+
+  - path: "yukideck/internal/modules/storage"
+    include_files:
+      - "dto.go"
+    output_path: "../frontend/src/modules/storage/api.gen.ts"
+
+  - path: "yukideck/internal/modules/planner"
+    include_files:
+      - "dto.go"
+    type_mappings:
+      time.Time: "string"
+    output_path: "../frontend/src/modules/planner/api.gen.ts"

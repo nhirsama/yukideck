@@ -8,36 +8,10 @@ import (
 	"sync"
 )
 
-// Capability declares a symmetric direction supported by a channel driver.
-type Capability string
-
-const (
-	CapOutbound Capability = "outbound" // Can send notifications/messages out
-	CapInbound  Capability = "inbound"  // Can receive incoming commands/events
-)
-
 var (
 	ErrCapabilityUnsupported = errors.New("channel driver does not support this capability")
 	ErrUnauthorizedWebhook   = errors.New("unauthorized inbound webhook request")
 )
-
-// ConfigField describes a driver configuration field so the frontend can render forms dynamically.
-type ConfigField struct {
-	Key         string `json:"key"`
-	Label       string `json:"label"`
-	Placeholder string `json:"placeholder"`
-	Secret      bool   `json:"secret"`
-	Required    bool   `json:"required"`
-}
-
-// DriverInfo exposes a driver's declared capabilities and config schema.
-type DriverInfo struct {
-	Type         string        `json:"type"`
-	DisplayName  string        `json:"display_name"`
-	Description  string        `json:"description"`
-	Capabilities []Capability  `json:"capabilities"`
-	Fields       []ConfigField `json:"fields"`
-}
 
 func (d DriverInfo) Supports(cap Capability) bool {
 	for _, c := range d.Capabilities {
@@ -46,12 +20,6 @@ func (d DriverInfo) Supports(cap Capability) bool {
 		}
 	}
 	return false
-}
-
-// Message is the platform-agnostic outbound payload.
-type Message struct {
-	Title   string `json:"title,omitempty"`
-	Content string `json:"content"`
 }
 
 // Attachment represents an inbound media file from an interactive channel.

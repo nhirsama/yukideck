@@ -22,7 +22,8 @@ import (
 	"yukideck/internal/webui"
 )
 
-const Version = "0.1.0"
+// Version is injected at build time via -ldflags "-X yukideck/internal/app.Version=<tag>".
+var Version = "dev"
 
 type App struct {
 	cfg       *config.Config
@@ -155,7 +156,7 @@ func (a *App) buildRouter(uiFS fs.FS) http.Handler {
 	r.Use(httpx.CORSMiddleware(a.cfg.CORSAllowedOrigins))
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		httpx.JSON(w, http.StatusOK, map[string]any{"status": "ok", "version": Version})
+		httpx.JSON(w, http.StatusOK, HealthResponse{Status: "ok", Version: Version})
 	})
 
 	msgHandler := messenger.NewHandler(a.msgSvc, a.cfg.RequestMaxBodyBytes, a.logger)
@@ -176,11 +177,11 @@ func (a *App) buildRouter(uiFS fs.FS) http.Handler {
 				}
 				metas = append(metas, meta)
 			}
-			httpx.JSON(w, http.StatusOK, map[string]any{
-				"app":        "YukiDeck",
-				"version":    Version,
-				"ui_enabled": a.cfg.UIEnabled && uiFS != nil,
-				"modules":    metas,
+			httpx.JSON(w, http.StatusOK, AppMeta{
+				App:       "YukiDeck",
+				Version:   Version,
+				UIEnabled: a.cfg.UIEnabled && uiFS != nil,
+				Modules:   metas,
 			})
 		})
 

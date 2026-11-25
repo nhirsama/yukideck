@@ -27,26 +27,6 @@ const (
 	StatusDone    = "done"
 )
 
-// RepeatConfig stores both recurrence settings and original wall-clock anchors
-// so leap years, month-end clamping (31->28->31), lunar leap months, and DST never drift.
-type RepeatConfig struct {
-	AnchorYear   int    `json:"anchor_year,omitempty"`
-	AnchorMonth  int    `json:"anchor_month,omitempty"`  // 1..12
-	AnchorDay    int    `json:"anchor_day,omitempty"`    // 1..31 (lunar 1..30)
-	AnchorIsLeap bool   `json:"anchor_is_leap,omitempty"` // lunar leap month flag
-	AnchorHour   int    `json:"anchor_hour,omitempty"`   // 0..23
-	AnchorMinute int    `json:"anchor_minute,omitempty"` // 0..59
-	Weekdays     []int  `json:"weekdays,omitempty"`      // 0=Sun..6=Sat
-	Interval     int    `json:"interval,omitempty"`      // for interval_days (>=1)
-	CronExpr     string `json:"cron_expr,omitempty"`     // 5-field cron expression
-}
-
-// RemindOffset represents one notification point before (or at) target_at.
-type RemindOffset struct {
-	Unit  string `json:"unit"`  // "minute" | "hour" | "day"
-	Value int    `json:"value"` // >=0; 0 means on-time
-}
-
 func (o RemindOffset) Key() string {
 	if o.Value <= 0 {
 		return "0m"

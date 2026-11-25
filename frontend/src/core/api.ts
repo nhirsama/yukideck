@@ -47,91 +47,31 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-// --- Core API Types ---
+// --- Core API Types (generated from Go DTOs via `make types`) ---
 
-export interface BackendModuleMeta {
-  id: string;
-  name: string;
-  description: string;
-  api_prefix: string;
-}
+export type { Meta as BackendModuleMeta } from './generated/module.gen';
+export type { AppMeta, HealthResponse } from './generated/app.gen';
+export type { User } from './generated/auth.gen';
+export type {
+  ConfigField as DriverConfigField,
+  DriverInfo,
+  ChannelView as Channel,
+  UpsertChannelInput as UpsertChannelPayload,
+  PushEndpointView as PushEndpoint,
+  UpsertPushEndpointInput as UpsertPushEndpointPayload,
+} from './generated/messenger.gen';
 
-export interface AppMeta {
-  app: string;
-  version: string;
-  ui_enabled: boolean;
-  modules: BackendModuleMeta[];
-}
-
-export interface User {
-  id: number;
-  username: string;
-  email: string;
-  avatar_url: string;
-}
+import type { AppMeta } from './generated/app.gen';
+import type { User } from './generated/auth.gen';
+import type {
+  DriverInfo,
+  ChannelView as Channel,
+  UpsertChannelInput as UpsertChannelPayload,
+  PushEndpointView as PushEndpoint,
+  UpsertPushEndpointInput as UpsertPushEndpointPayload,
+} from './generated/messenger.gen';
 
 export type Capability = 'outbound' | 'inbound';
-
-export interface DriverConfigField {
-  key: string;
-  label: string;
-  placeholder: string;
-  secret: boolean;
-  required: boolean;
-}
-
-export interface DriverInfo {
-  type: string;
-  display_name: string;
-  description: string;
-  capabilities: Capability[];
-  fields: DriverConfigField[];
-}
-
-export interface Channel {
-  id: number;
-  type: string;
-  name: string;
-  capabilities: Capability[];
-  enable_outbound: boolean;
-  enable_inbound: boolean;
-  is_default_outbound: boolean;
-  enabled: boolean;
-  config: Record<string, unknown>;
-  webhook_url?: string;
-  webhook_warning?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface UpsertChannelPayload {
-  type: string;
-  name: string;
-  enable_outbound: boolean;
-  enable_inbound: boolean;
-  is_default_outbound: boolean;
-  enabled: boolean;
-  config: Record<string, unknown>;
-}
-
-export interface PushEndpoint {
-  id: number;
-  name: string;
-  push_url: string;
-  target_mode: 'default' | 'selected';
-  target_channel_ids: number[];
-  enabled: boolean;
-  last_called_at?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface UpsertPushEndpointPayload {
-  name: string;
-  target_mode: 'default' | 'selected';
-  target_channel_ids: number[];
-  enabled: boolean;
-}
 
 // --- Core API Calls ---
 

@@ -12,62 +12,6 @@ import (
 	"yukideck/internal/core/messenger"
 )
 
-type LunarDateInput struct {
-	Year   int  `json:"year"`
-	Month  int  `json:"month"`
-	Day    int  `json:"day"`
-	IsLeap bool `json:"is_leap"`
-	Hour   int  `json:"hour"`
-	Minute int  `json:"minute"`
-}
-
-type UpsertItemInput struct {
-	Title         string          `json:"title"`
-	Note          string          `json:"note"`
-	TargetLocal   string          `json:"target_local"`   // "YYYY-MM-DDTHH:MM" (solar local wall-clock; optional)
-	LunarTarget   *LunarDateInput `json:"lunar_target"`   // optional when calendar_type == "lunar"
-	Timezone      string          `json:"timezone"`       // IANA timezone, default "Asia/Shanghai"
-	CalendarType  string          `json:"calendar_type"`  // "solar" | "lunar"
-	RepeatType    string          `json:"repeat_type"`    // none|daily|weekly|monthly|yearly|interval_days|cron
-	RepeatConfig  RepeatConfig    `json:"repeat_config"`
-	AutoAdvance   *bool           `json:"auto_advance"`
-	RemindOffsets []RemindOffset  `json:"remind_offsets"`
-	ChannelIDs    []int64         `json:"channel_ids"`
-}
-
-type ItemView struct {
-	ID            int64          `json:"id"`
-	Title         string         `json:"title"`
-	Note          string         `json:"note"`
-	Status        string         `json:"status"`
-	TargetAt      *time.Time     `json:"target_at,omitempty"`
-	TargetLocal   string         `json:"target_local,omitempty"`
-	LunarLabel    string         `json:"lunar_label,omitempty"`
-	Timezone      string         `json:"timezone"`
-	CalendarType  string         `json:"calendar_type"`
-	RepeatType    string         `json:"repeat_type"`
-	RepeatConfig  RepeatConfig   `json:"repeat_config"`
-	AutoAdvance   bool           `json:"auto_advance"`
-	RemindOffsets []RemindOffset `json:"remind_offsets"`
-	ChannelIDs    []int64        `json:"channel_ids"`
-	NextTriggerAt *time.Time     `json:"next_trigger_at,omitempty"`
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
-}
-
-type CalendarEventView struct {
-	ID          string    `json:"id"`
-	ItemID      int64     `json:"item_id"`
-	Title       string    `json:"title"`
-	Note        string    `json:"note"`
-	Status      string    `json:"status"`
-	Start       time.Time `json:"start"`
-	Calendar    string    `json:"calendar_type"`
-	LunarLabel  string    `json:"lunar_label"`
-	RepeatType  string    `json:"repeat_type"`
-	HasReminder bool      `json:"has_reminder"`
-}
-
 type Service struct {
 	store    Store
 	notifier messenger.Notifier

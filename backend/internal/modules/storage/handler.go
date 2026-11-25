@@ -119,9 +119,7 @@ func (h *Handler) createFolder(w http.ResponseWriter, r *http.Request) error {
 	if !ok {
 		return httpx.Unauthorized("未登录")
 	}
-	var in struct {
-		Path string `json:"path"`
-	}
+	var in CreateFolderInput
 	if err := httpx.DecodeJSON(w, r, h.jsonMaxBodyByte, &in); err != nil {
 		return err
 	}
@@ -214,11 +212,7 @@ func (h *Handler) renameEntry(w http.ResponseWriter, r *http.Request) error {
 	if !ok {
 		return httpx.Unauthorized("未登录")
 	}
-	var in struct {
-		Type    string `json:"type"`
-		OldPath string `json:"oldPath"`
-		NewPath string `json:"newPath"`
-	}
+	var in RenameEntryInput
 	if err := httpx.DecodeJSON(w, r, h.jsonMaxBodyByte, &in); err != nil {
 		return err
 	}
@@ -226,16 +220,13 @@ func (h *Handler) renameEntry(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	resp := map[string]any{
-		"ok":         true,
-		"oldPath":    oldP,
-		"newPath":    newP,
-		"movedCount": moved,
-	}
-	if pubURL != "" {
-		resp["url"] = pubURL
-	}
-	httpx.JSON(w, http.StatusOK, resp)
+	httpx.JSON(w, http.StatusOK, RenameEntryResponse{
+		OK:         true,
+		OldPath:    oldP,
+		NewPath:    newP,
+		MovedCount: moved,
+		URL:        pubURL,
+	})
 	return nil
 }
 
@@ -244,10 +235,7 @@ func (h *Handler) moveEntries(w http.ResponseWriter, r *http.Request) error {
 	if !ok {
 		return httpx.Unauthorized("未登录")
 	}
-	var in struct {
-		Items        []PathItem `json:"items"`
-		TargetFolder string     `json:"targetFolder"`
-	}
+	var in MoveEntriesInput
 	if err := httpx.DecodeJSON(w, r, h.jsonMaxBodyByte, &in); err != nil {
 		return err
 	}
@@ -264,11 +252,7 @@ func (h *Handler) deleteEntries(w http.ResponseWriter, r *http.Request) error {
 	if !ok {
 		return httpx.Unauthorized("未登录")
 	}
-	var in struct {
-		Type  string     `json:"type"`
-		Path  string     `json:"path"`
-		Items []PathItem `json:"items"`
-	}
+	var in DeleteEntriesInput
 	if err := httpx.DecodeJSON(w, r, h.jsonMaxBodyByte, &in); err != nil {
 		return err
 	}

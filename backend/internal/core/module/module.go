@@ -14,14 +14,6 @@ import (
 	"yukideck/internal/core/scheduler"
 )
 
-// Meta describes a registered tool module and is exposed via GET /api/v1/meta.
-type Meta struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	APIPrefix   string `json:"api_prefix"`
-}
-
 // Deps bundles stable platform core capabilities injected into every module.
 // Modules MUST only depend on core packages and NEVER import another module directly.
 type Deps struct {

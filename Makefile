@@ -1,7 +1,15 @@
-.PHONY: dev-backend dev-frontend build-frontend build-embed build-api sqlc test clean
+.PHONY: dev-backend dev-frontend build-frontend build-embed build-api sqlc types gen test clean
+
+VERSION ?= dev
+LDFLAGS := -s -w -X yukideck/internal/app.Version=$(VERSION)
 
 sqlc:
 	cd backend && sqlc generate
+
+types:
+	cd backend && tygo generate
+
+gen: sqlc types
 
 dev-backend:
 	cd backend && go run ./cmd/server
@@ -16,10 +24,10 @@ build-frontend:
 	cp -r frontend/dist/. backend/internal/webui/dist/
 
 build-embed: build-frontend
-	cd backend && CGO_ENABLED=0 go build -tags embed_ui -trimpath -ldflags="-s -w" -o bin/yukideck ./cmd/server
+	cd backend && CGO_ENABLED=0 go build -tags embed_ui -trimpath -ldflags="$(LDFLAGS)" -o bin/yukideck ./cmd/server
 
 build-api:
-	cd backend && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/yukideck-api ./cmd/server
+	cd backend && CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o bin/yukideck-api ./cmd/server
 
 test:
 	cd backend && go test ./... -v

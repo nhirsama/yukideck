@@ -1,118 +1,51 @@
 import { Lunar, Solar } from 'lunar-typescript';
 import { request } from '@/core/api';
+import type {
+  CalendarEventView,
+  ItemView,
+  LogRecord,
+  RemindOffset,
+  RepeatConfig,
+  UpsertItemInput,
+} from './api.gen';
 
-export type CalendarType = 'solar' | 'lunar';
-export type RepeatType = 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly' | 'interval_days' | 'cron';
-
-export interface RepeatConfig {
-  anchor_year?: number;
-  anchor_month?: number;
-  anchor_day?: number;
-  anchor_is_leap?: boolean;
-  anchor_hour?: number;
-  anchor_minute?: number;
-  weekdays?: number[];
-  interval?: number;
-  cron_expr?: string;
-}
-
-export interface RemindOffset {
-  unit: 'minute' | 'hour' | 'day';
-  value: number;
-}
-
-export interface LunarTargetInput {
-  year: number;
-  month: number;
-  day: number;
-  is_leap: boolean;
-  hour: number;
-  minute: number;
-}
-
-export interface PlannerItem {
-  id: number;
-  title: string;
-  note: string;
-  status: 'pending' | 'done';
-  target_at?: string;
-  target_local?: string;
-  lunar_label?: string;
-  timezone: string;
-  calendar_type: CalendarType;
-  repeat_type: RepeatType;
-  repeat_config: RepeatConfig;
-  auto_advance: boolean;
-  remind_offsets: RemindOffset[];
-  channel_ids: number[];
-  next_trigger_at?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface UpsertPlannerItemPayload {
-  title: string;
-  note?: string;
-  target_local?: string;
-  lunar_target?: LunarTargetInput;
-  timezone?: string;
-  calendar_type?: CalendarType;
-  repeat_type?: RepeatType;
-  repeat_config?: RepeatConfig;
-  auto_advance?: boolean;
-  remind_offsets?: RemindOffset[];
-  channel_ids?: number[];
-}
-
-export interface CalendarEvent {
-  id: string;
-  item_id: number;
-  title: string;
-  note: string;
-  status: 'pending' | 'done';
-  start: string;
-  calendar_type: CalendarType;
-  lunar_label: string;
-  repeat_type: RepeatType;
-  has_reminder: boolean;
-}
-
-export interface PlannerLog {
-  id: number;
-  item_id?: number;
-  item_title: string;
-  trigger_key: string;
-  trigger_label: string;
-  status: 'ok' | 'failed';
-  error?: string;
-  sent_at: string;
-}
+export type CalendarType = ItemView['calendar_type'];
+export type RepeatType = ItemView['repeat_type'];
+export type {
+  RepeatConfig,
+  RemindOffset,
+  LunarDateInput as LunarTargetInput,
+  ItemView as PlannerItem,
+  UpsertItemInput as UpsertPlannerItemPayload,
+  CalendarEventView as CalendarEvent,
+  LogRecord as PlannerLog,
+} from './api.gen';
 
 export const plannerApi = {
-  listItems: () => request<{ items: PlannerItem[] }>('/api/v1/planner/items'),
-  createItem: (payload: UpsertPlannerItemPayload) =>
-    request<{ item: PlannerItem }>('/api/v1/planner/items', {
+  listItems: () => request<{ items: ItemView[] }>('/api/v1/planner/items'),
+  createItem: (payload: UpsertItemInput) =>
+    request<{ item: ItemView }>('/api/v1/planner/items', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-  updateItem: (id: number, payload: UpsertPlannerItemPayload) =>
-    request<{ item: PlannerItem }>(`/api/v1/planner/items/${id}`, {
+  updateItem: (id: number, payload: UpsertItemInput) =>
+    request<{ item: ItemView }>(`/api/v1/planner/items/${id}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),
   deleteItem: (id: number) =>
     request<{ ok: boolean }>(`/api/v1/planner/items/${id}`, { method: 'DELETE' }),
   completeItem: (id: number) =>
-    request<{ item: PlannerItem }>(`/api/v1/planner/items/${id}/complete`, { method: 'POST' }),
+    request<{ item: ItemView }>(`/api/v1/planner/items/${id}/complete`, { method: 'POST' }),
   reopenItem: (id: number) =>
-    request<{ item: PlannerItem }>(`/api/v1/planner/items/${id}/reopen`, { method: 'POST' }),
+    request<{ item: ItemView }>(`/api/v1/planner/items/${id}/reopen`, { method: 'POST' }),
   testItem: (id: number) =>
     request<{ ok: boolean }>(`/api/v1/planner/items/${id}/test`, { method: 'POST' }),
   listCalendar: (startISO: string, endISO: string) =>
-    request<{ events: CalendarEvent[] }>(
+    request<{ events: CalendarEventView[] }>(
       `/api/v1/planner/calendar?start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`,
     ),
-  listLogs: () => request<{ logs: PlannerLog[] }>('/api/v1/planner/logs'),
+  listLogs: () => request<{ logs: LogRecord[] }>('/api/v1/planner/logs'),
 };
 
 export function formatOffsetLabel(o: RemindOffset): string {

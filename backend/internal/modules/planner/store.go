@@ -32,18 +32,6 @@ type ItemRecord struct {
 	UpdatedAt     time.Time
 }
 
-type LogRecord struct {
-	ID           int64     `json:"id"`
-	UserID       int64     `json:"-"`
-	ItemID       *int64    `json:"item_id,omitempty"`
-	ItemTitle    string    `json:"item_title"`
-	TriggerKey   string    `json:"trigger_key"`
-	TriggerLabel string    `json:"trigger_label"`
-	Status       string    `json:"status"` // "ok" | "failed"
-	Error        string    `json:"error,omitempty"`
-	SentAt       time.Time `json:"sent_at"`
-}
-
 type Store interface {
 	ListItems(ctx context.Context, userID int64) ([]ItemRecord, error)
 	GetItem(ctx context.Context, userID, id int64) (*ItemRecord, error)

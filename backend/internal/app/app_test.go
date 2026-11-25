@@ -69,27 +69,32 @@ func TestAppRoutingMetaAndDualDeployment(t *testing.T) {
 		stubModule{id: "disabled_mod"},
 	}, fakeUI)
 
-	// 1. /healthz
+	// 1. /healthz returns runtime Version
 	recHealth := httptest.NewRecorder()
 	a.Handler().ServeHTTP(recHealth, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if recHealth.Code != http.StatusOK {
 		t.Fatalf("expected 200 on /healthz, got %d", recHealth.Code)
 	}
+	var healthResp HealthResponse
+	if err := json.Unmarshal(recHealth.Body.Bytes(), &healthResp); err != nil {
+		t.Fatalf("decode healthz: %v", err)
+	}
+	if healthResp.Status != "ok" || healthResp.Version != Version {
+		t.Fatalf("unexpected healthz payload: %+v (want version %q)", healthResp, Version)
+	}
 
-	// 2. /api/v1/meta lists only enabled modules
+	// 2. /api/v1/meta lists only enabled modules and Version
 	recMeta := httptest.NewRecorder()
 	a.Handler().ServeHTTP(recMeta, httptest.NewRequest(http.MethodGet, "/api/v1/meta", nil))
 	if recMeta.Code != http.StatusOK {
 		t.Fatalf("expected 200 on /api/v1/meta, got %d", recMeta.Code)
 	}
-	var metaResp struct {
-		Modules []module.Meta `json:"modules"`
-	}
+	var metaResp AppMeta
 	if err := json.Unmarshal(recMeta.Body.Bytes(), &metaResp); err != nil {
 		t.Fatalf("decode meta: %v", err)
 	}
-	if len(metaResp.Modules) != 1 || metaResp.Modules[0].ID != "demo" {
-		t.Fatalf("expected only 'demo' enabled, got %+v", metaResp.Modules)
+	if metaResp.Version != Version || len(metaResp.Modules) != 1 || metaResp.Modules[0].ID != "demo" {
+		t.Fatalf("expected version %q and only 'demo' enabled, got %+v", Version, metaResp)
 	}
 
 	// 3. Unknown /api/* returns JSON 404 (never SPA HTML)

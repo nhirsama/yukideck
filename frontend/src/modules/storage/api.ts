@@ -1,76 +1,33 @@
 import { request } from '@/core/api';
 import { computeSha256Hex, getExtension, stripImageMetadata } from './metadata';
+import type {
+  ConfigView,
+  DirectoryListing,
+  FileEntry,
+  FolderEntry,
+  PathItem,
+  PresignResult,
+  RenameEntryResponse,
+  SaveConfigInput,
+} from './api.gen';
 
-export type UploadMode = 'direct' | 'proxy';
-
-export interface StorageConfig {
-  configured: boolean;
-  endpoint: string;
-  region: string;
-  bucket: string;
-  access_key: string;
-  has_secret_key: boolean;
-  secret_key_masked: string;
-  public_base_url: string;
-  hash_length: number;
-  force_path_style: boolean;
-  upload_mode: UploadMode;
-  proxy_max_mb: number;
-}
-
-export interface SaveStorageConfigPayload {
-  endpoint: string;
-  region: string;
-  bucket: string;
-  access_key: string;
-  secret_key: string;
-  public_base_url: string;
-  hash_length: number;
-  force_path_style: boolean;
-  upload_mode: UploadMode;
-}
-
-export interface FolderEntry {
-  name: string;
-  prefix: string;
-}
-
-export interface FileEntry {
-  key: string;
-  name: string;
-  size: number;
-  uploaded: string;
-  content_type: string;
-  url: string;
-  is_image: boolean;
-  metadata_stripped: boolean;
-}
-
-export interface DirectoryListing {
-  prefix: string;
-  base_url: string;
-  folders: FolderEntry[];
-  files: FileEntry[];
-  truncated: boolean;
-  cursor?: string;
-}
-
-export interface PathItem {
-  type: 'file' | 'folder';
-  path: string;
-}
-
-interface PresignResponse {
-  url: string;
-  method: string;
-  headers: Record<string, string>;
-  file: FileEntry;
-}
+export type UploadMode = ConfigView['upload_mode'];
+export type {
+  ConfigView as StorageConfig,
+  SaveConfigInput as SaveStorageConfigPayload,
+  FolderEntry,
+  FileEntry,
+  DirectoryListing,
+  PathItem,
+  PresignInput,
+  PresignResult,
+  RenameEntryResponse,
+} from './api.gen';
 
 export const storageApi = {
-  getConfig: () => request<{ config: StorageConfig }>('/api/v1/storage/config'),
-  saveConfig: (payload: SaveStorageConfigPayload) =>
-    request<{ config: StorageConfig }>('/api/v1/storage/config', {
+  getConfig: () => request<{ config: ConfigView }>('/api/v1/storage/config'),
+  saveConfig: (payload: SaveConfigInput) =>
+    request<{ config: ConfigView }>('/api/v1/storage/config', {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),
@@ -93,13 +50,10 @@ export const storageApi = {
       body: JSON.stringify({ path }),
     }),
   rename: (type: 'file' | 'folder', oldPath: string, newPath: string) =>
-    request<{ ok: boolean; oldPath: string; newPath: string; movedCount: number; url?: string }>(
-      '/api/v1/storage/rename',
-      {
-        method: 'POST',
-        body: JSON.stringify({ type, oldPath, newPath }),
-      },
-    ),
+    request<RenameEntryResponse>('/api/v1/storage/rename', {
+      method: 'POST',
+      body: JSON.stringify({ type, oldPath, newPath }),
+    }),
   move: (items: PathItem[], targetFolder: string) =>
     request<{ ok: boolean; movedCount: number }>('/api/v1/storage/move', {
       method: 'POST',
@@ -116,7 +70,7 @@ export const storageApi = {
    * - direct: browser strips EXIF & computes SHA-256 -> presigned PUT straight to S3/R2 (NO size cap).
    * - proxy: checks server proxy_max_mb -> browser strips EXIF -> uploads via Go backend.
    */
-  async uploadFile(file: File, folder: string, cfg: StorageConfig): Promise<FileEntry> {
+  async uploadFile(file: File, folder: string, cfg: ConfigView): Promise<FileEntry> {
     if (cfg.upload_mode === 'proxy' && file.size > cfg.proxy_max_mb * 1024 * 1024) {
       throw new Error(`中转模式下单文件不能超过服务器安全上限 (${cfg.proxy_max_mb} MB)，大文件请切换为直传模式`);
     }
@@ -131,7 +85,7 @@ export const storageApi = {
       const ext = getExtension(file.name, contentType);
       const hashedName = `${fullHash.slice(0, hashLen)}${ext}`;
 
-      const presigned = await request<PresignResponse>('/api/v1/storage/presign', {
+      const presigned = await request<PresignResult>('/api/v1/storage/presign', {
         method: 'POST',
         body: JSON.stringify({
           folder,

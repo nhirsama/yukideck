@@ -32,12 +32,6 @@ type S3ListResult struct {
 	NextCursor     string
 }
 
-type PresignedPut struct {
-	URL     string            `json:"url"`
-	Method  string            `json:"method"`
-	Headers map[string]string `json:"headers"`
-}
-
 // Bucket abstracts the minimal S3 operations needed by the storage manager (easy to test in-memory).
 type Bucket interface {
 	TestConnection(ctx context.Context) error

@@ -4,8 +4,9 @@
 FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-builder
 WORKDIR /src/frontend
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN corepack enable
 COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
+RUN corepack install
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile --store-dir /pnpm/store
 COPY frontend/ ./
@@ -15,6 +16,7 @@ RUN pnpm build
 FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS backend-builder
 ARG TARGETOS=linux
 ARG TARGETARCH
+ARG VERSION=dev
 WORKDIR /src/backend
 COPY backend/go.mod backend/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
@@ -24,7 +26,7 @@ COPY --from=frontend-builder /src/frontend/dist ./internal/webui/dist
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -tags embed_ui -trimpath -ldflags="-s -w" -o /out/yukideck ./cmd/server
+    go build -tags embed_ui -trimpath -ldflags="-s -w -X yukideck/internal/app.Version=${VERSION}" -o /out/yukideck ./cmd/server
 
 # Stage 3: Minimal Runtime Image (connects to external PostgreSQL via DATABASE_URL)
 FROM alpine:3.21

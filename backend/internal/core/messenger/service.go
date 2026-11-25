@@ -28,59 +28,6 @@ type Notifier interface {
 	Send(ctx context.Context, userID int64, targetChannelIDs []int64, msg Message) ([]DeliveryResult, error)
 }
 
-type DeliveryResult struct {
-	ChannelID   int64  `json:"channel_id"`
-	ChannelName string `json:"channel_name"`
-	ChannelType string `json:"channel_type"`
-	OK          bool   `json:"ok"`
-	Error       string `json:"error,omitempty"`
-}
-
-type ChannelView struct {
-	ID                  int64          `json:"id"`
-	Type                string         `json:"type"`
-	Name                string         `json:"name"`
-	Capabilities        []Capability   `json:"capabilities"`
-	EnableOutbound      bool           `json:"enable_outbound"`
-	EnableInbound       bool           `json:"enable_inbound"`
-	IsDefaultOutbound   bool           `json:"is_default_outbound"`
-	Enabled             bool           `json:"enabled"`
-	Config              map[string]any `json:"config"`
-	WebhookURL          string         `json:"webhook_url,omitempty"`
-	WebhookWarning      string         `json:"webhook_warning,omitempty"`
-	CreatedAt           time.Time      `json:"created_at"`
-	UpdatedAt           time.Time      `json:"updated_at"`
-}
-
-type PushEndpointView struct {
-	ID               int64      `json:"id"`
-	Name             string     `json:"name"`
-	PushURL          string     `json:"push_url"`
-	TargetMode       string     `json:"target_mode"`
-	TargetChannelIDs []int64    `json:"target_channel_ids"`
-	Enabled          bool       `json:"enabled"`
-	LastCalledAt     *time.Time `json:"last_called_at,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-}
-
-type UpsertChannelInput struct {
-	Type              string         `json:"type"`
-	Name              string         `json:"name"`
-	EnableOutbound    bool           `json:"enable_outbound"`
-	EnableInbound     bool           `json:"enable_inbound"`
-	IsDefaultOutbound bool           `json:"is_default_outbound"`
-	Enabled           bool           `json:"enabled"`
-	Config            map[string]any `json:"config"`
-}
-
-type UpsertPushEndpointInput struct {
-	Name             string  `json:"name"`
-	TargetMode       string  `json:"target_mode"` // "default" | "selected"
-	TargetChannelIDs []int64 `json:"target_channel_ids"`
-	Enabled          bool    `json:"enabled"`
-}
-
 type Service struct {
 	store         Store
 	registry      *Registry

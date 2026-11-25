@@ -34,14 +34,6 @@ const (
 	sessionTTL        = 7 * 24 * time.Hour
 )
 
-type User struct {
-	ID        int64  `json:"id"`
-	OIDCSub   string `json:"-"`
-	Username  string `json:"username"`
-	Email     string `json:"email"`
-	AvatarURL string `json:"avatar_url"`
-}
-
 type UserStore interface {
 	UpsertByOIDCSub(ctx context.Context, sub, username, email, avatarURL string) (*User, error)
 	FindByID(ctx context.Context, id int64) (*User, error)
