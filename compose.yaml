@@ -1,0 +1,16 @@
+name: yukideck
+services:
+  yukideck:
+    image: ghcr.io/nhirsama/yukideck:latest
+    container_name: yukideck
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${YUKIDECK_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
