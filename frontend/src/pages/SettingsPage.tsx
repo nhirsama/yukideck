@@ -171,7 +171,7 @@ function AboutPanel({
               rel="noopener noreferrer"
               className="text-[13px] font-medium text-zinc-800 hover:text-sky-600 transition-colors tabular-nums"
             >
-              {appName} {formatVersion(version)}
+              {appName} <span className="font-mono">{formatVersion(version)}</span>
             </a>
             {hasUpdate && remote ? (
               <a
@@ -180,7 +180,7 @@ function AboutPanel({
                 rel="noopener noreferrer"
                 className="yd-badge yd-badge-sky hover:bg-sky-100 transition-colors"
               >
-                可更新 {formatVersion(remote.tag)}
+                可更新 <span className="font-mono">{formatVersion(remote.tag)}</span>
                 <ExternalLink className="h-3 w-3" />
               </a>
             ) : isUpToDate ? (

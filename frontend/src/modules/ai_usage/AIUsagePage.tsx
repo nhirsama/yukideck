@@ -314,7 +314,7 @@ export default function AIUsagePage() {
             <span>总 Token 消耗</span>
             <Layers className="h-3.5 w-3.5 text-zinc-400" />
           </div>
-          <div className="mt-2.5 text-2xl font-semibold tracking-tight text-zinc-900 tabular-nums">
+          <div className="mt-2.5 font-mono text-2xl font-semibold tracking-tight text-zinc-900 tabular-nums">
             {loadingSummary ? '—' : formatTokens(summary?.tokens.total_tokens ?? 0)}
           </div>
           <div className="mt-1.5 text-[11px] text-zinc-400 tabular-nums">
@@ -329,7 +329,7 @@ export default function AIUsagePage() {
             <span>等效 API 费用</span>
             <BarChart3 className="h-3.5 w-3.5 text-zinc-400" />
           </div>
-          <div className="mt-2.5 text-2xl font-semibold tracking-tight text-zinc-900 tabular-nums">
+          <div className="mt-2.5 font-mono text-2xl font-semibold tracking-tight text-zinc-900 tabular-nums">
             {loadingSummary ? '—' : formatUSD(summary?.cost_usd ?? 0)}
           </div>
           <div className="mt-1.5 text-[11px] text-emerald-700 tabular-nums">
@@ -343,7 +343,7 @@ export default function AIUsagePage() {
             <span>会话 / 请求轮次</span>
             <Cpu className="h-3.5 w-3.5 text-zinc-400" />
           </div>
-          <div className="mt-2.5 text-2xl font-semibold tracking-tight text-zinc-900 tabular-nums">
+          <div className="mt-2.5 font-mono text-2xl font-semibold tracking-tight text-zinc-900 tabular-nums">
             {summary?.session_count ?? 0}
             <span className="text-xs font-normal text-zinc-400 ml-1.5">
               / {summary?.request_count ?? 0} 轮
@@ -359,7 +359,7 @@ export default function AIUsagePage() {
             <span>工具调用 / 峰值上下文</span>
             <Terminal className="h-3.5 w-3.5 text-zinc-400" />
           </div>
-          <div className="mt-2.5 text-2xl font-semibold tracking-tight text-zinc-900 tabular-nums">
+          <div className="mt-2.5 font-mono text-2xl font-semibold tracking-tight text-zinc-900 tabular-nums">
             {summary?.tool_call_count ?? 0}
           </div>
           <div className="mt-1.5 text-[11px] text-zinc-400 tabular-nums">

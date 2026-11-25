@@ -2,10 +2,9 @@ import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowRight, Bell, Link2, Puzzle } from 'lucide-react';
 import { coreApi } from '@/core/api';
-import { useAppMeta, useEnabledModules } from '@/core/module';
+import { useEnabledModules } from '@/core/module';
 
 export function DashboardPage() {
-  const { data: meta } = useAppMeta();
   const modules = useEnabledModules();
 
   const { data: channelsData } = useQuery({
@@ -24,12 +23,7 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-7">
-      <div className="flex items-center gap-2.5">
-        <h1 className="yd-page-title">工作台</h1>
-        {meta?.version && (
-          <span className="yd-badge yd-badge-neutral font-mono">{meta.version}</span>
-        )}
-      </div>
+      <h1 className="yd-page-title">工作台</h1>
 
       {/* Platform Core Summary */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -38,7 +32,7 @@ export function DashboardPage() {
             <span>消息渠道</span>
             <Bell className="h-3.5 w-3.5 text-zinc-400" />
           </div>
-          <div className="mt-2.5 text-2xl font-semibold tracking-tight text-zinc-800 tabular-nums">
+          <div className="mt-2.5 font-mono text-2xl font-semibold tracking-tight text-zinc-800 tabular-nums">
             {outboundCount}{' '}
             <span className="text-sm font-normal text-zinc-400">/ {inboundCount}</span>
           </div>
@@ -50,7 +44,7 @@ export function DashboardPage() {
             <span>推送终结点</span>
             <Link2 className="h-3.5 w-3.5 text-zinc-400" />
           </div>
-          <div className="mt-2.5 text-2xl font-semibold tracking-tight text-zinc-800 tabular-nums">
+          <div className="mt-2.5 font-mono text-2xl font-semibold tracking-tight text-zinc-800 tabular-nums">
             {endpointCount}
           </div>
           <div className="mt-1 text-xs text-zinc-400">已启用</div>
@@ -61,7 +55,7 @@ export function DashboardPage() {
             <span>已启用模块</span>
             <Puzzle className="h-3.5 w-3.5 text-zinc-400" />
           </div>
-          <div className="mt-2.5 text-2xl font-semibold tracking-tight text-zinc-800 tabular-nums">
+          <div className="mt-2.5 font-mono text-2xl font-semibold tracking-tight text-zinc-800 tabular-nums">
             {modules.length}
           </div>
           <div className="mt-1 text-xs text-zinc-400">当前可用</div>

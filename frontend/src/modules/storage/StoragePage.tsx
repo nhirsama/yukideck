@@ -5,7 +5,6 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
-  Copy,
   File as FileIcon,
   Folder,
   FolderInput,
@@ -62,15 +61,27 @@ export default function StoragePage() {
   const [moveModalOpen, setMoveModalOpen] = useState(false);
   const [dimsMap, setDimsMap] = useState<Record<string, [number, number]>>(() => loadCachedDimensions());
   const [loadedUrls, setLoadedUrls] = useState<Record<string, true>>({});
+  const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   const probedUrlsRef = useRef<Set<string>>(new Set());
+  const toastTimerRef = useRef<number | null>(null);
+  const copiedTimerRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const colCount = useWaterfallColumns();
 
   const showToast = useCallback((text: string, tone: 'info' | 'error' = 'info') => {
     setToast({ text, tone });
-    setTimeout(() => {
-      setToast((cur) => (cur?.text === text ? null : cur));
-    }, 2600);
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 2200);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+      if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+    };
   }, []);
 
   const { data: cfgData, isLoading: cfgLoading } = useQuery({
@@ -291,9 +302,19 @@ export default function StoragePage() {
     });
   };
 
-  const copyLink = async (text: string, label: string) => {
-    await navigator.clipboard.writeText(text);
-    showToast(`已复制${label}`);
+  const copyLink = async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedUrl(url);
+      if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = window.setTimeout(() => {
+        setCopiedUrl((cur) => (cur === url ? null : cur));
+        copiedTimerRef.current = null;
+      }, 1600);
+      showToast('已复制直链');
+    } catch {
+      showToast('复制失败，请手动复制', 'error');
+    }
   };
 
   const handleRename = (type: 'file' | 'folder', currentPath: string, currentName: string) => {
@@ -457,11 +478,27 @@ export default function StoragePage() {
         </div>
       </div>
 
-      {/* Notices */}
-      {uploadingText && <div className="yd-notice-info">{uploadingText}</div>}
-      {toast && (
-        <div className={toast.tone === 'error' ? 'yd-notice-error' : 'yd-notice'}>
-          {toast.text}
+      {/* Floating Toast & Upload Status (no layout shift) */}
+      {(uploadingText || toast) && (
+        <div className="fixed top-5 right-5 z-[60] pointer-events-none flex flex-col items-end gap-2">
+          {uploadingText && (
+            <div className="pointer-events-auto flex items-center gap-2 rounded-xl border border-sky-200/90 bg-white/95 backdrop-blur-md px-3.5 py-2 text-xs text-sky-700 shadow-[0_8px_24px_rgba(15,23,42,0.08)]">
+              <span className="h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse" />
+              <span>{uploadingText}</span>
+            </div>
+          )}
+          {toast && (
+            <div
+              className={`pointer-events-auto flex items-center gap-2 rounded-xl border bg-white/95 backdrop-blur-md px-3.5 py-2 text-xs shadow-[0_8px_24px_rgba(15,23,42,0.08)] ${
+                toast.tone === 'error'
+                  ? 'border-red-200 text-red-700'
+                  : 'border-zinc-200/90 text-zinc-700'
+              }`}
+            >
+              {toast.tone !== 'error' && <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0" />}
+              <span>{toast.text}</span>
+            </div>
+          )}
         </div>
       )}
 
@@ -631,23 +668,16 @@ export default function StoragePage() {
                           <button
                             type="button"
                             title="复制直链"
-                            onClick={() => void copyLink(file.url, '直链')}
-                            className="h-7 w-7 rounded-lg bg-white/90 backdrop-blur-xs hover:bg-white text-zinc-700 shadow-xs flex items-center justify-center transition-colors"
+                            onClick={() => void copyLink(file.url)}
+                            className={`h-7 w-7 rounded-lg bg-white/90 backdrop-blur-xs hover:bg-white shadow-xs flex items-center justify-center transition-colors ${
+                              copiedUrl === file.url ? 'text-emerald-600' : 'text-zinc-700'
+                            }`}
                           >
-                            <Link2 className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            title="复制 Markdown"
-                            onClick={() =>
-                              void copyLink(
-                                file.is_image ? `![](${file.url})` : `[${file.name}](${file.url})`,
-                                ' Markdown',
-                              )
-                            }
-                            className="h-7 w-7 rounded-lg bg-white/90 backdrop-blur-xs hover:bg-white text-zinc-700 shadow-xs flex items-center justify-center transition-colors"
-                          >
-                            <Copy className="h-3.5 w-3.5" />
+                            {copiedUrl === file.url ? (
+                              <Check className="h-3.5 w-3.5" />
+                            ) : (
+                              <Link2 className="h-3.5 w-3.5" />
+                            )}
                           </button>
                           <button
                             type="button"
@@ -796,17 +826,21 @@ export default function StoragePage() {
             <span className="text-zinc-400 tabular-nums">{formatBytes(activeLightbox.size)}</span>
             <button
               type="button"
-              onClick={() => void copyLink(activeLightbox.url, '直链')}
-              className="rounded-full bg-sky-50 px-3 py-1 font-medium text-sky-700 hover:bg-sky-100 transition-colors"
+              onClick={() => void copyLink(activeLightbox.url)}
+              className={`rounded-full px-3 py-1 font-medium transition-colors inline-flex items-center gap-1 ${
+                copiedUrl === activeLightbox.url
+                  ? 'bg-emerald-50 text-emerald-700'
+                  : 'bg-sky-50 text-sky-700 hover:bg-sky-100'
+              }`}
             >
-              复制直链
-            </button>
-            <button
-              type="button"
-              onClick={() => void copyLink(`![](${activeLightbox.url})`, ' Markdown')}
-              className="rounded-full bg-sky-50 px-3 py-1 font-medium text-sky-700 hover:bg-sky-100 transition-colors"
-            >
-              复制 Markdown
+              {copiedUrl === activeLightbox.url ? (
+                <>
+                  <Check className="h-3 w-3" />
+                  已复制
+                </>
+              ) : (
+                '复制直链'
+              )}
             </button>
           </div>
         </div>
