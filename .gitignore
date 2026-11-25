@@ -4,6 +4,7 @@
 !/backend/internal/webui/dist/.gitkeep
 /frontend/dist/
 /frontend/node_modules/
+/collector/target/
 
 # Env & local secrets
 .env

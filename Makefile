@@ -1,4 +1,4 @@
-.PHONY: dev-backend dev-frontend build-frontend build-embed build-api sqlc types gen test clean
+.PHONY: dev-backend dev-frontend build-frontend build-embed build-api build-collector sqlc types gen test clean
 
 VERSION ?= dev
 LDFLAGS := -s -w -X yukideck/internal/app.Version=$(VERSION)
@@ -30,6 +30,9 @@ build-embed: build-frontend
 
 build-api:
 	cd backend && CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o bin/yukideck-api ./cmd/server
+
+build-collector:
+	cargo build --release --manifest-path collector/Cargo.toml
 
 test:
 	cd backend && go test ./... -v

@@ -2,6 +2,7 @@ package app
 
 import (
 	"yukideck/internal/core/module"
+	"yukideck/internal/modules/ai_usage"
 	"yukideck/internal/modules/planner"
 	"yukideck/internal/modules/storage"
 )
@@ -13,5 +14,6 @@ func BuildModules(deps module.Deps) []module.Module {
 	return []module.Module{
 		storage.New(deps),
 		planner.New(deps),
+		ai_usage.New(deps),
 	}
 }

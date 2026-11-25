@@ -38,3 +38,10 @@ packages:
     type_mappings:
       time.Time: "string"
     output_path: "../frontend/src/modules/planner/api.gen.ts"
+
+  - path: "yukideck/internal/modules/ai_usage"
+    include_files:
+      - "dto.go"
+    type_mappings:
+      time.Time: "string"
+    output_path: "../frontend/src/modules/ai_usage/api.gen.ts"

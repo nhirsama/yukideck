@@ -1,0 +1,27 @@
+[package]
+name = "yukideck-collector"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight oneshot AI Agent usage probe for YukiDeck"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+dirs = "5"
+flate2 = "1"
+fs2 = "0.4"
+hex = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokscale-core = { git = "https://github.com/junhoyeo/tokscale.git", rev = "b265e836c58f085f50a836525aa60b8d45bd8d57" }
+toml = "0.8"
+uuid = { version = "1", features = ["v4"] }
+walkdir = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

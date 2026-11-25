@@ -1,6 +1,7 @@
 import type { FrontendModule } from '@/core/module';
 import { storageModule } from './storage';
 import { plannerModule } from './planner';
+import { aiUsageModule } from './ai_usage';
 
 /**
  * Single frontend module registry.
@@ -9,4 +10,5 @@ import { plannerModule } from './planner';
 export const registeredModules: FrontendModule[] = [
   storageModule,
   plannerModule,
+  aiUsageModule,
 ];

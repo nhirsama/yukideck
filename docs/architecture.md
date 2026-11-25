@@ -207,5 +207,5 @@ flowchart LR
 | **Stage 2** | 图床模块（`storage`，直传不限大小 / 中转保护双模式） | ✅ 已完成 |
 | **Stage 3** | 日程与提醒模块（`planner`，详见 [planner-module.md](./planner-module.md)） | ✅ 已完成 |
 | **Stage 4** | 平台底座升级（全局 API Key + `messenger` 自定义推送终结点路径分流） | ✅ 已完成 |
-| **Stage 5** | AI Agent 用量统计模块（`ai-usage` + `collector/`，详见 [ai-usage-module.md](./ai-usage-module.md)） | ⏳ 设计已对齐 |
+| **Stage 5** | AI Agent 用量统计模块（`ai-usage` + `collector/`，详见 [ai-usage-module.md](./ai-usage-module.md)） | ✅ 已完成 |
 | **Stage 6** | 物品价值计算模块（`assets`） | ⏳ 待对齐需求 |

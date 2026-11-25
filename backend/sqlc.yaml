@@ -86,3 +86,25 @@ sql:
               import: "time"
               type: "Time"
               pointer: true
+
+  - engine: "postgresql"
+    schema:
+      - "internal/core/auth/migrations"
+      - "internal/modules/ai_usage/migrations"
+    queries: "internal/modules/ai_usage/queries.sql"
+    gen:
+      go:
+        package: "sqlcgen"
+        out: "internal/modules/ai_usage/sqlcgen"
+        sql_package: "pgx/v5"
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true
+        overrides:
+          - db_type: "timestamptz"
+            go_type: "time.Time"
+          - db_type: "timestamptz"
+            nullable: true
+            go_type:
+              import: "time"
+              type: "Time"
+              pointer: true

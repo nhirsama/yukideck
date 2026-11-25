@@ -7,7 +7,7 @@
 - **平台底座**：标准 OIDC SSO 登录与多用户隔离、全局细粒度 API Key、消息中枢（Telegram Bot 等多渠道双向能力 + 自定义推送终结点）。
 - **图床（`storage`）**：对接自有 S3 / R2 对象存储桶，支持前端直传与后端中转双模式。
 - **日程与提醒（`planner`）**：统一的待办、日程与周期提醒，支持公历/农历与多提前通知点。
-- **AI Agent 用量统计（`ai-usage`，规划中）**：多设备汇总 Claude Code、Codex、Antigravity、Pi 等 Agent 的小时与会话级 Token / 工具调用统计。
+- **AI Agent 用量统计（`ai-usage`）**：多设备汇总 Claude Code、Codex、Antigravity、Pi 等 Agent 的小时与会话级 Token、等效费用与工具调用统计，配套本地同步探针 `collector/`。
 
 ## 本地开发
 
