@@ -101,6 +101,7 @@ type Service struct {
 	apiKeys  APIKeyStore
 	permReg  *PermissionRegistry
 	logger   *slog.Logger
+	provider *oidc.Provider
 	oauthCfg *oauth2.Config
 	verifier *oidc.IDTokenVerifier
 }
@@ -122,7 +123,14 @@ func NewService(
 		return nil, fmt.Errorf("discover oidc provider %q: %w", cfg.OIDCIssuer, err)
 	}
 
-	scopes := cfg.OIDCScopes
+	var scopes []string
+	for _, raw := range cfg.OIDCScopes {
+		for _, part := range strings.Fields(raw) {
+			if part != "" {
+				scopes = append(scopes, part)
+			}
+		}
+	}
 	if len(scopes) == 0 {
 		scopes = []string{oidc.ScopeOpenID, "profile", "email"}
 	}
@@ -142,6 +150,7 @@ func NewService(
 		apiKeys:  apiKeys,
 		permReg:  NewPermissionRegistry(),
 		logger:   logger,
+		provider: provider,
 		oauthCfg: oauthCfg,
 		verifier: verifier,
 	}, nil
@@ -246,28 +255,51 @@ func (s *Service) handleCallback(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Unauthorized("OIDC id_token 验签失败")
 	}
 
-	var claims struct {
-		Sub               string `json:"sub"`
-		PreferredUsername string `json:"preferred_username"`
-		Name              string `json:"name"`
-		Email             string `json:"email"`
-		Picture           string `json:"picture"`
-	}
+	var claims oidcUserClaims
 	if err := idToken.Claims(&claims); err != nil || claims.Sub == "" {
 		return httpx.Unauthorized("无法解析 OIDC 用户声明")
 	}
-	username := strings.TrimSpace(claims.PreferredUsername)
-	if username == "" {
-		username = strings.TrimSpace(claims.Name)
-	}
-	if username == "" {
-		username = strings.TrimSpace(claims.Email)
-	}
-	if username == "" {
-		username = claims.Sub
+
+	// Many OIDC providers omit profile claims (nickname/name/picture/email) from id_token
+	// and only expose them via the standard UserInfo endpoint.
+	var userinfoKeys []string
+	if s.provider != nil && (claims.resolveDisplayName() == claims.Sub || strings.TrimSpace(claims.Nickname) == "" || claims.resolveAvatarURL() == "" || strings.TrimSpace(claims.Email) == "") {
+		if ui, err := s.provider.UserInfo(exchangeCtx, oauth2.StaticTokenSource(token)); err == nil {
+			var uiClaims oidcUserClaims
+			if err := ui.Claims(&uiClaims); err == nil {
+				claims.merge(uiClaims)
+			}
+			var rawUI map[string]any
+			if err := ui.Claims(&rawUI); err == nil {
+				for k := range rawUI {
+					userinfoKeys = append(userinfoKeys, k)
+				}
+			}
+		} else if s.logger != nil {
+			s.logger.Warn("oidc userinfo fetch failed, falling back to id_token claims", "err", err)
+		}
 	}
 
-	user, err := s.store.UpsertByOIDCSub(r.Context(), claims.Sub, username, claims.Email, claims.Picture)
+	username := claims.resolveDisplayName()
+	avatarURL := claims.resolveAvatarURL()
+
+	if s.logger != nil {
+		var idKeys []string
+		var rawID map[string]any
+		if err := idToken.Claims(&rawID); err == nil {
+			for k := range rawID {
+				idKeys = append(idKeys, k)
+			}
+		}
+		s.logger.Info("oidc login resolved profile",
+			"has_avatar", avatarURL != "",
+			"fallback_to_sub", username == claims.Sub,
+			"id_token_keys", idKeys,
+			"userinfo_keys", userinfoKeys,
+		)
+	}
+
+	user, err := s.store.UpsertByOIDCSub(r.Context(), claims.Sub, username, strings.TrimSpace(claims.Email), avatarURL)
 	if err != nil {
 		return httpx.Internal("保存用户信息失败", err)
 	}
@@ -448,4 +480,78 @@ func (s *Service) buildCookie(name, value string, maxAge int) *http.Cookie {
 		Secure:   s.cfg.CookieSecure,
 		SameSite: s.cfg.SameSiteMode(),
 	}
+}
+
+type oidcUserClaims struct {
+	Sub               string `json:"sub"`
+	Nickname          string `json:"nickname"`
+	DisplayName       string `json:"display_name"`
+	DisplayNameCamel  string `json:"displayName"`
+	Name              string `json:"name"`
+	GivenName         string `json:"given_name"`
+	FamilyName        string `json:"family_name"`
+	PreferredUsername string `json:"preferred_username"`
+	Username          string `json:"username"`
+	Login             string `json:"login"`
+	Email             string `json:"email"`
+	Picture           string `json:"picture"`
+	Avatar            string `json:"avatar"`
+	AvatarURL         string `json:"avatar_url"`
+	AvatarURLCamel    string `json:"avatarUrl"`
+}
+
+func (c *oidcUserClaims) merge(other oidcUserClaims) {
+	fill := func(dst *string, src string) {
+		if strings.TrimSpace(*dst) == "" {
+			*dst = src
+		}
+	}
+	fill(&c.Nickname, other.Nickname)
+	fill(&c.DisplayName, other.DisplayName)
+	fill(&c.DisplayNameCamel, other.DisplayNameCamel)
+	fill(&c.Name, other.Name)
+	fill(&c.GivenName, other.GivenName)
+	fill(&c.FamilyName, other.FamilyName)
+	fill(&c.PreferredUsername, other.PreferredUsername)
+	fill(&c.Username, other.Username)
+	fill(&c.Login, other.Login)
+	fill(&c.Email, other.Email)
+	fill(&c.Picture, other.Picture)
+	fill(&c.Avatar, other.Avatar)
+	fill(&c.AvatarURL, other.AvatarURL)
+	fill(&c.AvatarURLCamel, other.AvatarURLCamel)
+}
+
+func (c oidcUserClaims) resolveDisplayName() string {
+	fullGiven := strings.TrimSpace(strings.TrimSpace(c.GivenName) + " " + strings.TrimSpace(c.FamilyName))
+	for _, candidate := range []string{
+		c.Nickname,
+		c.DisplayName,
+		c.DisplayNameCamel,
+		c.Name,
+		fullGiven,
+		c.PreferredUsername,
+		c.Username,
+		c.Login,
+	} {
+		if v := strings.TrimSpace(candidate); v != "" && v != c.Sub {
+			return v
+		}
+	}
+	if email := strings.TrimSpace(c.Email); email != "" {
+		if local, _, ok := strings.Cut(email, "@"); ok && strings.TrimSpace(local) != "" {
+			return strings.TrimSpace(local)
+		}
+		return email
+	}
+	return c.Sub
+}
+
+func (c oidcUserClaims) resolveAvatarURL() string {
+	for _, candidate := range []string{c.Picture, c.Avatar, c.AvatarURL, c.AvatarURLCamel} {
+		if v := strings.TrimSpace(candidate); v != "" {
+			return v
+		}
+	}
+	return ""
 }

@@ -363,3 +363,34 @@ func TestAPIKeyCloudflarePoliciesAndBoundaries(t *testing.T) {
 		t.Fatalf("unexpected schema response: %s", recSchema.Body.String())
 	}
 }
+
+func TestOIDCUserClaimsResolution(t *testing.T) {
+	idClaims := oidcUserClaims{
+		Sub: "usr_12345",
+	}
+	idClaims.merge(oidcUserClaims{
+		Nickname: "小雪",
+		Name:     "Yuki",
+		Email:    "yuki@example.com",
+		Picture:  "https://cdn.example.com/avatar.png",
+	})
+	if got := idClaims.resolveDisplayName(); got != "小雪" {
+		t.Fatalf("expected nickname 小雪, got %q", got)
+	}
+	if got := idClaims.resolveAvatarURL(); got != "https://cdn.example.com/avatar.png" {
+		t.Fatalf("expected picture url, got %q", got)
+	}
+
+	emailFallback := oidcUserClaims{
+		Sub:               "usr_999",
+		PreferredUsername: "usr_999",
+		Email:             "alice@example.com",
+		Avatar:            "https://cdn.example.com/a.jpg",
+	}
+	if got := emailFallback.resolveDisplayName(); got != "alice" {
+		t.Fatalf("expected email local part alice, got %q", got)
+	}
+	if got := emailFallback.resolveAvatarURL(); got != "https://cdn.example.com/a.jpg" {
+		t.Fatalf("expected avatar fallback, got %q", got)
+	}
+}
