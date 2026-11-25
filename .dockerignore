@@ -12,6 +12,8 @@ docs
 README.md
 AGENTS.md
 Makefile
+compose*.yaml
+compose*.yml
 *.log
 *.out
 coverage.txt

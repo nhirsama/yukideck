@@ -24,7 +24,15 @@ make dev-frontend
 
 ## 构建与部署
 
-### 模式 A：Go 单二进制内嵌前端（推荐）
+### 模式 A：Docker Compose 部署（内嵌前端，推荐）
+
+```bash
+cp .env.example .env
+# 按需修改 .env 中的 DATABASE_URL、APP_SECRET_KEY、OIDC_* 等配置
+docker compose up -d
+```
+
+也可在本地直接编译单二进制：
 
 ```bash
 make build-embed
