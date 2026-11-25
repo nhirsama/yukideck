@@ -1,6 +1,7 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAppMeta, useEnabledModules } from '@/core/module';
+import { APIKeysPanel } from './APIKeysPanel';
 
 export function SettingsPage() {
   const { data: meta } = useAppMeta();
@@ -30,7 +31,7 @@ export function SettingsPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight text-slate-900">系统设置</h1>
         <p className="text-sm text-slate-500 mt-1">
-          自动聚合平台基础信息与各已启用模块注入的配置面板。
+          管理平台概览、全局 API Key 权限策略以及各已启用模块的配置面板。
         </p>
       </div>
 
@@ -45,6 +46,17 @@ export function SettingsPage() {
           }`}
         >
           平台概览
+        </button>
+        <button
+          type="button"
+          onClick={() => selectTab('api-keys')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 whitespace-nowrap ${
+            activeTab === 'api-keys'
+              ? 'border-slate-900 text-slate-900'
+              : 'border-transparent text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          API Keys
         </button>
         {modulePanels.map((m) => (
           <button
@@ -83,6 +95,8 @@ export function SettingsPage() {
             声明配置组件，即可自动出现在本页面标签栏中。
           </div>
         </div>
+      ) : activeTab === 'api-keys' ? (
+        <APIKeysPanel />
       ) : activeModule?.settingsPanel ? (
         <Suspense fallback={<div className="text-sm text-slate-500">加载模块配置...</div>}>
           <activeModule.settingsPanel.component />

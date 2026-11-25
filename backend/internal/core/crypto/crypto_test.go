@@ -34,9 +34,10 @@ func TestBoxEncryptDecrypt(t *testing.T) {
 	}
 
 	// Tampered ciphertext must fail authentication.
-	tampered := c1[:len(c1)-1] + "A"
+	// Flip a non-trailing base64 character so decoded ciphertext bytes are guaranteed to differ.
+	tampered := "A" + c1[1:]
 	if tampered == c1 {
-		tampered = c1[:len(c1)-1] + "B"
+		tampered = "B" + c1[1:]
 	}
 	if _, err := box.Decrypt(tampered); err == nil {
 		t.Fatalf("expected error decrypting tampered ciphertext")

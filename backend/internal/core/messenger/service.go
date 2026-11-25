@@ -8,10 +8,12 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"yukideck/internal/core/auth"
 	"yukideck/internal/core/crypto"
 	"yukideck/internal/core/httpx"
 )
@@ -22,6 +24,10 @@ var migrationsFS embed.FS
 func Migrations() fs.FS {
 	return migrationsFS
 }
+
+const PermissionPush = "messenger:push"
+
+var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 // Notifier is the narrow interface injected into business modules for sending notifications.
 type Notifier interface {
@@ -63,6 +69,35 @@ func NewService(
 
 func (s *Service) CommandBus() *CommandBus { return s.bus }
 func (s *Service) Drivers() []DriverInfo   { return s.registry.ListInfo() }
+
+// RegisterPermissions declares messenger's custom push endpoint permission and dynamic resource lister.
+func (s *Service) RegisterPermissions(reg *auth.PermissionRegistry) {
+	reg.Register(auth.PermissionDef{
+		Key:           PermissionPush,
+		ModuleID:      "messenger",
+		ModuleName:    "消息中枢",
+		Label:         "自定义终结点推送",
+		Description:   "允许调用 /api/v1/messenger/push/{user_id}/{endpoint} 发送推送消息（支持 Header Bearer 与 ?key= 查询参数）",
+		ResourceType:  "push_endpoint",
+		AllowQueryKey: true,
+	}, func(ctx context.Context, userID int64) ([]auth.ResourceOption, error) {
+		if s.store == nil {
+			return []auth.ResourceOption{}, nil
+		}
+		endpoints, err := s.store.ListPushEndpoints(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]auth.ResourceOption, 0, len(endpoints))
+		for _, ep := range endpoints {
+			out = append(out, auth.ResourceOption{
+				ID:   ep.Slug,
+				Name: fmt.Sprintf("%s (%s)", ep.Name, ep.Slug),
+			})
+		}
+		return out, nil
+	})
+}
 
 // ListChannels lists a user's channels, optionally filtering symmetrically by capability ("outbound" | "inbound").
 func (s *Service) ListChannels(ctx context.Context, userID int64, capFilter Capability) ([]ChannelView, error) {
@@ -342,124 +377,86 @@ func (s *Service) Send(ctx context.Context, userID int64, targetChannelIDs []int
 	return results, nil
 }
 
-// --- Normalized PushURL ---
+// --- Custom Push Endpoints ---
 
 func (s *Service) ListPushEndpoints(ctx context.Context, userID int64) ([]PushEndpointView, error) {
 	recs, err := s.store.ListPushEndpoints(ctx, userID)
 	if err != nil {
-		return nil, httpx.Internal("查询 PushURL 列表失败", err)
+		return nil, httpx.Internal("查询推送终结点列表失败", err)
 	}
 	out := make([]PushEndpointView, 0, len(recs))
 	for _, r := range recs {
-		v, err := s.toPushEndpointView(r)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, v)
+		out = append(out, s.toPushEndpointView(r))
 	}
 	return out, nil
 }
 
 func (s *Service) CreatePushEndpoint(ctx context.Context, userID int64, in UpsertPushEndpointInput) (*PushEndpointView, error) {
-	if err := s.validatePushEndpointInput(ctx, userID, in); err != nil {
+	slug, err := s.validatePushEndpointInput(ctx, userID, 0, in)
+	if err != nil {
 		return nil, err
-	}
-	rawToken, err := crypto.RandomToken(24)
-	if err != nil {
-		return nil, httpx.Internal("生成 PushURL token 失败", err)
-	}
-	tokenEnc, err := s.box.Encrypt([]byte(rawToken))
-	if err != nil {
-		return nil, httpx.Internal("加密 PushURL token 失败", err)
 	}
 	created, err := s.store.CreatePushEndpoint(ctx, PushEndpointRecord{
 		UserID:           userID,
 		Name:             strings.TrimSpace(in.Name),
-		TokenHash:        crypto.SHA256Hex(rawToken),
-		TokenEnc:         tokenEnc,
+		Slug:             slug,
 		TargetMode:       in.TargetMode,
 		TargetChannelIDs: in.TargetChannelIDs,
 		Enabled:          in.Enabled,
 	})
 	if err != nil {
-		return nil, httpx.Internal("创建 PushURL 失败", err)
+		return nil, httpx.Internal("创建推送终结点失败", err)
 	}
-	v, err := s.toPushEndpointView(*created)
-	if err != nil {
-		return nil, err
-	}
+	v := s.toPushEndpointView(*created)
 	return &v, nil
 }
 
 func (s *Service) UpdatePushEndpoint(ctx context.Context, userID, id int64, in UpsertPushEndpointInput) (*PushEndpointView, error) {
-	if err := s.validatePushEndpointInput(ctx, userID, in); err != nil {
+	slug, err := s.validatePushEndpointInput(ctx, userID, id, in)
+	if err != nil {
 		return nil, err
 	}
 	updated, err := s.store.UpdatePushEndpoint(ctx, PushEndpointRecord{
 		ID:               id,
 		UserID:           userID,
 		Name:             strings.TrimSpace(in.Name),
+		Slug:             slug,
 		TargetMode:       in.TargetMode,
 		TargetChannelIDs: in.TargetChannelIDs,
 		Enabled:          in.Enabled,
 	})
 	if err != nil {
-		return nil, httpx.Internal("更新 PushURL 失败", err)
+		return nil, httpx.Internal("更新推送终结点失败", err)
 	}
 	if updated == nil {
-		return nil, httpx.NotFound("PushURL 不存在")
+		return nil, httpx.NotFound("推送终结点不存在")
 	}
-	v, err := s.toPushEndpointView(*updated)
-	if err != nil {
-		return nil, err
-	}
-	return &v, nil
-}
-
-func (s *Service) RotatePushEndpointToken(ctx context.Context, userID, id int64) (*PushEndpointView, error) {
-	rawToken, err := crypto.RandomToken(24)
-	if err != nil {
-		return nil, httpx.Internal("生成新 token 失败", err)
-	}
-	tokenEnc, err := s.box.Encrypt([]byte(rawToken))
-	if err != nil {
-		return nil, httpx.Internal("加密新 token 失败", err)
-	}
-	updated, err := s.store.RotatePushEndpointToken(ctx, userID, id, crypto.SHA256Hex(rawToken), tokenEnc)
-	if err != nil {
-		return nil, httpx.Internal("重置 PushURL token 失败", err)
-	}
-	if updated == nil {
-		return nil, httpx.NotFound("PushURL 不存在")
-	}
-	v, err := s.toPushEndpointView(*updated)
-	if err != nil {
-		return nil, err
-	}
+	v := s.toPushEndpointView(*updated)
 	return &v, nil
 }
 
 func (s *Service) DeletePushEndpoint(ctx context.Context, userID, id int64) error {
 	if err := s.store.DeletePushEndpoint(ctx, userID, id); err != nil {
-		return httpx.Internal("删除 PushURL 失败", err)
+		return httpx.Internal("删除推送终结点失败", err)
 	}
 	return nil
 }
 
-func (s *Service) DispatchPushEndpoint(ctx context.Context, rawToken string, msg Message) ([]DeliveryResult, error) {
-	if strings.TrimSpace(rawToken) == "" {
-		return nil, httpx.NotFound("无效的 PushURL")
+func (s *Service) DispatchPushEndpoint(ctx context.Context, userID int64, slug string, msg Message) ([]DeliveryResult, error) {
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	if slug == "" {
+		return nil, httpx.NotFound("无效的推送终结点")
 	}
 	if strings.TrimSpace(msg.Title) == "" && strings.TrimSpace(msg.Content) == "" {
 		return nil, httpx.BadRequest("推送内容不能为空（请提供 title 或 content）")
 	}
 
-	ep, err := s.store.GetPushEndpointByTokenHash(ctx, crypto.SHA256Hex(rawToken))
+	ep, err := s.store.GetPushEndpointBySlug(ctx, userID, slug)
 	if err != nil {
-		return nil, httpx.Internal("查询 PushURL 失败", err)
+		return nil, httpx.Internal("查询推送终结点失败", err)
 	}
 	if ep == nil || !ep.Enabled {
-		return nil, httpx.NotFound("PushURL 不存在或已停用")
+		return nil, httpx.NotFound("推送终结点不存在或已停用")
 	}
 
 	var targetIDs []int64
@@ -501,7 +498,6 @@ func (s *Service) HandleWebhook(ctx context.Context, driverType string, channelI
 		return httpx.BadRequest("解析入站事件失败: " + err.Error())
 	}
 	if ev == nil {
-		// Ignored non-actionable platform event (e.g. edited message or typing indicator)
 		return nil
 	}
 	ev.UserID = rec.UserID
@@ -516,7 +512,6 @@ func (s *Service) HandleWebhook(ctx context.Context, driverType string, channelI
 		return nil
 	}
 
-	// Reply via same channel if it supports & enables outbound, otherwise fallback to default outbound channel.
 	var targetIDs []int64
 	if driver.Info().Supports(CapOutbound) && rec.EnableOutbound {
 		targetIDs = []int64{rec.ID}
@@ -529,20 +524,31 @@ func (s *Service) HandleWebhook(ctx context.Context, driverType string, channelI
 
 // --- Helpers ---
 
-func (s *Service) validatePushEndpointInput(ctx context.Context, userID int64, in UpsertPushEndpointInput) error {
+func (s *Service) validatePushEndpointInput(ctx context.Context, userID, excludeID int64, in UpsertPushEndpointInput) (string, error) {
 	if strings.TrimSpace(in.Name) == "" {
-		return httpx.BadRequest("PushURL 名称不能为空")
+		return "", httpx.BadRequest("推送终结点名称不能为空")
+	}
+	slug := strings.ToLower(strings.TrimSpace(in.Slug))
+	if !slugPattern.MatchString(slug) {
+		return "", httpx.BadRequest("终结点标识须为 1~64 位小写字母、数字、- 或 _，且以字母或数字开头")
+	}
+	existing, err := s.store.GetPushEndpointBySlug(ctx, userID, slug)
+	if err != nil {
+		return "", httpx.Internal("校验终结点标识失败", err)
+	}
+	if existing != nil && existing.ID != excludeID {
+		return "", httpx.Conflict("该终结点标识已存在: " + slug)
 	}
 	if in.TargetMode != "default" && in.TargetMode != "selected" {
-		return httpx.BadRequest("target_mode 必须为 default 或 selected")
+		return "", httpx.BadRequest("target_mode 必须为 default 或 selected")
 	}
 	if in.TargetMode == "selected" {
 		if len(in.TargetChannelIDs) == 0 {
-			return httpx.BadRequest("选择指定渠道模式时，至少需要勾选一个具备发送能力的渠道")
+			return "", httpx.BadRequest("选择指定渠道模式时，至少需要勾选一个具备发送能力的渠道")
 		}
 		outboundChannels, err := s.ListChannels(ctx, userID, CapOutbound)
 		if err != nil {
-			return err
+			return "", err
 		}
 		validSet := make(map[int64]struct{}, len(outboundChannels))
 		for _, ch := range outboundChannels {
@@ -550,11 +556,11 @@ func (s *Service) validatePushEndpointInput(ctx context.Context, userID int64, i
 		}
 		for _, id := range in.TargetChannelIDs {
 			if _, ok := validSet[id]; !ok {
-				return httpx.BadRequest(fmt.Sprintf("渠道 #%d 不存在或未启用发送能力 (outbound)", id))
+				return "", httpx.BadRequest(fmt.Sprintf("渠道 #%d 不存在或未启用发送能力 (outbound)", id))
 			}
 		}
 	}
-	return nil
+	return slug, nil
 }
 
 func (s *Service) syncInboundHook(ctx context.Context, driver Driver, rec ChannelRecord, cfg map[string]any) string {
@@ -610,22 +616,19 @@ func (s *Service) toChannelView(rec ChannelRecord, driver Driver, warning string
 	}, nil
 }
 
-func (s *Service) toPushEndpointView(rec PushEndpointRecord) (PushEndpointView, error) {
-	rawToken, err := s.box.Decrypt(rec.TokenEnc)
-	if err != nil {
-		return PushEndpointView{}, httpx.Internal("解密 PushURL token 失败", err)
-	}
+func (s *Service) toPushEndpointView(rec PushEndpointRecord) PushEndpointView {
 	return PushEndpointView{
 		ID:               rec.ID,
 		Name:             rec.Name,
-		PushURL:          fmt.Sprintf("%s/api/v1/push/%s", s.publicBaseURL, string(rawToken)),
+		Slug:             rec.Slug,
+		PushURL:          fmt.Sprintf("%s/api/v1/messenger/push/%d/%s", s.publicBaseURL, rec.UserID, rec.Slug),
 		TargetMode:       rec.TargetMode,
 		TargetChannelIDs: rec.TargetChannelIDs,
 		Enabled:          rec.Enabled,
 		LastCalledAt:     rec.LastCalledAt,
 		CreatedAt:        rec.CreatedAt,
 		UpdatedAt:        rec.UpdatedAt,
-	}, nil
+	}
 }
 
 func (s *Service) encryptMap(m map[string]any) (string, error) {

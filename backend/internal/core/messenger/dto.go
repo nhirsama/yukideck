@@ -61,6 +61,7 @@ type ChannelView struct {
 type PushEndpointView struct {
 	ID               int64      `json:"id"`
 	Name             string     `json:"name"`
+	Slug             string     `json:"slug"`
 	PushURL          string     `json:"push_url"`
 	TargetMode       string     `json:"target_mode" tstype:"'default' | 'selected'"`
 	TargetChannelIDs []int64    `json:"target_channel_ids"`
@@ -82,6 +83,7 @@ type UpsertChannelInput struct {
 
 type UpsertPushEndpointInput struct {
 	Name             string  `json:"name"`
+	Slug             string  `json:"slug"`
 	TargetMode       string  `json:"target_mode" tstype:"'default' | 'selected'"`
 	TargetChannelIDs []int64 `json:"target_channel_ids"`
 	Enabled          bool    `json:"enabled"`

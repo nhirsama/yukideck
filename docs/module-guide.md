@@ -42,8 +42,7 @@ YukiDeck 采用**垂直切片模块化单体**架构。新增一个业务模块�
      output_path: "../frontend/src/modules/<id>/api.gen.ts"
    ```
    > 提示：若字段为受限字符串联合类型，可在 Go struct tag 上使用 `tstype:"'a' | 'b'"`；若匿名嵌入 struct 需扁平展开，添加 `` `tstype:",extends"` ``；可选请求字段添加 `omitempty`。
-2. 运行 `make types`（或 `make gen` 同时执行 `sqlc` + `tygo`），生成 `frontend/src/modules/<id>/api.gen.ts` 并随代码提交到 git。
-   > 本地未安装 `tygo` 时可执行：`go install github.com/gzuidhof/tygo@latest`。
+2. 运行 `make types`（或 `make gen` 同时执行 `sqlc` + `tygo`），生成 `frontend/src/modules/<id>/api.gen.ts` 并随代码提交到 git（`Makefile` 已通过 `go run` 自动执行锁定版本，无需手动全局安装）。
 
 ---
 

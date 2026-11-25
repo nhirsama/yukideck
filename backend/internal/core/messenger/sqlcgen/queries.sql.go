@@ -62,17 +62,16 @@ func (q *Queries) CreateChannel(ctx context.Context, arg CreateChannelParams) (U
 
 const createPushEndpoint = `-- name: CreatePushEndpoint :one
 INSERT INTO push_endpoints (
-    user_id, name, token_hash, token_enc, target_mode, target_channel_ids, enabled
-) VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, user_id, name, token_hash, token_enc, target_mode, target_channel_ids,
-          enabled, last_called_at, created_at, updated_at
+    user_id, name, slug, target_mode, target_channel_ids, enabled
+) VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, user_id, name, target_mode, target_channel_ids,
+          enabled, last_called_at, created_at, updated_at, slug
 `
 
 type CreatePushEndpointParams struct {
 	UserID           int64
 	Name             string
-	TokenHash        string
-	TokenEnc         string
+	Slug             string
 	TargetMode       string
 	TargetChannelIds []int64
 	Enabled          bool
@@ -82,8 +81,7 @@ func (q *Queries) CreatePushEndpoint(ctx context.Context, arg CreatePushEndpoint
 	row := q.db.QueryRow(ctx, createPushEndpoint,
 		arg.UserID,
 		arg.Name,
-		arg.TokenHash,
-		arg.TokenEnc,
+		arg.Slug,
 		arg.TargetMode,
 		arg.TargetChannelIds,
 		arg.Enabled,
@@ -93,14 +91,13 @@ func (q *Queries) CreatePushEndpoint(ctx context.Context, arg CreatePushEndpoint
 		&i.ID,
 		&i.UserID,
 		&i.Name,
-		&i.TokenHash,
-		&i.TokenEnc,
 		&i.TargetMode,
 		&i.TargetChannelIds,
 		&i.Enabled,
 		&i.LastCalledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Slug,
 	)
 	return i, err
 }
@@ -195,8 +192,8 @@ func (q *Queries) GetChannelByID(ctx context.Context, id int64) (UserChannel, er
 }
 
 const getPushEndpoint = `-- name: GetPushEndpoint :one
-SELECT id, user_id, name, token_hash, token_enc, target_mode, target_channel_ids,
-       enabled, last_called_at, created_at, updated_at
+SELECT id, user_id, name, target_mode, target_channel_ids,
+       enabled, last_called_at, created_at, updated_at, slug
 FROM push_endpoints
 WHERE user_id = $1 AND id = $2
 `
@@ -213,40 +210,43 @@ func (q *Queries) GetPushEndpoint(ctx context.Context, arg GetPushEndpointParams
 		&i.ID,
 		&i.UserID,
 		&i.Name,
-		&i.TokenHash,
-		&i.TokenEnc,
 		&i.TargetMode,
 		&i.TargetChannelIds,
 		&i.Enabled,
 		&i.LastCalledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Slug,
 	)
 	return i, err
 }
 
-const getPushEndpointByTokenHash = `-- name: GetPushEndpointByTokenHash :one
-SELECT id, user_id, name, token_hash, token_enc, target_mode, target_channel_ids,
-       enabled, last_called_at, created_at, updated_at
+const getPushEndpointBySlug = `-- name: GetPushEndpointBySlug :one
+SELECT id, user_id, name, target_mode, target_channel_ids,
+       enabled, last_called_at, created_at, updated_at, slug
 FROM push_endpoints
-WHERE token_hash = $1
+WHERE user_id = $1 AND slug = $2
 `
 
-func (q *Queries) GetPushEndpointByTokenHash(ctx context.Context, tokenHash string) (PushEndpoint, error) {
-	row := q.db.QueryRow(ctx, getPushEndpointByTokenHash, tokenHash)
+type GetPushEndpointBySlugParams struct {
+	UserID int64
+	Slug   string
+}
+
+func (q *Queries) GetPushEndpointBySlug(ctx context.Context, arg GetPushEndpointBySlugParams) (PushEndpoint, error) {
+	row := q.db.QueryRow(ctx, getPushEndpointBySlug, arg.UserID, arg.Slug)
 	var i PushEndpoint
 	err := row.Scan(
 		&i.ID,
 		&i.UserID,
 		&i.Name,
-		&i.TokenHash,
-		&i.TokenEnc,
 		&i.TargetMode,
 		&i.TargetChannelIds,
 		&i.Enabled,
 		&i.LastCalledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Slug,
 	)
 	return i, err
 }
@@ -293,8 +293,8 @@ func (q *Queries) ListChannels(ctx context.Context, userID int64) ([]UserChannel
 }
 
 const listPushEndpoints = `-- name: ListPushEndpoints :many
-SELECT id, user_id, name, token_hash, token_enc, target_mode, target_channel_ids,
-       enabled, last_called_at, created_at, updated_at
+SELECT id, user_id, name, target_mode, target_channel_ids,
+       enabled, last_called_at, created_at, updated_at, slug
 FROM push_endpoints
 WHERE user_id = $1
 ORDER BY id ASC
@@ -313,14 +313,13 @@ func (q *Queries) ListPushEndpoints(ctx context.Context, userID int64) ([]PushEn
 			&i.ID,
 			&i.UserID,
 			&i.Name,
-			&i.TokenHash,
-			&i.TokenEnc,
 			&i.TargetMode,
 			&i.TargetChannelIds,
 			&i.Enabled,
 			&i.LastCalledAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Slug,
 		); err != nil {
 			return nil, err
 		}
@@ -330,47 +329,6 @@ func (q *Queries) ListPushEndpoints(ctx context.Context, userID int64) ([]PushEn
 		return nil, err
 	}
 	return items, nil
-}
-
-const rotatePushEndpointToken = `-- name: RotatePushEndpointToken :one
-UPDATE push_endpoints
-SET token_hash = $3,
-    token_enc = $4,
-    updated_at = NOW()
-WHERE user_id = $1 AND id = $2
-RETURNING id, user_id, name, token_hash, token_enc, target_mode, target_channel_ids,
-          enabled, last_called_at, created_at, updated_at
-`
-
-type RotatePushEndpointTokenParams struct {
-	UserID    int64
-	ID        int64
-	TokenHash string
-	TokenEnc  string
-}
-
-func (q *Queries) RotatePushEndpointToken(ctx context.Context, arg RotatePushEndpointTokenParams) (PushEndpoint, error) {
-	row := q.db.QueryRow(ctx, rotatePushEndpointToken,
-		arg.UserID,
-		arg.ID,
-		arg.TokenHash,
-		arg.TokenEnc,
-	)
-	var i PushEndpoint
-	err := row.Scan(
-		&i.ID,
-		&i.UserID,
-		&i.Name,
-		&i.TokenHash,
-		&i.TokenEnc,
-		&i.TargetMode,
-		&i.TargetChannelIds,
-		&i.Enabled,
-		&i.LastCalledAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
 }
 
 const touchPushEndpointCalled = `-- name: TouchPushEndpointCalled :exec
@@ -444,19 +402,21 @@ func (q *Queries) UpdateChannel(ctx context.Context, arg UpdateChannelParams) (U
 const updatePushEndpoint = `-- name: UpdatePushEndpoint :one
 UPDATE push_endpoints
 SET name = $3,
-    target_mode = $4,
-    target_channel_ids = $5,
-    enabled = $6,
+    slug = $4,
+    target_mode = $5,
+    target_channel_ids = $6,
+    enabled = $7,
     updated_at = NOW()
 WHERE user_id = $1 AND id = $2
-RETURNING id, user_id, name, token_hash, token_enc, target_mode, target_channel_ids,
-          enabled, last_called_at, created_at, updated_at
+RETURNING id, user_id, name, target_mode, target_channel_ids,
+          enabled, last_called_at, created_at, updated_at, slug
 `
 
 type UpdatePushEndpointParams struct {
 	UserID           int64
 	ID               int64
 	Name             string
+	Slug             string
 	TargetMode       string
 	TargetChannelIds []int64
 	Enabled          bool
@@ -467,6 +427,7 @@ func (q *Queries) UpdatePushEndpoint(ctx context.Context, arg UpdatePushEndpoint
 		arg.UserID,
 		arg.ID,
 		arg.Name,
+		arg.Slug,
 		arg.TargetMode,
 		arg.TargetChannelIds,
 		arg.Enabled,
@@ -476,14 +437,13 @@ func (q *Queries) UpdatePushEndpoint(ctx context.Context, arg UpdatePushEndpoint
 		&i.ID,
 		&i.UserID,
 		&i.Name,
-		&i.TokenHash,
-		&i.TokenEnc,
 		&i.TargetMode,
 		&i.TargetChannelIds,
 		&i.Enabled,
 		&i.LastCalledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Slug,
 	)
 	return i, err
 }

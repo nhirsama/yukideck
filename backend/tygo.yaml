@@ -16,6 +16,8 @@ packages:
   - path: "yukideck/internal/core/auth"
     include_files:
       - "dto.go"
+    type_mappings:
+      time.Time: "string"
     output_path: "../frontend/src/core/generated/auth.gen.ts"
 
   - path: "yukideck/internal/core/messenger"

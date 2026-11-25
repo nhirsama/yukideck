@@ -8,8 +8,14 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"yukideck/internal/core/auth"
 	"yukideck/internal/core/messenger"
 	"yukideck/internal/core/module"
+)
+
+const (
+	PermissionRead  = "storage:read"
+	PermissionWrite = "storage:write"
 )
 
 //go:embed migrations/*.sql
@@ -45,6 +51,23 @@ func (m *Module) Migrations() fs.FS {
 
 func (m *Module) RegisterRoutes(r chi.Router) {
 	m.handler.RegisterRoutes(r)
+}
+
+func (m *Module) RegisterPermissions(reg *auth.PermissionRegistry) {
+	reg.Register(auth.PermissionDef{
+		Key:         PermissionRead,
+		ModuleID:    "storage",
+		ModuleName:  "图床管理",
+		Label:       "浏览图床目录",
+		Description: "允许查看对象存储文件列表与子目录（不含存储桶凭证配置）",
+	}, nil)
+	reg.Register(auth.PermissionDef{
+		Key:         PermissionWrite,
+		ModuleID:    "storage",
+		ModuleName:  "图床管理",
+		Label:       "上传与管理文件",
+		Description: "允许生成直传签名、中转上传、建目录、重命名、移动与删除文件",
+	}, nil)
 }
 
 // RegisterCommands hooks minimal image upload support into the platform CommandBus (e.g. sending a photo to Telegram Bot).

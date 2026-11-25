@@ -26,16 +26,19 @@ func NewHandler(svc *Service, maxBodyBytes int64, logger *slog.Logger) *Handler 
 }
 
 func (h *Handler) RegisterRoutes(r chi.Router) {
-	r.Get("/items", httpx.Handle(h.logger, h.listItems))
-	r.Post("/items", httpx.Handle(h.logger, h.createItem))
-	r.Put("/items/{id}", httpx.Handle(h.logger, h.updateItem))
-	r.Delete("/items/{id}", httpx.Handle(h.logger, h.deleteItem))
-	r.Post("/items/{id}/complete", httpx.Handle(h.logger, h.completeItem))
-	r.Post("/items/{id}/reopen", httpx.Handle(h.logger, h.reopenItem))
-	r.Post("/items/{id}/test", httpx.Handle(h.logger, h.testItem))
+	readMW := auth.RequirePermission(PermissionRead, nil)
+	writeMW := auth.RequirePermission(PermissionWrite, nil)
 
-	r.Get("/calendar", httpx.Handle(h.logger, h.listCalendar))
-	r.Get("/logs", httpx.Handle(h.logger, h.listLogs))
+	r.With(readMW).Get("/items", httpx.Handle(h.logger, h.listItems))
+	r.With(writeMW).Post("/items", httpx.Handle(h.logger, h.createItem))
+	r.With(writeMW).Put("/items/{id}", httpx.Handle(h.logger, h.updateItem))
+	r.With(writeMW).Delete("/items/{id}", httpx.Handle(h.logger, h.deleteItem))
+	r.With(writeMW).Post("/items/{id}/complete", httpx.Handle(h.logger, h.completeItem))
+	r.With(writeMW).Post("/items/{id}/reopen", httpx.Handle(h.logger, h.reopenItem))
+	r.With(writeMW).Post("/items/{id}/test", httpx.Handle(h.logger, h.testItem))
+
+	r.With(readMW).Get("/calendar", httpx.Handle(h.logger, h.listCalendar))
+	r.With(readMW).Get("/logs", httpx.Handle(h.logger, h.listLogs))
 }
 
 func (h *Handler) listItems(w http.ResponseWriter, r *http.Request) error {

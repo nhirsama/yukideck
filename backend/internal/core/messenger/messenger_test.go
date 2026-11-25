@@ -14,6 +14,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"yukideck/internal/config"
+	"yukideck/internal/core/auth"
 	"yukideck/internal/core/crypto"
 	"yukideck/internal/core/messenger"
 	"yukideck/internal/core/messenger/drivers"
@@ -121,11 +123,11 @@ func (m *memStore) GetPushEndpoint(_ context.Context, userID, id int64) (*messen
 	return &r, nil
 }
 
-func (m *memStore) GetPushEndpointByTokenHash(_ context.Context, tokenHash string) (*messenger.PushEndpointRecord, error) {
+func (m *memStore) GetPushEndpointBySlug(_ context.Context, userID int64, slug string) (*messenger.PushEndpointRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, r := range m.endpoints {
-		if r.TokenHash == tokenHash {
+		if r.UserID == userID && r.Slug == slug {
 			cp := r
 			return &cp, nil
 		}
@@ -151,25 +153,10 @@ func (m *memStore) UpdatePushEndpoint(_ context.Context, rec messenger.PushEndpo
 	if !ok || old.UserID != rec.UserID {
 		return nil, nil
 	}
-	rec.TokenHash = old.TokenHash
-	rec.TokenEnc = old.TokenEnc
 	rec.CreatedAt = old.CreatedAt
 	rec.UpdatedAt = time.Now()
 	m.endpoints[rec.ID] = rec
 	return &rec, nil
-}
-
-func (m *memStore) RotatePushEndpointToken(_ context.Context, userID, id int64, tokenHash, tokenEnc string) (*messenger.PushEndpointRecord, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	old, ok := m.endpoints[id]
-	if !ok || old.UserID != userID {
-		return nil, nil
-	}
-	old.TokenHash = tokenHash
-	old.TokenEnc = tokenEnc
-	m.endpoints[id] = old
-	return &old, nil
 }
 
 func (m *memStore) TouchPushEndpointCalled(_ context.Context, id int64) error {
@@ -229,7 +216,56 @@ func (d *outboundOnlyDriver) ParseInbound(context.Context, *http.Request, map[st
 	return nil, messenger.ErrCapabilityUnsupported
 }
 
-func TestSymmetricCapabilitiesAndPushURLFanout(t *testing.T) {
+type stubUserStore struct{}
+
+func (stubUserStore) UpsertByOIDCSub(_ context.Context, sub, u, e, a string) (*auth.User, error) {
+	return &auth.User{ID: 1, OIDCSub: sub, Username: u, Email: e, AvatarURL: a}, nil
+}
+func (stubUserStore) FindByID(_ context.Context, id int64) (*auth.User, error) {
+	return &auth.User{ID: id, Username: "yuki"}, nil
+}
+
+type stubAPIKeyStore struct {
+	mu     sync.Mutex
+	nextID int64
+	keys   map[int64]auth.APIKeyRecord
+}
+
+func (s *stubAPIKeyStore) List(_ context.Context, uid int64) ([]auth.APIKeyRecord, error) {
+	return nil, nil
+}
+func (s *stubAPIKeyStore) Get(_ context.Context, uid, id int64) (*auth.APIKeyRecord, error) {
+	return nil, nil
+}
+func (s *stubAPIKeyStore) FindByHash(_ context.Context, hash string) (*auth.APIKeyRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.keys {
+		if r.KeyHash == hash {
+			cp := r
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+func (s *stubAPIKeyStore) Create(_ context.Context, rec auth.APIKeyRecord) (*auth.APIKeyRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextID++
+	rec.ID = s.nextID
+	s.keys[rec.ID] = rec
+	return &rec, nil
+}
+func (s *stubAPIKeyStore) Update(_ context.Context, rec auth.APIKeyRecord) (*auth.APIKeyRecord, error) {
+	return &rec, nil
+}
+func (s *stubAPIKeyStore) Rotate(_ context.Context, uid, id int64, p, h string) (*auth.APIKeyRecord, error) {
+	return nil, nil
+}
+func (s *stubAPIKeyStore) TouchUsed(_ context.Context, id int64) error        { return nil }
+func (s *stubAPIKeyStore) Delete(_ context.Context, uid, id int64) error      { return nil }
+
+func TestSymmetricCapabilitiesAndCustomPushEndpoint(t *testing.T) {
 	box, _ := crypto.NewBox(bytes.Repeat([]byte{0x55}, 32))
 	store := newMemStore()
 
@@ -272,6 +308,8 @@ func TestSymmetricCapabilitiesAndPushURLFanout(t *testing.T) {
 	})
 
 	svc := messenger.NewService(store, reg, bus, box, "https://deck.example.com", 5*time.Second, nil)
+	authSvc := auth.NewTestService(&config.Config{}, box, stubUserStore{}, &stubAPIKeyStore{keys: map[int64]auth.APIKeyRecord{}}, nil)
+	svc.RegisterPermissions(authSvc.Permissions())
 	ctx := context.Background()
 
 	// 1. Outbound-only driver rejects enabling inbound
@@ -326,9 +364,10 @@ func TestSymmetricCapabilitiesAndPushURLFanout(t *testing.T) {
 		t.Fatalf("expected 1 inbound channel (TG), got %+v (err=%v)", inboundList, err)
 	}
 
-	// 4. Normalized PushURL 1-to-N fan-out
+	// 4. Custom Push Endpoint with slug + duplicate slug rejection
 	ep, err := svc.CreatePushEndpoint(ctx, 1, messenger.UpsertPushEndpointInput{
 		Name:             "Server Alerts",
+		Slug:             "alerts",
 		TargetMode:       "selected",
 		TargetChannelIDs: []int64{barkCh.ID, tgCh.ID},
 		Enabled:          true,
@@ -336,19 +375,53 @@ func TestSymmetricCapabilitiesAndPushURLFanout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreatePushEndpoint: %v", err)
 	}
-	token := strings.TrimPrefix(ep.PushURL, "https://deck.example.com/api/v1/push/")
+	if ep.PushURL != "https://deck.example.com/api/v1/messenger/push/1/alerts" {
+		t.Fatalf("unexpected push_url: %s", ep.PushURL)
+	}
+	if _, err := svc.CreatePushEndpoint(ctx, 1, messenger.UpsertPushEndpointInput{
+		Name:       "Dup",
+		Slug:       "alerts",
+		TargetMode: "default",
+		Enabled:    true,
+	}); err == nil {
+		t.Fatalf("expected duplicate slug error")
+	}
+	if _, err := svc.CreatePushEndpoint(ctx, 1, messenger.UpsertPushEndpointInput{
+		Name:       "NAS",
+		Slug:       "nas",
+		TargetMode: "default",
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("CreatePushEndpoint nas: %v", err)
+	}
+
+	// Create API Key scoped only to "alerts"
+	apiKeyResp, err := authSvc.CreateAPIKey(ctx, 1, auth.UpsertAPIKeyInput{
+		Name:    "Alerts Only",
+		Enabled: true,
+		Policies: []auth.PolicyRule{
+			{Permission: messenger.PermissionPush, Resources: []string{"alerts"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
 
 	h := messenger.NewHandler(svc, 1<<20, nil)
 	r := chi.NewRouter()
-	r.Route("/api/v1/push", h.RegisterPublicPushRoutes)
+	r.Route("/api/v1/messenger/push", func(pr chi.Router) {
+		pr.Use(authSvc.RequireAuthWithQueryKey)
+		h.RegisterPushRoutes(pr)
+	})
 	r.Route("/api/v1/messenger/webhook", h.RegisterPublicWebhookRoutes)
 
-	pushReq := httptest.NewRequest(http.MethodPost, "/api/v1/push/"+token, strings.NewReader(`{"title":"CPU","msg":"95%"}`))
+	// 4a. Push via ?key= query param succeeds and fans out 1-to-N
+	pushReq := httptest.NewRequest(http.MethodPost, "/api/v1/messenger/push/1/alerts?key="+apiKeyResp.PlainKey, strings.NewReader(`{"title":"CPU","msg":"95%"}`))
 	pushReq.Header.Set("Content-Type", "application/json")
 	pushRec := httptest.NewRecorder()
 	r.ServeHTTP(pushRec, pushReq)
 	if pushRec.Code != http.StatusOK {
-		t.Fatalf("PushURL failed: %d %s", pushRec.Code, pushRec.Body.String())
+		t.Fatalf("Custom Push Endpoint failed: %d %s", pushRec.Code, pushRec.Body.String())
 	}
 	if len(barkDriver.sent) != 1 || barkDriver.sent[0].Content != "95%" {
 		t.Fatalf("expected Bark to receive fanout message, got %+v", barkDriver.sent)
@@ -358,6 +431,24 @@ func TestSymmetricCapabilitiesAndPushURLFanout(t *testing.T) {
 		t.Fatalf("expected TG to receive fanout message, got %+v", tgSent)
 	}
 	tgMu.Unlock()
+
+	// 4b. Same API key rejected on "nas" endpoint (403)
+	deniedReq := httptest.NewRequest(http.MethodPost, "/api/v1/messenger/push/1/nas", strings.NewReader(`{"content":"hi"}`))
+	deniedReq.Header.Set("Authorization", "Bearer "+apiKeyResp.PlainKey)
+	deniedRec := httptest.NewRecorder()
+	r.ServeHTTP(deniedRec, deniedReq)
+	if deniedRec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for disallowed endpoint 'nas', got %d", deniedRec.Code)
+	}
+
+	// 4c. Path user_id mismatch rejected (403)
+	wrongUserReq := httptest.NewRequest(http.MethodPost, "/api/v1/messenger/push/2/alerts", strings.NewReader(`{"content":"hi"}`))
+	wrongUserReq.Header.Set("Authorization", "Bearer "+apiKeyResp.PlainKey)
+	wrongUserRec := httptest.NewRecorder()
+	r.ServeHTTP(wrongUserRec, wrongUserReq)
+	if wrongUserRec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for mismatched path user_id, got %d", wrongUserRec.Code)
+	}
 
 	// 5. Inbound Telegram Webhook security checks
 	badWebhookReq := httptest.NewRequest(http.MethodPost, "/api/v1/messenger/webhook/telegram/2", strings.NewReader(`{"message":{"chat":{"id":999001},"text":"/echo hi"}}`))

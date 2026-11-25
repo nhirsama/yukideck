@@ -8,6 +8,20 @@ import (
 	"time"
 )
 
+type ApiKey struct {
+	ID         int64
+	UserID     int64
+	Name       string
+	KeyPrefix  string
+	KeyHash    string
+	Policies   []byte
+	Enabled    bool
+	ExpiresAt  *time.Time
+	LastUsedAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
 type User struct {
 	ID        int64
 	OidcSub   string

@@ -35,7 +35,7 @@ export function AppShell() {
             </NavLink>
             <NavLink to="/messenger" className={navClass}>
               <Bell className="h-4 w-4" />
-              消息中枢 & PushURL
+              消息与推送
             </NavLink>
             <NavLink to="/settings" className={navClass}>
               <Settings className="h-4 w-4" />

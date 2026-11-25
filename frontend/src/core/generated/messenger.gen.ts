@@ -61,6 +61,7 @@ export interface ChannelView {
 export interface PushEndpointView {
   id: number /* int64 */;
   name: string;
+  slug: string;
   push_url: string;
   target_mode: 'default' | 'selected';
   target_channel_ids: number /* int64 */[];
@@ -80,6 +81,7 @@ export interface UpsertChannelInput {
 }
 export interface UpsertPushEndpointInput {
   name: string;
+  slug: string;
   target_mode: 'default' | 'selected';
   target_channel_ids: number /* int64 */[];
   enabled: boolean;

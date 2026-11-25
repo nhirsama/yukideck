@@ -7,7 +7,91 @@ package sqlcgen
 
 import (
 	"context"
+	"time"
 )
+
+const createAPIKey = `-- name: CreateAPIKey :one
+INSERT INTO api_keys (user_id, name, key_prefix, key_hash, policies, enabled, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, user_id, name, key_prefix, key_hash, policies, enabled, expires_at, last_used_at, created_at, updated_at
+`
+
+type CreateAPIKeyParams struct {
+	UserID    int64
+	Name      string
+	KeyPrefix string
+	KeyHash   string
+	Policies  []byte
+	Enabled   bool
+	ExpiresAt *time.Time
+}
+
+func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error) {
+	row := q.db.QueryRow(ctx, createAPIKey,
+		arg.UserID,
+		arg.Name,
+		arg.KeyPrefix,
+		arg.KeyHash,
+		arg.Policies,
+		arg.Enabled,
+		arg.ExpiresAt,
+	)
+	var i ApiKey
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Name,
+		&i.KeyPrefix,
+		&i.KeyHash,
+		&i.Policies,
+		&i.Enabled,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const deleteAPIKey = `-- name: DeleteAPIKey :exec
+DELETE FROM api_keys
+WHERE user_id = $1 AND id = $2
+`
+
+type DeleteAPIKeyParams struct {
+	UserID int64
+	ID     int64
+}
+
+func (q *Queries) DeleteAPIKey(ctx context.Context, arg DeleteAPIKeyParams) error {
+	_, err := q.db.Exec(ctx, deleteAPIKey, arg.UserID, arg.ID)
+	return err
+}
+
+const findAPIKeyByHash = `-- name: FindAPIKeyByHash :one
+SELECT id, user_id, name, key_prefix, key_hash, policies, enabled, expires_at, last_used_at, created_at, updated_at
+FROM api_keys
+WHERE key_hash = $1
+`
+
+func (q *Queries) FindAPIKeyByHash(ctx context.Context, keyHash string) (ApiKey, error) {
+	row := q.db.QueryRow(ctx, findAPIKeyByHash, keyHash)
+	var i ApiKey
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Name,
+		&i.KeyPrefix,
+		&i.KeyHash,
+		&i.Policies,
+		&i.Enabled,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
 
 const findUserByID = `-- name: FindUserByID :one
 SELECT id, oidc_sub, username, email, avatar_url
@@ -32,6 +116,172 @@ func (q *Queries) FindUserByID(ctx context.Context, id int64) (FindUserByIDRow, 
 		&i.Username,
 		&i.Email,
 		&i.AvatarUrl,
+	)
+	return i, err
+}
+
+const getAPIKey = `-- name: GetAPIKey :one
+SELECT id, user_id, name, key_prefix, key_hash, policies, enabled, expires_at, last_used_at, created_at, updated_at
+FROM api_keys
+WHERE user_id = $1 AND id = $2
+`
+
+type GetAPIKeyParams struct {
+	UserID int64
+	ID     int64
+}
+
+func (q *Queries) GetAPIKey(ctx context.Context, arg GetAPIKeyParams) (ApiKey, error) {
+	row := q.db.QueryRow(ctx, getAPIKey, arg.UserID, arg.ID)
+	var i ApiKey
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Name,
+		&i.KeyPrefix,
+		&i.KeyHash,
+		&i.Policies,
+		&i.Enabled,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const listAPIKeys = `-- name: ListAPIKeys :many
+SELECT id, user_id, name, key_prefix, key_hash, policies, enabled, expires_at, last_used_at, created_at, updated_at
+FROM api_keys
+WHERE user_id = $1
+ORDER BY id DESC
+`
+
+func (q *Queries) ListAPIKeys(ctx context.Context, userID int64) ([]ApiKey, error) {
+	rows, err := q.db.Query(ctx, listAPIKeys, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ApiKey{}
+	for rows.Next() {
+		var i ApiKey
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Name,
+			&i.KeyPrefix,
+			&i.KeyHash,
+			&i.Policies,
+			&i.Enabled,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const rotateAPIKey = `-- name: RotateAPIKey :one
+UPDATE api_keys
+SET key_prefix = $3,
+    key_hash = $4,
+    updated_at = NOW()
+WHERE user_id = $1 AND id = $2
+RETURNING id, user_id, name, key_prefix, key_hash, policies, enabled, expires_at, last_used_at, created_at, updated_at
+`
+
+type RotateAPIKeyParams struct {
+	UserID    int64
+	ID        int64
+	KeyPrefix string
+	KeyHash   string
+}
+
+func (q *Queries) RotateAPIKey(ctx context.Context, arg RotateAPIKeyParams) (ApiKey, error) {
+	row := q.db.QueryRow(ctx, rotateAPIKey,
+		arg.UserID,
+		arg.ID,
+		arg.KeyPrefix,
+		arg.KeyHash,
+	)
+	var i ApiKey
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Name,
+		&i.KeyPrefix,
+		&i.KeyHash,
+		&i.Policies,
+		&i.Enabled,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const touchAPIKeyUsed = `-- name: TouchAPIKeyUsed :exec
+UPDATE api_keys
+SET last_used_at = NOW()
+WHERE id = $1
+`
+
+func (q *Queries) TouchAPIKeyUsed(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, touchAPIKeyUsed, id)
+	return err
+}
+
+const updateAPIKey = `-- name: UpdateAPIKey :one
+UPDATE api_keys
+SET name = $3,
+    policies = $4,
+    enabled = $5,
+    expires_at = $6,
+    updated_at = NOW()
+WHERE user_id = $1 AND id = $2
+RETURNING id, user_id, name, key_prefix, key_hash, policies, enabled, expires_at, last_used_at, created_at, updated_at
+`
+
+type UpdateAPIKeyParams struct {
+	UserID    int64
+	ID        int64
+	Name      string
+	Policies  []byte
+	Enabled   bool
+	ExpiresAt *time.Time
+}
+
+func (q *Queries) UpdateAPIKey(ctx context.Context, arg UpdateAPIKeyParams) (ApiKey, error) {
+	row := q.db.QueryRow(ctx, updateAPIKey,
+		arg.UserID,
+		arg.ID,
+		arg.Name,
+		arg.Policies,
+		arg.Enabled,
+		arg.ExpiresAt,
+	)
+	var i ApiKey
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Name,
+		&i.KeyPrefix,
+		&i.KeyHash,
+		&i.Policies,
+		&i.Enabled,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }

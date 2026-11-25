@@ -9,3 +9,63 @@ export interface User {
   email: string;
   avatar_url: string;
 }
+/**
+ * ResourceOption represents a selectable module-owned resource exposed for fine-grained API Key policies.
+ */
+export interface ResourceOption {
+  id: string;
+  name: string;
+}
+/**
+ * PermissionDef describes a single fine-grained capability exposed by a platform service or module.
+ */
+export interface PermissionDef {
+  key: string;
+  module_id: string;
+  module_name: string;
+  label: string;
+  description: string;
+  resource_type?: string;
+  allow_query_key: boolean;
+}
+/**
+ * PermissionSchemaItem combines a PermissionDef with user-scoped resource options for the UI policy editor.
+ */
+export interface PermissionSchemaItem {
+  key: string;
+  module_id: string;
+  module_name: string;
+  label: string;
+  description: string;
+  resource_type?: string;
+  allow_query_key: boolean;
+  resources: ResourceOption[];
+}
+/**
+ * PolicyRule is a Cloudflare-style permission statement attached to an API Key.
+ */
+export interface PolicyRule {
+  permission: string;
+  resources: string[];
+}
+export interface APIKeyView {
+  id: number /* int64 */;
+  name: string;
+  key_prefix: string;
+  policies: PolicyRule[];
+  enabled: boolean;
+  expires_at?: string;
+  last_used_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+export interface CreateAPIKeyResponse {
+  api_key: APIKeyView;
+  plain_key: string;
+}
+export interface UpsertAPIKeyInput {
+  name: string;
+  policies: PolicyRule[];
+  enabled: boolean;
+  expires_at?: string;
+}

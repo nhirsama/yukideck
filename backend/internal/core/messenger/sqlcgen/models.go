@@ -8,18 +8,31 @@ import (
 	"time"
 )
 
+type ApiKey struct {
+	ID         int64
+	UserID     int64
+	Name       string
+	KeyPrefix  string
+	KeyHash    string
+	Policies   []byte
+	Enabled    bool
+	ExpiresAt  *time.Time
+	LastUsedAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
 type PushEndpoint struct {
 	ID               int64
 	UserID           int64
 	Name             string
-	TokenHash        string
-	TokenEnc         string
 	TargetMode       string
 	TargetChannelIds []int64
 	Enabled          bool
 	LastCalledAt     *time.Time
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+	Slug             string
 }
 
 type User struct {

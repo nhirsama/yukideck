@@ -51,7 +51,16 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export type { Meta as BackendModuleMeta } from './generated/module.gen';
 export type { AppMeta, HealthResponse } from './generated/app.gen';
-export type { User } from './generated/auth.gen';
+export type {
+  User,
+  ResourceOption,
+  PermissionDef,
+  PermissionSchemaItem,
+  PolicyRule,
+  APIKeyView as APIKey,
+  CreateAPIKeyResponse,
+  UpsertAPIKeyInput as UpsertAPIKeyPayload,
+} from './generated/auth.gen';
 export type {
   ConfigField as DriverConfigField,
   DriverInfo,
@@ -62,7 +71,13 @@ export type {
 } from './generated/messenger.gen';
 
 import type { AppMeta } from './generated/app.gen';
-import type { User } from './generated/auth.gen';
+import type {
+  User,
+  PermissionSchemaItem,
+  APIKeyView as APIKey,
+  CreateAPIKeyResponse,
+  UpsertAPIKeyInput as UpsertAPIKeyPayload,
+} from './generated/auth.gen';
 import type {
   DriverInfo,
   ChannelView as Channel,
@@ -81,6 +96,27 @@ export const coreApi = {
   logout: () => request<{ ok: boolean }>('/api/v1/auth/logout', { method: 'POST' }),
   loginUrl: () => apiUrl('/api/v1/auth/login'),
 
+  // Global Scoped API Keys
+  getAPIKeySchema: () => request<{ permissions: PermissionSchemaItem[] }>('/api/v1/auth/api-keys/schema'),
+  listAPIKeys: () => request<{ api_keys: APIKey[] }>('/api/v1/auth/api-keys'),
+  createAPIKey: (payload: UpsertAPIKeyPayload) =>
+    request<CreateAPIKeyResponse>('/api/v1/auth/api-keys', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateAPIKey: (id: number, payload: UpsertAPIKeyPayload) =>
+    request<{ api_key: APIKey }>(`/api/v1/auth/api-keys/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  rotateAPIKey: (id: number) =>
+    request<CreateAPIKeyResponse>(`/api/v1/auth/api-keys/${id}/rotate`, {
+      method: 'POST',
+    }),
+  deleteAPIKey: (id: number) =>
+    request<{ ok: boolean }>(`/api/v1/auth/api-keys/${id}`, { method: 'DELETE' }),
+
+  // Core Messenger Infrastructure
   listDrivers: () => request<{ drivers: DriverInfo[] }>('/api/v1/messenger/drivers'),
   listChannels: (capability?: Capability) => {
     const q = capability ? `?capability=${capability}` : '';
@@ -111,10 +147,6 @@ export const coreApi = {
     request<{ endpoint: PushEndpoint }>(`/api/v1/messenger/push-endpoints/${id}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
-    }),
-  rotatePushEndpoint: (id: number) =>
-    request<{ endpoint: PushEndpoint }>(`/api/v1/messenger/push-endpoints/${id}/rotate`, {
-      method: 'POST',
     }),
   deletePushEndpoint: (id: number) =>
     request<{ ok: boolean }>(`/api/v1/messenger/push-endpoints/${id}`, { method: 'DELETE' }),

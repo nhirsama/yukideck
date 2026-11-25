@@ -13,9 +13,9 @@ import (
 )
 
 type Handler struct {
-	svc             *Service
-	maxBodyBytes    int64
-	logger          *slog.Logger
+	svc          *Service
+	maxBodyBytes int64
+	logger       *slog.Logger
 }
 
 func NewHandler(svc *Service, maxBodyBytes int64, logger *slog.Logger) *Handler {
@@ -25,7 +25,7 @@ func NewHandler(svc *Service, maxBodyBytes int64, logger *slog.Logger) *Handler 
 	return &Handler{svc: svc, maxBodyBytes: maxBodyBytes, logger: logger}
 }
 
-// RegisterProtectedRoutes mounts authenticated channel & PushURL management APIs at /api/v1/messenger.
+// RegisterProtectedRoutes mounts session-only channel & push endpoint management APIs at /api/v1/messenger.
 func (h *Handler) RegisterProtectedRoutes(r chi.Router) {
 	r.Get("/drivers", httpx.Handle(h.logger, h.listDrivers))
 
@@ -38,14 +38,15 @@ func (h *Handler) RegisterProtectedRoutes(r chi.Router) {
 	r.Get("/push-endpoints", httpx.Handle(h.logger, h.listPushEndpoints))
 	r.Post("/push-endpoints", httpx.Handle(h.logger, h.createPushEndpoint))
 	r.Put("/push-endpoints/{id}", httpx.Handle(h.logger, h.updatePushEndpoint))
-	r.Post("/push-endpoints/{id}/rotate", httpx.Handle(h.logger, h.rotatePushEndpoint))
 	r.Delete("/push-endpoints/{id}", httpx.Handle(h.logger, h.deletePushEndpoint))
 }
 
-// RegisterPublicPushRoutes mounts the normalized PushURL entrypoint at /api/v1/push.
-func (h *Handler) RegisterPublicPushRoutes(r chi.Router) {
-	r.Get("/{token}", httpx.Handle(h.logger, h.handleNormalizedPush))
-	r.Post("/{token}", httpx.Handle(h.logger, h.handleNormalizedPush))
+// RegisterPushRoutes mounts the custom push endpoints at /api/v1/messenger/push/{user_id}/{endpoint}.
+// Protected by API Key (Bearer or ?key= query param) or OIDC session, plus messenger:push resource policy check.
+func (h *Handler) RegisterPushRoutes(r chi.Router) {
+	permMW := auth.RequirePermission(PermissionPush, auth.ParamResource("endpoint"))
+	r.With(permMW).Get("/{user_id}/{endpoint}", httpx.Handle(h.logger, h.handleNormalizedPush))
+	r.With(permMW).Post("/{user_id}/{endpoint}", httpx.Handle(h.logger, h.handleNormalizedPush))
 }
 
 // RegisterPublicWebhookRoutes mounts inbound channel webhooks at /api/v1/messenger/webhook.
@@ -196,23 +197,6 @@ func (h *Handler) updatePushEndpoint(w http.ResponseWriter, r *http.Request) err
 	return nil
 }
 
-func (h *Handler) rotatePushEndpoint(w http.ResponseWriter, r *http.Request) error {
-	userID, ok := auth.UserID(r.Context())
-	if !ok {
-		return httpx.Unauthorized("未登录")
-	}
-	id, err := parseIDParam(r, "id")
-	if err != nil {
-		return err
-	}
-	view, err := h.svc.RotatePushEndpointToken(r.Context(), userID, id)
-	if err != nil {
-		return err
-	}
-	httpx.JSON(w, http.StatusOK, map[string]any{"endpoint": view})
-	return nil
-}
-
 func (h *Handler) deletePushEndpoint(w http.ResponseWriter, r *http.Request) error {
 	userID, ok := auth.UserID(r.Context())
 	if !ok {
@@ -231,7 +215,19 @@ func (h *Handler) deletePushEndpoint(w http.ResponseWriter, r *http.Request) err
 
 // handleNormalizedPush accepts GET query params, POST JSON, or POST Form with common field aliases.
 func (h *Handler) handleNormalizedPush(w http.ResponseWriter, r *http.Request) error {
-	token := chi.URLParam(r, "token")
+	userID, ok := auth.UserID(r.Context())
+	if !ok {
+		return httpx.Unauthorized("未登录或 API Key 无效")
+	}
+	pathUserID, err := parseIDParam(r, "user_id")
+	if err != nil {
+		return err
+	}
+	if pathUserID != userID {
+		return httpx.Forbidden("路径用户标识与当前凭证不匹配")
+	}
+	endpoint := chi.URLParam(r, "endpoint")
+
 	msg := Message{
 		Title:   strings.TrimSpace(r.URL.Query().Get("title")),
 		Content: firstNonEmpty(r.URL.Query().Get("content"), r.URL.Query().Get("text"), r.URL.Query().Get("body"), r.URL.Query().Get("msg")),
@@ -273,7 +269,7 @@ func (h *Handler) handleNormalizedPush(w http.ResponseWriter, r *http.Request) e
 		}
 	}
 
-	results, err := h.svc.DispatchPushEndpoint(r.Context(), token, msg)
+	results, err := h.svc.DispatchPushEndpoint(r.Context(), userID, endpoint, msg)
 	if err != nil {
 		return err
 	}

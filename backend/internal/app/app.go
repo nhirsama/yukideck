@@ -36,7 +36,7 @@ type App struct {
 	router    http.Handler
 }
 
-// New wires the complete production App: DB migrations, OIDC, Messenger, Scheduler, Modules, and WebUI.
+// New wires the complete production App: DB migrations, OIDC, API Keys, Messenger, Scheduler, Modules, and WebUI.
 func New(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger) (*App, error) {
 	keyBytes, err := cfg.MasterKeyBytes()
 	if err != nil {
@@ -47,7 +47,7 @@ func New(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, logger *sl
 		return nil, err
 	}
 
-	authSvc, err := auth.NewService(ctx, cfg, box, auth.NewPGUserStore(pool), logger)
+	authSvc, err := auth.NewService(ctx, cfg, box, auth.NewPGUserStore(pool), auth.NewPGAPIKeyStore(pool), logger)
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +99,8 @@ func newWithDeps(
 	candidates []module.Module,
 	uiFS fs.FS,
 ) *App {
+	msgSvc.RegisterPermissions(authSvc.Permissions())
+
 	enabledModules := make([]module.Module, 0, len(candidates))
 	for _, m := range candidates {
 		if cfg.IsModuleDisabled(m.Meta().ID) {
@@ -107,6 +109,7 @@ func newWithDeps(
 			}
 			continue
 		}
+		m.RegisterPermissions(authSvc.Permissions())
 		m.RegisterCommands(msgSvc.CommandBus())
 		enabledModules = append(enabledModules, m)
 	}
@@ -187,14 +190,27 @@ func (a *App) buildRouter(uiFS fs.FS) http.Handler {
 
 		api.Route("/auth", a.authSvc.RegisterRoutes)
 
-		// Public token-secured Normalized PushURL and inbound channel webhooks
-		api.Route("/push", msgHandler.RegisterPublicPushRoutes)
-		api.Route("/messenger/webhook", msgHandler.RegisterPublicWebhookRoutes)
+		// Core Messenger infrastructure mounted strictly under /api/v1/messenger
+		api.Route("/messenger", func(mr chi.Router) {
+			// Public inbound webhooks verified by driver secret + chat_id
+			mr.Route("/webhook", msgHandler.RegisterPublicWebhookRoutes)
 
-		// Authenticated platform & module routes
+			// Custom push endpoints: the ONLY route allowing ?key= query param in addition to Bearer / Cookie
+			mr.Route("/push", func(pr chi.Router) {
+				pr.Use(a.authSvc.RequireAuthWithQueryKey)
+				msgHandler.RegisterPushRoutes(pr)
+			})
+
+			// Channel & push endpoint management: OIDC session only
+			mr.Group(func(mgmt chi.Router) {
+				mgmt.Use(a.authSvc.RequireSession)
+				msgHandler.RegisterProtectedRoutes(mgmt)
+			})
+		})
+
+		// Authenticated business module routes: OIDC Cookie or Authorization: Bearer API Key only
 		api.Group(func(priv chi.Router) {
 			priv.Use(a.authSvc.RequireAuth)
-			priv.Route("/messenger", msgHandler.RegisterProtectedRoutes)
 			for _, m := range a.modules {
 				mod := m
 				priv.Route("/"+mod.Meta().ID, func(mr chi.Router) {

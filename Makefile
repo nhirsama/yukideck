@@ -2,12 +2,14 @@
 
 VERSION ?= dev
 LDFLAGS := -s -w -X yukideck/internal/app.Version=$(VERSION)
+SQLC_PKG := github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
+TYGO_PKG := github.com/gzuidhof/tygo@v0.2.21
 
 sqlc:
-	cd backend && sqlc generate
+	cd backend && go run $(SQLC_PKG) generate
 
 types:
-	cd backend && tygo generate
+	cd backend && go run $(TYGO_PKG) generate
 
 gen: sqlc types
 

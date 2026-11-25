@@ -31,8 +31,7 @@ type PushEndpointRecord struct {
 	ID               int64
 	UserID           int64
 	Name             string
-	TokenHash        string
-	TokenEnc         string
+	Slug             string
 	TargetMode       string // "default" | "selected"
 	TargetChannelIDs []int64
 	Enabled          bool
@@ -51,10 +50,9 @@ type Store interface {
 
 	ListPushEndpoints(ctx context.Context, userID int64) ([]PushEndpointRecord, error)
 	GetPushEndpoint(ctx context.Context, userID, id int64) (*PushEndpointRecord, error)
-	GetPushEndpointByTokenHash(ctx context.Context, tokenHash string) (*PushEndpointRecord, error)
+	GetPushEndpointBySlug(ctx context.Context, userID int64, slug string) (*PushEndpointRecord, error)
 	CreatePushEndpoint(ctx context.Context, rec PushEndpointRecord) (*PushEndpointRecord, error)
 	UpdatePushEndpoint(ctx context.Context, rec PushEndpointRecord) (*PushEndpointRecord, error)
-	RotatePushEndpointToken(ctx context.Context, userID, id int64, tokenHash, tokenEnc string) (*PushEndpointRecord, error)
 	TouchPushEndpointCalled(ctx context.Context, id int64) error
 	DeletePushEndpoint(ctx context.Context, userID, id int64) error
 }
@@ -93,8 +91,7 @@ func toPushEndpointRecord(r sqlcgen.PushEndpoint) PushEndpointRecord {
 		ID:               r.ID,
 		UserID:           r.UserID,
 		Name:             r.Name,
-		TokenHash:        r.TokenHash,
-		TokenEnc:         r.TokenEnc,
+		Slug:             r.Slug,
 		TargetMode:       r.TargetMode,
 		TargetChannelIDs: targetIDs,
 		Enabled:          r.Enabled,
@@ -218,8 +215,11 @@ func (s *PGStore) GetPushEndpoint(ctx context.Context, userID, id int64) (*PushE
 	return &rec, nil
 }
 
-func (s *PGStore) GetPushEndpointByTokenHash(ctx context.Context, tokenHash string) (*PushEndpointRecord, error) {
-	row, err := s.q.GetPushEndpointByTokenHash(ctx, tokenHash)
+func (s *PGStore) GetPushEndpointBySlug(ctx context.Context, userID int64, slug string) (*PushEndpointRecord, error) {
+	row, err := s.q.GetPushEndpointBySlug(ctx, sqlcgen.GetPushEndpointBySlugParams{
+		UserID: userID,
+		Slug:   slug,
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -238,8 +238,7 @@ func (s *PGStore) CreatePushEndpoint(ctx context.Context, rec PushEndpointRecord
 	row, err := s.q.CreatePushEndpoint(ctx, sqlcgen.CreatePushEndpointParams{
 		UserID:           rec.UserID,
 		Name:             rec.Name,
-		TokenHash:        rec.TokenHash,
-		TokenEnc:         rec.TokenEnc,
+		Slug:             rec.Slug,
 		TargetMode:       rec.TargetMode,
 		TargetChannelIds: targetIDs,
 		Enabled:          rec.Enabled,
@@ -260,26 +259,10 @@ func (s *PGStore) UpdatePushEndpoint(ctx context.Context, rec PushEndpointRecord
 		UserID:           rec.UserID,
 		ID:               rec.ID,
 		Name:             rec.Name,
+		Slug:             rec.Slug,
 		TargetMode:       rec.TargetMode,
 		TargetChannelIds: targetIDs,
 		Enabled:          rec.Enabled,
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	out := toPushEndpointRecord(row)
-	return &out, nil
-}
-
-func (s *PGStore) RotatePushEndpointToken(ctx context.Context, userID, id int64, tokenHash, tokenEnc string) (*PushEndpointRecord, error) {
-	row, err := s.q.RotatePushEndpointToken(ctx, sqlcgen.RotatePushEndpointTokenParams{
-		UserID:    userID,
-		ID:        id,
-		TokenHash: tokenHash,
-		TokenEnc:  tokenEnc,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

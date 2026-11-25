@@ -44,50 +44,42 @@ DELETE FROM user_channels
 WHERE user_id = $1 AND id = $2;
 
 -- name: ListPushEndpoints :many
-SELECT id, user_id, name, token_hash, token_enc, target_mode, target_channel_ids,
-       enabled, last_called_at, created_at, updated_at
+SELECT id, user_id, name, target_mode, target_channel_ids,
+       enabled, last_called_at, created_at, updated_at, slug
 FROM push_endpoints
 WHERE user_id = $1
 ORDER BY id ASC;
 
 -- name: GetPushEndpoint :one
-SELECT id, user_id, name, token_hash, token_enc, target_mode, target_channel_ids,
-       enabled, last_called_at, created_at, updated_at
+SELECT id, user_id, name, target_mode, target_channel_ids,
+       enabled, last_called_at, created_at, updated_at, slug
 FROM push_endpoints
 WHERE user_id = $1 AND id = $2;
 
--- name: GetPushEndpointByTokenHash :one
-SELECT id, user_id, name, token_hash, token_enc, target_mode, target_channel_ids,
-       enabled, last_called_at, created_at, updated_at
+-- name: GetPushEndpointBySlug :one
+SELECT id, user_id, name, target_mode, target_channel_ids,
+       enabled, last_called_at, created_at, updated_at, slug
 FROM push_endpoints
-WHERE token_hash = $1;
+WHERE user_id = $1 AND slug = $2;
 
 -- name: CreatePushEndpoint :one
 INSERT INTO push_endpoints (
-    user_id, name, token_hash, token_enc, target_mode, target_channel_ids, enabled
-) VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, user_id, name, token_hash, token_enc, target_mode, target_channel_ids,
-          enabled, last_called_at, created_at, updated_at;
+    user_id, name, slug, target_mode, target_channel_ids, enabled
+) VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, user_id, name, target_mode, target_channel_ids,
+          enabled, last_called_at, created_at, updated_at, slug;
 
 -- name: UpdatePushEndpoint :one
 UPDATE push_endpoints
 SET name = $3,
-    target_mode = $4,
-    target_channel_ids = $5,
-    enabled = $6,
+    slug = $4,
+    target_mode = $5,
+    target_channel_ids = $6,
+    enabled = $7,
     updated_at = NOW()
 WHERE user_id = $1 AND id = $2
-RETURNING id, user_id, name, token_hash, token_enc, target_mode, target_channel_ids,
-          enabled, last_called_at, created_at, updated_at;
-
--- name: RotatePushEndpointToken :one
-UPDATE push_endpoints
-SET token_hash = $3,
-    token_enc = $4,
-    updated_at = NOW()
-WHERE user_id = $1 AND id = $2
-RETURNING id, user_id, name, token_hash, token_enc, target_mode, target_channel_ids,
-          enabled, last_called_at, created_at, updated_at;
+RETURNING id, user_id, name, target_mode, target_channel_ids,
+          enabled, last_called_at, created_at, updated_at, slug;
 
 -- name: TouchPushEndpointCalled :exec
 UPDATE push_endpoints

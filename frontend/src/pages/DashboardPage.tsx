@@ -54,11 +54,11 @@ export function DashboardPage() {
           className="rounded-xl border border-slate-200 bg-white p-5 hover:border-slate-300 transition-colors"
         >
           <div className="flex items-center justify-between text-slate-500 text-xs font-medium">
-            <span>归一化 PushURL</span>
+            <span>自定义推送终结点</span>
             <Link2 className="h-4 w-4" />
           </div>
           <div className="mt-3 text-2xl font-semibold text-slate-900">{endpointCount}</div>
-          <div className="mt-1 text-xs text-slate-500">已启用的外部统一推送入口</div>
+          <div className="mt-1 text-xs text-slate-500">已启用的路径分流推送终结点</div>
         </Link>
 
         <div className="rounded-xl border border-slate-200 bg-white p-5">

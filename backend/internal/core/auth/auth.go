@@ -98,6 +98,8 @@ type Service struct {
 	cfg      *config.Config
 	box      *crypto.Box
 	store    UserStore
+	apiKeys  APIKeyStore
+	permReg  *PermissionRegistry
 	logger   *slog.Logger
 	oauthCfg *oauth2.Config
 	verifier *oidc.IDTokenVerifier
@@ -107,7 +109,14 @@ func Migrations() fs.FS {
 	return migrationsFS
 }
 
-func NewService(ctx context.Context, cfg *config.Config, box *crypto.Box, store UserStore, logger *slog.Logger) (*Service, error) {
+func NewService(
+	ctx context.Context,
+	cfg *config.Config,
+	box *crypto.Box,
+	store UserStore,
+	apiKeys APIKeyStore,
+	logger *slog.Logger,
+) (*Service, error) {
 	provider, err := oidc.NewProvider(ctx, cfg.OIDCIssuer)
 	if err != nil {
 		return nil, fmt.Errorf("discover oidc provider %q: %w", cfg.OIDCIssuer, err)
@@ -130,6 +139,8 @@ func NewService(ctx context.Context, cfg *config.Config, box *crypto.Box, store 
 		cfg:      cfg,
 		box:      box,
 		store:    store,
+		apiKeys:  apiKeys,
+		permReg:  NewPermissionRegistry(),
 		logger:   logger,
 		oauthCfg: oauthCfg,
 		verifier: verifier,
@@ -137,20 +148,38 @@ func NewService(ctx context.Context, cfg *config.Config, box *crypto.Box, store 
 }
 
 // NewTestService creates a Service without performing OIDC network discovery (for unit tests).
-func NewTestService(cfg *config.Config, box *crypto.Box, store UserStore, logger *slog.Logger) *Service {
+func NewTestService(cfg *config.Config, box *crypto.Box, store UserStore, apiKeys APIKeyStore, logger *slog.Logger) *Service {
 	return &Service{
-		cfg:    cfg,
-		box:    box,
-		store:  store,
-		logger: logger,
+		cfg:     cfg,
+		box:     box,
+		store:   store,
+		apiKeys: apiKeys,
+		permReg: NewPermissionRegistry(),
+		logger:  logger,
 	}
+}
+
+func (s *Service) Permissions() *PermissionRegistry {
+	return s.permReg
 }
 
 func (s *Service) RegisterRoutes(r chi.Router) {
 	r.Get("/login", httpx.Handle(s.logger, s.handleLogin))
 	r.Get("/callback", httpx.Handle(s.logger, s.handleCallback))
 	r.Post("/logout", httpx.Handle(s.logger, s.handleLogout))
-	r.With(s.RequireAuth).Get("/me", httpx.Handle(s.logger, s.handleMe))
+
+	// Session-only identity & API Key management endpoints (never accessible via API Key).
+	r.Group(func(sess chi.Router) {
+		sess.Use(s.RequireSession)
+		sess.Get("/me", httpx.Handle(s.logger, s.handleMe))
+
+		sess.Get("/api-keys/schema", httpx.Handle(s.logger, s.handleAPIKeySchema))
+		sess.Get("/api-keys", httpx.Handle(s.logger, s.handleListAPIKeys))
+		sess.Post("/api-keys", httpx.Handle(s.logger, s.handleCreateAPIKey))
+		sess.Put("/api-keys/{id}", httpx.Handle(s.logger, s.handleUpdateAPIKey))
+		sess.Post("/api-keys/{id}/rotate", httpx.Handle(s.logger, s.handleRotateAPIKey))
+		sess.Delete("/api-keys/{id}", httpx.Handle(s.logger, s.handleDeleteAPIKey))
+	})
 }
 
 func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) error {
@@ -285,30 +314,101 @@ func (s *Service) ParseSessionToken(token string) (int64, error) {
 	return sp.UserID, nil
 }
 
-// RequireAuth validates the signed session cookie and binds User to request context.
-func (s *Service) RequireAuth(next http.Handler) http.Handler {
+func extractBearerToken(r *http.Request) (string, bool) {
+	h := strings.TrimSpace(r.Header.Get("Authorization"))
+	if h == "" {
+		return "", false
+	}
+	scheme, token, ok := strings.Cut(h, " ")
+	if !ok || !strings.EqualFold(strings.TrimSpace(scheme), "bearer") {
+		return "", false
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", false
+	}
+	return token, true
+}
+
+func (s *Service) authenticateSessionCookie(r *http.Request) (*Principal, error) {
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil || cookie.Value == "" {
+		return nil, httpx.Unauthorized("请先通过 SSO 登录")
+	}
+	userID, err := s.ParseSessionToken(cookie.Value)
+	if err != nil {
+		return nil, httpx.Unauthorized("登录状态无效或已过期")
+	}
+	user, err := s.store.FindByID(r.Context(), userID)
+	if err != nil {
+		return nil, httpx.Internal("查询用户失败", err)
+	}
+	if user == nil {
+		return nil, httpx.Unauthorized("用户不存在")
+	}
+	return &Principal{
+		User:       user,
+		Kind:       PrincipalSession,
+		Authorized: true,
+	}, nil
+}
+
+// RequireSession validates only the signed OIDC session cookie (rejects API Keys with 403).
+func (s *Service) RequireSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie(sessionCookieName)
-		if err != nil || cookie.Value == "" {
-			httpx.WriteError(w, r, s.logger, httpx.Unauthorized("请先通过 SSO 登录"))
+		if _, hasBearer := extractBearerToken(r); hasBearer {
+			httpx.WriteError(w, r, s.logger, httpx.Forbidden("此接口仅支持浏览器会话访问，不允许使用 API Key"))
 			return
 		}
-		userID, err := s.ParseSessionToken(cookie.Value)
+		principal, err := s.authenticateSessionCookie(r)
 		if err != nil {
-			httpx.WriteError(w, r, s.logger, httpx.Unauthorized("登录状态无效或已过期"))
+			httpx.WriteError(w, r, s.logger, err)
 			return
 		}
-		user, err := s.store.FindByID(r.Context(), userID)
+		next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), principal)))
+	})
+}
+
+// RequireAuth validates either an Authorization: Bearer API Key or the signed OIDC session cookie.
+// Standard RESTful module routes NEVER accept query-parameter keys.
+func (s *Service) RequireAuth(next http.Handler) http.Handler {
+	return s.requireAuth(false, next)
+}
+
+// RequireAuthWithQueryKey validates Authorization: Bearer, ?key=..., or the signed OIDC session cookie.
+// Reserved exclusively for custom endpoints whose PermissionDef sets AllowQueryKey=true (e.g. messenger push).
+func (s *Service) RequireAuthWithQueryKey(next http.Handler) http.Handler {
+	return s.requireAuth(true, next)
+}
+
+func (s *Service) requireAuth(allowQueryKey bool, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if bearer, ok := extractBearerToken(r); ok {
+			principal, err := s.authenticateAPIKey(r.Context(), bearer)
+			if err != nil {
+				httpx.WriteError(w, r, s.logger, err)
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), principal)))
+			return
+		}
+		if allowQueryKey {
+			if qKey := strings.TrimSpace(r.URL.Query().Get("key")); qKey != "" {
+				principal, err := s.authenticateAPIKey(r.Context(), qKey)
+				if err != nil {
+					httpx.WriteError(w, r, s.logger, err)
+					return
+				}
+				next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), principal)))
+				return
+			}
+		}
+		principal, err := s.authenticateSessionCookie(r)
 		if err != nil {
-			httpx.WriteError(w, r, s.logger, httpx.Internal("查询用户失败", err))
+			httpx.WriteError(w, r, s.logger, err)
 			return
 		}
-		if user == nil {
-			httpx.WriteError(w, r, s.logger, httpx.Unauthorized("用户不存在"))
-			return
-		}
-		ctx := WithUser(r.Context(), user)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), principal)))
 	})
 }
 
@@ -348,23 +448,4 @@ func (s *Service) buildCookie(name, value string, maxAge int) *http.Cookie {
 		Secure:   s.cfg.CookieSecure,
 		SameSite: s.cfg.SameSiteMode(),
 	}
-}
-
-type userContextKey struct{}
-
-func WithUser(ctx context.Context, u *User) context.Context {
-	return context.WithValue(ctx, userContextKey{}, u)
-}
-
-func UserFromContext(ctx context.Context) (*User, bool) {
-	u, ok := ctx.Value(userContextKey{}).(*User)
-	return u, ok && u != nil
-}
-
-func UserID(ctx context.Context) (int64, bool) {
-	u, ok := UserFromContext(ctx)
-	if !ok {
-		return 0, false
-	}
-	return u.ID, true
 }

@@ -28,20 +28,27 @@ func NewHandler(svc *Service, jsonMaxBodyBytes int64, logger *slog.Logger) *Hand
 }
 
 func (h *Handler) RegisterRoutes(r chi.Router) {
-	r.Get("/config", httpx.Handle(h.logger, h.getConfig))
-	r.Put("/config", httpx.Handle(h.logger, h.saveConfig))
-	r.Post("/config/test", httpx.Handle(h.logger, h.testConfig))
+	readMW := auth.RequirePermission(PermissionRead, nil)
+	writeMW := auth.RequirePermission(PermissionWrite, nil)
 
-	r.Get("/list", httpx.Handle(h.logger, h.listDirectory))
-	r.Get("/folders", httpx.Handle(h.logger, h.listSubfolders))
-	r.Post("/folder", httpx.Handle(h.logger, h.createFolder))
+	// S3/R2 bucket credential management stays OIDC session only.
+	r.Group(func(sess chi.Router) {
+		sess.Use(auth.RequireSession)
+		sess.Get("/config", httpx.Handle(h.logger, h.getConfig))
+		sess.Put("/config", httpx.Handle(h.logger, h.saveConfig))
+		sess.Post("/config/test", httpx.Handle(h.logger, h.testConfig))
+	})
 
-	r.Post("/presign", httpx.Handle(h.logger, h.presignDirect))
-	r.Post("/upload", httpx.Handle(h.logger, h.proxyUpload))
+	r.With(readMW).Get("/list", httpx.Handle(h.logger, h.listDirectory))
+	r.With(readMW).Get("/folders", httpx.Handle(h.logger, h.listSubfolders))
+	r.With(writeMW).Post("/folder", httpx.Handle(h.logger, h.createFolder))
 
-	r.Post("/rename", httpx.Handle(h.logger, h.renameEntry))
-	r.Post("/move", httpx.Handle(h.logger, h.moveEntries))
-	r.Post("/delete", httpx.Handle(h.logger, h.deleteEntries))
+	r.With(writeMW).Post("/presign", httpx.Handle(h.logger, h.presignDirect))
+	r.With(writeMW).Post("/upload", httpx.Handle(h.logger, h.proxyUpload))
+
+	r.With(writeMW).Post("/rename", httpx.Handle(h.logger, h.renameEntry))
+	r.With(writeMW).Post("/move", httpx.Handle(h.logger, h.moveEntries))
+	r.With(writeMW).Post("/delete", httpx.Handle(h.logger, h.deleteEntries))
 }
 
 func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) error {

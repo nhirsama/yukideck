@@ -1,12 +1,13 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowDownLeft,
   ArrowUpRight,
   Check,
   Copy,
+  KeyRound,
   Plus,
-  RefreshCw,
   Send,
   Trash2,
 } from 'lucide-react';
@@ -19,8 +20,9 @@ import {
   type UpsertChannelPayload,
   type UpsertPushEndpointPayload,
 } from '@/core/api';
+import { useAuth } from '@/core/auth';
 
-type TabKey = 'channels' | 'push-urls';
+type TabKey = 'channels' | 'push-endpoints';
 type CapFilter = 'all' | Capability;
 
 export function MessengerPage() {
@@ -29,9 +31,9 @@ export function MessengerPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-slate-900">消息中枢 & 归一化 PushURL</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-slate-900">消息与推送</h1>
         <p className="text-sm text-slate-500 mt-1">
-          每个渠道独立声明发送（outbound）与接收（inbound）对称能力；外部脚本统一调用 PushURL 自动扇出到选定出站渠道。
+          平台级消息基础设施：配置对称能力的出站/入站消息渠道，并定义路径分流的自定义推送终结点。
         </p>
       </div>
 
@@ -49,14 +51,14 @@ export function MessengerPage() {
         </button>
         <button
           type="button"
-          onClick={() => setTab('push-urls')}
+          onClick={() => setTab('push-endpoints')}
           className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-            tab === 'push-urls'
+            tab === 'push-endpoints'
               ? 'border-slate-900 text-slate-900'
               : 'border-transparent text-slate-500 hover:text-slate-700'
           }`}
         >
-          归一化 PushURL
+          自定义推送终结点
         </button>
       </div>
 
@@ -408,10 +410,10 @@ function ChannelForm({
 
 function PushEndpointsSection() {
   const qc = useQueryClient();
+  const { user } = useAuth();
   const [editing, setEditing] = useState<PushEndpoint | 'new' | null>(null);
   const [copiedId, setCopiedId] = useState<string>('');
 
-  // Strictly query outbound-capable channels as targets for PushURL
   const { data: outboundData } = useQuery({
     queryKey: ['messenger', 'channels', 'outbound'],
     queryFn: () => coreApi.listChannels('outbound'),
@@ -424,14 +426,12 @@ function PushEndpointsSection() {
   });
   const endpoints = endpointsData?.endpoints ?? [];
 
-  const rotateMut = useMutation({
-    mutationFn: (id: number) => coreApi.rotatePushEndpoint(id),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['messenger', 'push-endpoints'] }),
-  });
-
   const deleteMut = useMutation({
     mutationFn: (id: number) => coreApi.deletePushEndpoint(id),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['messenger', 'push-endpoints'] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['messenger', 'push-endpoints'] });
+      void qc.invalidateQueries({ queryKey: ['auth', 'api-keys', 'schema'] });
+    },
   });
 
   const copyText = async (key: string, text: string) => {
@@ -442,28 +442,40 @@ function PushEndpointsSection() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-slate-500">
-          外部脚本统一向 PushURL 发送 GET 或 POST JSON，后端按绑定规则转发至对应的出站渠道。
+          每个自定义终结点定义一条转发路由规则，鉴权统一复用全局 API Key（支持 Header Bearer 与{' '}
+          <code className="font-mono text-slate-700">?key=ydk_...</code> 查询参数）。
         </p>
-        <button
-          type="button"
-          onClick={() => setEditing('new')}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-2 text-xs font-medium text-white hover:bg-slate-800"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          新建 PushURL
-        </button>
+        <div className="flex items-center gap-2">
+          <Link
+            to="/settings?tab=api-keys"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            <KeyRound className="h-3.5 w-3.5" />
+            管理 API Key
+          </Link>
+          <button
+            type="button"
+            onClick={() => setEditing('new')}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-2 text-xs font-medium text-white hover:bg-slate-800"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            新建终结点
+          </button>
+        </div>
       </div>
 
       {editing && (
         <PushEndpointForm
+          userID={user?.id ?? 0}
           outboundChannels={outboundChannels}
           initial={editing === 'new' ? null : editing}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
             void qc.invalidateQueries({ queryKey: ['messenger', 'push-endpoints'] });
+            void qc.invalidateQueries({ queryKey: ['auth', 'api-keys', 'schema'] });
           }}
         />
       )}
@@ -472,17 +484,21 @@ function PushEndpointsSection() {
         <div className="text-sm text-slate-500">加载中...</div>
       ) : endpoints.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">
-          尚未创建归一化 PushURL。创建后即可用一行 curl 将任意脚本通知推送到你的渠道。
+          尚未创建自定义推送终结点。创建后可配合具备 <code className="font-mono">messenger:push</code> 权限的 API Key 调用。
         </div>
       ) : (
         <div className="space-y-3">
           {endpoints.map((ep) => {
-            const curlSnippet = `curl -X POST "${ep.push_url}" -H "Content-Type: application/json" -d '{"title":"通知","content":"Hello from YukiDeck"}'`;
+            const curlSnippet = `curl -X POST "${ep.push_url}" -H "Authorization: Bearer YOUR_API_KEY" -H "Content-Type: application/json" -d '{"title":"通知","content":"Hello from YukiDeck"}'`;
+            const queryTemplate = `${ep.push_url}?key=YOUR_API_KEY&title=通知&content=Hello`;
             return (
               <div key={ep.id} className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className="font-medium text-slate-900">{ep.name}</span>
+                    <code className="rounded bg-slate-100 px-2 py-0.5 font-mono text-[11px] text-slate-700">
+                      {ep.slug}
+                    </code>
                     <span className="rounded bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
                       {ep.target_mode === 'default'
                         ? '路由：默认出站渠道'
@@ -501,7 +517,15 @@ function PushEndpointsSection() {
                       className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
                     >
                       {copiedId === `url-${ep.id}` ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                      复制 URL
+                      复制路径
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void copyText(`query-${ep.id}`, queryTemplate)}
+                      className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                    >
+                      {copiedId === `query-${ep.id}` ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                      复制 ?key 模板
                     </button>
                     <button
                       type="button"
@@ -513,18 +537,6 @@ function PushEndpointsSection() {
                     </button>
                     <button
                       type="button"
-                      title="重置 Token"
-                      onClick={() => {
-                        if (window.confirm('重置后旧 URL 将立即失效，确定继续？')) {
-                          rotateMut.mutate(ep.id);
-                        }
-                      }}
-                      className="rounded-lg border border-slate-200 p-1.5 text-slate-500 hover:text-slate-900"
-                    >
-                      <RefreshCw className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
                       onClick={() => setEditing(ep)}
                       className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
                     >
@@ -533,7 +545,7 @@ function PushEndpointsSection() {
                     <button
                       type="button"
                       onClick={() => {
-                        if (window.confirm(`确定删除 PushURL「${ep.name}」吗？`)) {
+                        if (window.confirm(`确定删除推送终结点「${ep.name}」吗？`)) {
                           deleteMut.mutate(ep.id);
                         }
                       }}
@@ -556,17 +568,20 @@ function PushEndpointsSection() {
 }
 
 function PushEndpointForm({
+  userID,
   outboundChannels,
   initial,
   onClose,
   onSaved,
 }: {
+  userID: number;
   outboundChannels: Channel[];
   initial: PushEndpoint | null;
   onClose: () => void;
   onSaved: () => void;
 }) {
   const [name, setName] = useState(initial?.name ?? '');
+  const [slug, setSlug] = useState(initial?.slug ?? '');
   const [targetMode, setTargetMode] = useState<'default' | 'selected'>(initial?.target_mode ?? 'default');
   const [selectedIDs, setSelectedIDs] = useState<number[]>(initial?.target_channel_ids ?? []);
   const [enabled, setEnabled] = useState(initial?.enabled ?? true);
@@ -588,6 +603,7 @@ function PushEndpointForm({
     setError('');
     saveMut.mutate({
       name,
+      slug: slug.trim().toLowerCase(),
       target_mode: targetMode,
       target_channel_ids: targetMode === 'selected' ? selectedIDs : [],
       enabled,
@@ -597,7 +613,9 @@ function PushEndpointForm({
   return (
     <form onSubmit={handleSubmit} className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-slate-900">{initial ? '编辑 PushURL' : '新建归一化 PushURL'}</h3>
+        <h3 className="text-sm font-semibold text-slate-900">
+          {initial ? '编辑自定义推送终结点' : '新建自定义推送终结点'}
+        </h3>
         <button type="button" onClick={onClose} className="text-xs text-slate-500">
           取消
         </button>
@@ -605,16 +623,33 @@ function PushEndpointForm({
 
       {error && <div className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{error}</div>}
 
-      <label className="block space-y-1">
-        <span className="text-xs font-medium text-slate-700">名称</span>
-        <input
-          required
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="例如：服务器监控告警 / NAS 备份通知"
-          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-        />
-      </label>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <label className="block space-y-1">
+          <span className="text-xs font-medium text-slate-700">名称</span>
+          <input
+            required
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="例如：服务器监控告警 / NAS 备份通知"
+            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+          />
+        </label>
+
+        <label className="block space-y-1">
+          <span className="text-xs font-medium text-slate-700">终结点标识 (slug)</span>
+          <input
+            required
+            value={slug}
+            onChange={(e) => setSlug(e.target.value.toLowerCase())}
+            pattern="^[a-z0-9][a-z0-9_-]{0,63}$"
+            placeholder="例如：default、alert、nas"
+            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono"
+          />
+          <span className="text-[11px] text-slate-400 font-mono">
+            /api/v1/messenger/push/{userID || '{uid}'}/{slug || '{slug}'}
+          </span>
+        </label>
+      </div>
 
       <div className="space-y-2">
         <span className="text-xs font-medium text-slate-700">出站转发目标（仅展示具备发送能力的渠道）</span>
@@ -660,7 +695,7 @@ function PushEndpointForm({
 
       <label className="inline-flex items-center gap-2 text-xs text-slate-700">
         <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-        启用该 PushURL
+        启用该推送终结点
       </label>
 
       <div className="flex justify-end gap-2">

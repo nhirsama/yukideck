@@ -7,8 +7,14 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"yukideck/internal/core/auth"
 	"yukideck/internal/core/module"
 	"yukideck/internal/core/scheduler"
+)
+
+const (
+	PermissionRead  = "planner:read"
+	PermissionWrite = "planner:write"
 )
 
 //go:embed migrations/*.sql
@@ -48,6 +54,23 @@ func (m *Module) Migrations() fs.FS {
 
 func (m *Module) RegisterRoutes(r chi.Router) {
 	m.handler.RegisterRoutes(r)
+}
+
+func (m *Module) RegisterPermissions(reg *auth.PermissionRegistry) {
+	reg.Register(auth.PermissionDef{
+		Key:         PermissionRead,
+		ModuleID:    "planner",
+		ModuleName:  "日程与提醒",
+		Label:       "读取日程与待办",
+		Description: "允许读取事项列表、日历视图与推送历史",
+	}, nil)
+	reg.Register(auth.PermissionDef{
+		Key:         PermissionWrite,
+		ModuleID:    "planner",
+		ModuleName:  "日程与提醒",
+		Label:       "管理日程与待办",
+		Description: "允许新建、编辑、删除、完成/恢复事项及触发测试推送",
+	}, nil)
 }
 
 // RegisterJobs starts the event-driven single-timer wakeup loop tied to application context lifecycle.
