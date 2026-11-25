@@ -1,20 +1,30 @@
-# Stage 1: Build React Frontend
-FROM node:22-alpine AS frontend-builder
+# syntax=docker/dockerfile:1
+
+# Stage 1: Build React Frontend on native build host architecture
+FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-builder
 WORKDIR /src/frontend
-RUN corepack enable
-COPY frontend/package.json frontend/pnpm-lock.yaml* ./
-RUN pnpm install --frozen-lockfile || pnpm install
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable && corepack prepare pnpm@latest --activate
+COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+    pnpm install --frozen-lockfile --store-dir /pnpm/store
 COPY frontend/ ./
 RUN pnpm build
 
-# Stage 2: Build Go Backend with embedded Frontend UI
-FROM golang:1.24-alpine AS backend-builder
+# Stage 2: Cross-compile Go Backend with embedded Frontend UI
+FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS backend-builder
+ARG TARGETOS=linux
+ARG TARGETARCH
 WORKDIR /src/backend
-COPY backend/go.mod backend/go.sum* ./
-RUN go mod download
+COPY backend/go.mod backend/go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 COPY backend/ ./
 COPY --from=frontend-builder /src/frontend/dist ./internal/webui/dist
-RUN CGO_ENABLED=0 go build -tags embed_ui -trimpath -ldflags="-s -w" -o /out/yukideck ./cmd/server
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -tags embed_ui -trimpath -ldflags="-s -w" -o /out/yukideck ./cmd/server
 
 # Stage 3: Minimal Runtime Image (connects to external PostgreSQL via DATABASE_URL)
 FROM alpine:3.21
