@@ -311,14 +311,59 @@ func TestNormalizeModelAndPricing(t *testing.T) {
 	}
 
 	cases := map[string]string{
-		"anthropic/claude-sonnet-4-6-20260514": "claude-sonnet-4.6",
-		"us.anthropic.claude-opus-4-5-20251101-v1:0": "claude-opus-4.5",
-		"my-relay/sonnet-pro-fast":             "claude-sonnet-4.6",
-		"openai/gpt-5.3-codex":                 "gpt-5.3-codex",
+		"anthropic/claude-sonnet-4-6-20260514":                "claude-sonnet-4.6",
+		"us.anthropic.claude-opus-4-5-20251101-v1:0":          "claude-opus-4.5",
+		"openrouter/anthropic/claude-opus-5-5-20261001:free":  "claude-opus-5.5",
+		"claude-opus-4.6-thinking":                            "claude-opus-4.6",
+		"claude-opus-4-7":                                     "claude-opus-4.7",
+		"my-relay/sonnet-pro-fast":                            "claude-sonnet-4.6",
+		"openai/gpt-5.3-codex":                                "gpt-5.3-codex",
+		"google-antigravity/gemini-4-neon-high":               "gemini-4-neon-high",
+		"models/gemini-4.0-carbon-preview":                    "gemini-4-carbon",
+		"zai-org/glm-5.3":                                     "glm-5.3",
 	}
 	for raw, want := range cases {
 		if got := NormalizeModel(raw, aliases); got != want {
 			t.Fatalf("NormalizeModel(%q) = %q, want %q", raw, got, want)
+		}
+	}
+
+	// Verify 2026 frontier models & arbitrary custom proxy prefixes resolve non-zero prices accurately.
+	priceChecks := []struct {
+		raw       string
+		wantInput float64
+		wantOut   float64
+	}{
+		{"openrouter/anthropic/claude-opus-5-5-20261001:thinking", 4.00, 20.00},
+		{"claude-sonnet-5-5", 2.00, 10.00},
+		{"claude-haiku-5-5", 0.10, 0.50},
+		{"claude-opus-4.6-thinking", 5.00, 25.00},
+		{"claude-opus-4-7", 5.00, 25.00},
+		{"gpt-5.6", 4.00, 20.00},
+		{"gpt-5.5", 5.00, 30.00},
+		{"my-private-proxy/gpt-5.4-mini-20260601", 0.75, 4.50},
+		{"gpt-5.4-nano", 0.20, 1.25},
+		{"google-antigravity/gemini-4-neon-high", 3.00, 15.00},
+		{"gemini-4-carbon", 2.00, 10.00},
+		{"gemini-4-hydrogen", 1.50, 7.50},
+		{"gemini-3.8-flash", 0.75, 3.75},
+		{"deepseek/deepseek-v4-pro", 1.32, 3.96},
+		{"deepseek-v3.2", 0.26, 0.38},
+		{"zai-org/glm-5.3", 1.40, 4.40},
+		{"moonshotai/kimi-k3.1-pro", 2.00, 10.00},
+		{"qwen/qwen3.8-max-0902", 2.00, 6.00},
+		{"minimax/MiniMax-M3", 0.30, 1.20},
+		{"x-ai/grok-4.7", 2.00, 6.00},
+	}
+	for _, tc := range priceChecks {
+		canon := NormalizeModel(tc.raw, nil)
+		p, ok := ResolvePrice(tc.raw, canon, nil)
+		if !ok {
+			t.Fatalf("ResolvePrice(%q -> %q) did not match any built-in price", tc.raw, canon)
+		}
+		if math.Abs(p.InputPerM-tc.wantInput) > 1e-6 || math.Abs(p.OutputPerM-tc.wantOut) > 1e-6 {
+			t.Fatalf("ResolvePrice(%q -> %q) = (in=%.3f, out=%.3f), want (in=%.3f, out=%.3f)",
+				tc.raw, canon, p.InputPerM, p.OutputPerM, tc.wantInput, tc.wantOut)
 		}
 	}
 
