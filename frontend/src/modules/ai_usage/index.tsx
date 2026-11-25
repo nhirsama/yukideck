@@ -8,7 +8,7 @@ const AIUsageSettingsPanel = lazy(() => import('./AIUsageSettingsPanel'));
 export const aiUsageModule: FrontendModule = {
   id: 'ai-usage',
   name: 'AI 用量统计',
-  description: '跨设备汇总 Claude Code、Codex、Antigravity、Pi 等 Agent 的小时级 Token、等效费用与工具调用统计',
+  description: '多设备、多 Agent 的 Token、费用与工具调用统计',
   icon: BarChart3,
   basePath: '/ai-usage',
   routes: [{ path: '/ai-usage', element: <AIUsagePage /> }],

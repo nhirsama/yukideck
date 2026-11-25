@@ -71,15 +71,14 @@ export function APIKeysPanel() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-xs text-slate-500">
-          全局细粒度 API Key：按模块能力与资源范围授权。常规接口仅支持{' '}
-          <code className="font-mono text-slate-700">Authorization: Bearer ydk_...</code>；仅消息推送自定义终结点额外支持{' '}
-          <code className="font-mono text-slate-700">?key=</code> 查询参数。
+        <p className="text-xs text-zinc-500">
+          常规接口使用 <code className="yd-code">Authorization: Bearer ydk_...</code>，推送终结点另支持{' '}
+          <code className="yd-code">?key=</code> 参数。
         </p>
         <button
           type="button"
           onClick={() => setEditing('new')}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-2 text-xs font-medium text-white hover:bg-slate-800"
+          className="yd-btn-primary shrink-0"
         >
           <Plus className="h-3.5 w-3.5" />
           新建 API Key
@@ -87,28 +86,28 @@ export function APIKeysPanel() {
       </div>
 
       {revealedKey && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 space-y-2.5">
+        <div className="rounded-xl border border-emerald-200/80 bg-emerald-50/50 p-4 space-y-2.5">
           <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-sm font-semibold text-emerald-900">
-              <KeyRound className="h-4 w-4" />
+            <div className="flex items-center gap-2 text-xs font-medium text-emerald-900">
+              <KeyRound className="h-3.5 w-3.5" />
               <span>已生成密钥「{revealedKey.name}」——明文仅显示这一次，请立即保存</span>
             </div>
             <button
               type="button"
               onClick={() => setRevealedKey(null)}
-              className="text-emerald-700 hover:text-emerald-900"
+              className="rounded-md p-1 text-emerald-700 hover:bg-emerald-100/60"
             >
-              <X className="h-4 w-4" />
+              <X className="h-3.5 w-3.5" />
             </button>
           </div>
           <div className="flex items-center gap-2">
-            <code className="flex-1 rounded-lg bg-white border border-emerald-200 px-3 py-2 font-mono text-xs text-slate-800 break-all">
+            <code className="flex-1 rounded-lg bg-white border border-emerald-200/80 px-3 py-2 font-mono text-xs text-zinc-800 break-all select-all">
               {revealedKey.key}
             </code>
             <button
               type="button"
               onClick={() => void copyRevealed()}
-              className="inline-flex items-center gap-1 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-800 shrink-0"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-600 transition-colors shrink-0"
             >
               {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
               {copied ? '已复制' : '复制密钥'}
@@ -136,42 +135,30 @@ export function APIKeysPanel() {
       )}
 
       {isLoading ? (
-        <div className="text-sm text-slate-500">加载中...</div>
+        <div className="text-xs text-zinc-400">加载中...</div>
       ) : apiKeys.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">
-          尚未创建 API Key。创建一个按模块与资源授权的 Key，即可用于 CLI 同步或外部推送终结点调用。
-        </div>
+        <div className="yd-empty p-10 text-xs">暂无 API Key。</div>
       ) : (
         <div className="space-y-3">
           {apiKeys.map((item) => {
             const isExpired = Boolean(item.expires_at && new Date(item.expires_at).getTime() <= Date.now());
             return (
-              <div key={item.id} className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
+              <div key={item.id} className="yd-card p-4 space-y-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium text-slate-900">{item.name}</span>
-                      <code className="rounded bg-slate-100 px-2 py-0.5 font-mono text-[11px] text-slate-600">
-                        {item.key_prefix}••••••••
-                      </code>
-                      {!item.enabled && (
-                        <span className="rounded bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
-                          已停用
-                        </span>
-                      )}
-                      {isExpired && (
-                        <span className="rounded bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700">
-                          已过期
-                        </span>
-                      )}
+                      <span className="text-[13px] font-medium text-zinc-900">{item.name}</span>
+                      <code className="yd-code">{item.key_prefix}••••••••</code>
+                      {!item.enabled && <span className="yd-badge yd-badge-amber">已停用</span>}
+                      {isExpired && <span className="yd-badge yd-badge-red">已过期</span>}
                     </div>
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-400">
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-zinc-400 tabular-nums">
                       <span>最近使用：{formatTime(item.last_used_at)}</span>
                       <span>过期时间：{item.expires_at ? formatTime(item.expires_at) : '永不过期'}</span>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex items-center gap-1 shrink-0">
                     <button
                       type="button"
                       title="轮换密钥"
@@ -181,46 +168,47 @@ export function APIKeysPanel() {
                           rotateMut.mutate(item.id);
                         }
                       }}
-                      className="rounded-lg border border-slate-200 p-1.5 text-slate-500 hover:text-slate-900"
+                      className="yd-btn-icon"
                     >
                       <RefreshCw className="h-3.5 w-3.5" />
                     </button>
                     <button
                       type="button"
                       onClick={() => setEditing(item)}
-                      className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                      className="yd-btn-secondary"
                     >
                       编辑
                     </button>
                     <button
                       type="button"
+                      title="删除"
                       onClick={() => {
                         if (window.confirm(`确定删除 API Key「${item.name}」吗？`)) {
                           deleteMut.mutate(item.id);
                         }
                       }}
-                      className="rounded-lg border border-slate-200 p-1.5 text-slate-500 hover:text-red-600 hover:border-red-200"
+                      className="yd-btn-danger-icon"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   </div>
                 </div>
 
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-1.5">
                   {item.policies.map((rule, idx) => {
                     const def = permMap.get(rule.permission);
                     const isAll = rule.resources.includes('*');
                     return (
                       <div
                         key={`${rule.permission}-${idx}`}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200/80 bg-zinc-50/70 px-2.5 py-1 text-xs"
                       >
-                        <Shield className="h-3 w-3 text-slate-500" />
-                        <span className="font-medium text-slate-800">
+                        <Shield className="h-3 w-3 text-zinc-400" />
+                        <span className="font-medium text-zinc-700">
                           {def ? `${def.module_name} · ${def.label}` : rule.permission}
                         </span>
                         {def?.resource_type && (
-                          <span className="rounded bg-white px-1.5 py-0.5 text-[11px] text-slate-600 border border-slate-200">
+                          <span className="rounded bg-white px-1.5 py-0.5 text-[11px] text-zinc-500 border border-zinc-200/80">
                             {isAll ? '全部资源 (*)' : rule.resources.join(', ')}
                           </span>
                         )}
@@ -370,49 +358,49 @@ function APIKeyForm({
   };
 
   return (
-    <form onSubmit={handleSubmit} className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
+    <form onSubmit={handleSubmit} className="yd-card p-5 space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-slate-900">
-          {initial ? '编辑 API Key' : '新建 API Key（Cloudflare 策略模式）'}
+        <h3 className="text-sm font-medium text-zinc-800">
+          {initial ? '编辑 API Key' : '新建 API Key'}
         </h3>
-        <button type="button" onClick={onClose} className="text-xs text-slate-500 hover:text-slate-900">
+        <button type="button" onClick={onClose} className="yd-btn-ghost">
           取消
         </button>
       </div>
 
-      {error && <div className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{error}</div>}
+      {error && <div className="yd-notice-error">{error}</div>}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <label className="block space-y-1">
-          <span className="text-xs font-medium text-slate-700">名称</span>
+        <label className="block space-y-1.5">
+          <span className="yd-label">名称</span>
           <input
             required
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="例如：主力 MacBook 同步 / NAS 告警推送"
-            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+            placeholder="例如：MacBook 同步 / NAS 告警"
+            className="yd-input"
           />
         </label>
 
-        <label className="block space-y-1">
-          <span className="text-xs font-medium text-slate-700">过期时间（可选，留空永不过期）</span>
+        <label className="block space-y-1.5">
+          <span className="yd-label">过期时间（留空永不过期）</span>
           <input
             type="datetime-local"
             value={expiresLocal}
             onChange={(e) => setExpiresLocal(e.target.value)}
-            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+            className="yd-input"
           />
         </label>
       </div>
 
-      <div className="space-y-3">
+      <div className="space-y-2.5">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-medium text-slate-700">权限策略（按模块与资源范围授权）</span>
+          <span className="yd-label">权限策略</span>
           <button
             type="button"
             disabled={permissions.length === 0}
             onClick={addRule}
-            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+            className="yd-btn-secondary"
           >
             <Plus className="h-3.5 w-3.5" />
             添加策略
@@ -420,20 +408,18 @@ function APIKeyForm({
         </div>
 
         {rules.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-slate-200 p-4 text-xs text-slate-500">
-            当前暂无可用权限定义。
-          </div>
+          <div className="yd-empty p-4 text-xs">当前暂无可用权限定义。</div>
         ) : (
           <div className="space-y-2.5">
             {rules.map((rule, idx) => {
               const def = permMap.get(rule.permission);
               return (
-                <div key={idx} className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-2.5">
+                <div key={idx} className="yd-panel-subtle p-3 space-y-2.5">
                   <div className="flex items-center gap-2">
                     <select
                       value={rule.permission}
                       onChange={(e) => updateRulePermission(idx, e.target.value)}
-                      className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-800"
+                      className="yd-input-sm flex-1 font-medium text-zinc-800"
                     >
                       {permissions.map((p) => (
                         <option key={p.key} value={p.key}>
@@ -445,19 +431,19 @@ function APIKeyForm({
                       <button
                         type="button"
                         onClick={() => removeRule(idx)}
-                        className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-400 hover:text-red-600"
+                        className="yd-btn-danger-icon"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
                     )}
                   </div>
 
-                  {def?.description && <div className="text-[11px] text-slate-500">{def.description}</div>}
+                  {def?.description && <div className="text-[11px] text-zinc-500">{def.description}</div>}
 
                   {def?.resource_type && (
-                    <div className="space-y-2 pt-1 border-t border-slate-200/80">
-                      <div className="flex flex-wrap gap-4 text-xs text-slate-700">
-                        <label className="inline-flex items-center gap-1.5">
+                    <div className="space-y-2 pt-2 border-t border-zinc-200/70">
+                      <div className="flex flex-wrap gap-4 text-xs text-zinc-700">
+                        <label className="inline-flex items-center gap-1.5 cursor-pointer">
                           <input
                             type="radio"
                             checked={rule.scopeMode === 'all'}
@@ -465,7 +451,7 @@ function APIKeyForm({
                           />
                           全部资源 (*)
                         </label>
-                        <label className="inline-flex items-center gap-1.5">
+                        <label className="inline-flex items-center gap-1.5 cursor-pointer">
                           <input
                             type="radio"
                             checked={rule.scopeMode === 'selected'}
@@ -476,14 +462,14 @@ function APIKeyForm({
                       </div>
 
                       {rule.scopeMode === 'selected' && (
-                        <div className="rounded-lg border border-slate-200 bg-white p-2.5 space-y-1.5">
+                        <div className="rounded-lg border border-zinc-200/80 bg-white p-2.5 space-y-1.5">
                           {def.resources.length === 0 ? (
-                            <div className="text-xs text-slate-500">
+                            <div className="text-xs text-zinc-400">
                               暂无可选资源，请先在对应模块中创建资源后再回来勾选。
                             </div>
                           ) : (
                             def.resources.map((res) => (
-                              <label key={res.id} className="flex items-center gap-2 text-xs text-slate-700">
+                              <label key={res.id} className="flex items-center gap-2 text-xs text-zinc-700 cursor-pointer">
                                 <input
                                   type="checkbox"
                                   checked={rule.selectedResources.includes(res.id)}
@@ -504,24 +490,16 @@ function APIKeyForm({
         )}
       </div>
 
-      <label className="inline-flex items-center gap-2 text-xs text-slate-700">
+      <label className="inline-flex items-center gap-2 text-xs text-zinc-700 cursor-pointer">
         <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
         启用该 API Key
       </label>
 
-      <div className="flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-lg border border-slate-200 px-3.5 py-2 text-xs font-medium text-slate-700"
-        >
+      <div className="flex justify-end gap-2 pt-1">
+        <button type="button" onClick={onClose} className="yd-btn-secondary">
           取消
         </button>
-        <button
-          type="submit"
-          disabled={isPending}
-          className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-medium text-white hover:bg-slate-800"
-        >
+        <button type="submit" disabled={isPending} className="yd-btn-primary">
           {isPending ? '保存中...' : initial ? '保存更改' : '生成 API Key'}
         </button>
       </div>

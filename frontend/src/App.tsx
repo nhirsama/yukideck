@@ -23,7 +23,7 @@ function AppRoutes() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center text-sm text-slate-500">
+      <div className="min-h-screen flex items-center justify-center bg-[#f8fafc] text-xs text-zinc-400">
         正在加载 YukiDeck...
       </div>
     );
@@ -38,7 +38,7 @@ function AppRoutes() {
   }
 
   return (
-    <Suspense fallback={<div className="p-8 text-sm text-slate-500">加载模块中...</div>}>
+    <Suspense fallback={<div className="p-8 text-xs text-zinc-400">加载模块中...</div>}>
       <Routes>
         <Route element={<AppShell />}>
           <Route index element={<DashboardPage />} />

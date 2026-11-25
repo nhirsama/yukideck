@@ -1,5 +1,11 @@
 import { request } from '@/core/api';
-import { computeSha256Hex, getExtension, stripImageMetadata } from './metadata';
+import {
+  computeSha256Hex,
+  extractImageDimensions,
+  getExtension,
+  saveCachedDimensionsBatch,
+  stripImageMetadata,
+} from './metadata';
 import type {
   ConfigView,
   DirectoryListing,
@@ -77,6 +83,7 @@ export const storageApi = {
 
     const rawBytes = new Uint8Array(await file.arrayBuffer());
     const { data: cleanBytes, stripped } = stripImageMetadata(rawBytes);
+    const dims = extractImageDimensions(cleanBytes);
     const contentType = file.type || 'application/octet-stream';
 
     if (cfg.upload_mode === 'direct') {
@@ -104,6 +111,9 @@ export const storageApi = {
       if (!putRes.ok) {
         throw new Error(`直传对象存储失败 (${putRes.status})，请检查存储桶 CORS 配置`);
       }
+      if (dims && presigned.file.url) {
+        saveCachedDimensionsBatch({ [presigned.file.url]: [dims.width, dims.height] });
+      }
       return { ...presigned.file, size: cleanBytes.byteLength };
     }
 
@@ -117,6 +127,9 @@ export const storageApi = {
       headers: { 'X-Metadata-Stripped': String(stripped) },
       body: form,
     });
+    if (dims && res.file.url) {
+      saveCachedDimensionsBatch({ [res.file.url]: [dims.width, dims.height] });
+    }
     return res.file;
   },
 };

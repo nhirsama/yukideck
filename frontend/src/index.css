@@ -1,44 +1,318 @@
 @import "tailwindcss";
 
-:root {
-  color-scheme: light;
+@layer base {
+  :root {
+    color-scheme: light;
+    --yd-canvas: #f8fafc;
+    --yd-surface: #ffffff;
+    --yd-subtle: #f3f6fa;
+    --yd-border: #e6ebf1;
+    --yd-ink: #27272a;
+  }
+
+  html {
+    background-color: var(--yd-canvas);
+    color: var(--yd-ink);
+  }
+
+  body {
+    font-family:
+      "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  button:not(:disabled),
+  [role="button"] {
+    cursor: pointer;
+  }
+
+  input[type="checkbox"],
+  input[type="radio"] {
+    accent-color: #0ea5e9;
+    cursor: pointer;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #dbe2ea transparent;
+  }
 }
 
-body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+@layer components {
+  /* Surfaces */
+  .yd-card {
+    @apply rounded-xl border border-zinc-200/75 bg-white shadow-[0_1px_3px_rgba(15,23,42,0.025)];
+  }
+
+  .yd-card-interactive {
+    @apply rounded-xl border border-zinc-200/75 bg-white shadow-[0_1px_3px_rgba(15,23,42,0.025)] transition-all duration-150 hover:border-sky-200 hover:shadow-[0_4px_14px_rgba(14,165,233,0.07)];
+  }
+
+  .yd-panel-subtle {
+    @apply rounded-xl border border-zinc-200/65 bg-[#f7f9fc];
+  }
+
+  .yd-empty {
+    @apply rounded-xl border border-dashed border-zinc-200 bg-white/80 text-center text-zinc-400;
+  }
+
+  /* Page Headings */
+  .yd-page-title {
+    @apply text-xl font-semibold tracking-tight text-zinc-800;
+  }
+
+  .yd-page-desc {
+    @apply mt-1 text-[13px] text-zinc-500;
+  }
+
+  /* Buttons */
+  .yd-btn-primary {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg bg-sky-500 px-3.5 py-2 text-xs font-medium text-white shadow-[0_1px_2px_rgba(14,165,233,0.22)] transition-colors hover:bg-sky-600 active:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-45;
+  }
+
+  .yd-btn-secondary {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg border border-zinc-200/90 bg-white px-3 py-1.5 text-xs font-medium text-zinc-600 shadow-[0_1px_1px_rgba(15,23,42,0.02)] transition-colors hover:border-zinc-300 hover:bg-zinc-50 hover:text-zinc-800 disabled:cursor-not-allowed disabled:opacity-45;
+  }
+
+  .yd-btn-ghost {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-100/80 hover:text-zinc-800 disabled:cursor-not-allowed disabled:opacity-45;
+  }
+
+  .yd-btn-icon {
+    @apply inline-flex items-center justify-center rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-zinc-100/80 hover:text-zinc-700 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  .yd-btn-danger-icon {
+    @apply inline-flex items-center justify-center rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-red-50 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  /* Inputs */
+  .yd-input {
+    @apply w-full rounded-lg border border-zinc-200/90 bg-white px-3 py-2 text-[13px] text-zinc-800 placeholder:text-zinc-400 transition-colors focus:border-sky-300 focus:outline-none focus:ring-2 focus:ring-sky-500/12 disabled:bg-zinc-50 disabled:text-zinc-400;
+  }
+
+  .yd-input-sm {
+    @apply rounded-lg border border-zinc-200/90 bg-white px-2.5 py-1.5 text-xs text-zinc-800 placeholder:text-zinc-400 transition-colors focus:border-sky-300 focus:outline-none focus:ring-2 focus:ring-sky-500/12 disabled:bg-zinc-50 disabled:text-zinc-400;
+  }
+
+  .yd-label {
+    @apply text-xs font-medium text-zinc-600;
+  }
+
+  /* Tabs */
+  .yd-tabs {
+    @apply flex items-center gap-1 overflow-x-auto overflow-y-hidden shadow-[inset_0_-1px_0_0_rgba(228,228,231,0.8)];
+    scrollbar-width: none;
+  }
+
+  .yd-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .yd-tab {
+    @apply inline-flex items-center gap-1.5 border-b-2 px-3.5 py-2.5 text-[13px] font-medium whitespace-nowrap transition-colors;
+  }
+
+  .yd-tab-active {
+    @apply border-sky-500 text-sky-600;
+  }
+
+  .yd-tab-idle {
+    @apply border-transparent text-zinc-500 hover:text-zinc-800;
+  }
+
+  /* Segmented Control */
+  .yd-segment {
+    @apply inline-flex flex-wrap items-center gap-0.5 rounded-lg bg-[#f1f5f9] p-0.5 text-xs;
+  }
+
+  .yd-segment-btn {
+    @apply rounded-[6px] px-2.5 py-1 font-medium transition-all;
+  }
+
+  .yd-segment-active {
+    @apply bg-white text-sky-600 shadow-[0_1px_2px_rgba(15,23,42,0.05)] ring-1 ring-zinc-200/60;
+  }
+
+  .yd-segment-idle {
+    @apply text-zinc-500 hover:text-zinc-800;
+  }
+
+  /* Badges */
+  .yd-badge {
+    @apply inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium;
+  }
+
+  .yd-badge-neutral {
+    @apply bg-[#f3f6fa] text-zinc-600;
+  }
+
+  .yd-badge-dark {
+    @apply bg-sky-50 text-sky-700 ring-1 ring-inset ring-sky-200/80;
+  }
+
+  .yd-badge-emerald {
+    @apply bg-emerald-50/80 text-emerald-700 ring-1 ring-inset ring-emerald-500/20;
+  }
+
+  .yd-badge-sky {
+    @apply bg-sky-50/80 text-sky-700 ring-1 ring-inset ring-sky-500/20;
+  }
+
+  .yd-badge-amber {
+    @apply bg-amber-50/80 text-amber-700 ring-1 ring-inset ring-amber-500/20;
+  }
+
+  .yd-badge-red {
+    @apply bg-red-50/80 text-red-600 ring-1 ring-inset ring-red-500/20;
+  }
+
+  /* Notices */
+  .yd-notice {
+    @apply rounded-lg border border-zinc-200/75 bg-white px-3.5 py-2.5 text-xs text-zinc-600 shadow-[0_1px_2px_rgba(15,23,42,0.025)];
+  }
+
+  .yd-notice-error {
+    @apply rounded-lg border border-red-200/80 bg-red-50/70 px-3.5 py-2.5 text-xs text-red-600;
+  }
+
+  .yd-notice-info {
+    @apply rounded-lg border border-sky-200/80 bg-sky-50/70 px-3.5 py-2.5 text-xs text-sky-700;
+  }
+
+  /* Inline code */
+  .yd-code {
+    @apply rounded bg-[#f3f6fa] px-1.5 py-0.5 font-mono text-[11px] text-zinc-600;
+  }
+
+  /* Tables */
+  .yd-table {
+    @apply w-full text-left text-xs;
+  }
+
+  .yd-thead {
+    @apply border-b border-zinc-200/75 text-[11px] font-medium text-zinc-400;
+  }
+
+  .yd-tbody {
+    @apply divide-y divide-zinc-100;
+  }
 }
 
-/* Harmonize FullCalendar with YukiDeck slate design tokens */
+/* Light Snow Minimalist FullCalendar styling */
 .fc {
-  --fc-border-color: #e2e8f0;
-  --fc-today-bg-color: #f8fafc;
-  --fc-button-bg-color: #0f172a;
-  --fc-button-border-color: #0f172a;
-  --fc-button-hover-bg-color: #1e293b;
-  --fc-button-hover-border-color: #1e293b;
-  --fc-button-active-bg-color: #334155;
-  --fc-button-active-border-color: #334155;
-  --fc-event-bg-color: #0f172a;
-  --fc-event-border-color: #0f172a;
+  --fc-border-color: #eef2f6;
+  --fc-page-bg-color: transparent;
+  --fc-neutral-bg-color: #f8fafc;
+  --fc-today-bg-color: #f0f9ff;
+  --fc-button-bg-color: #ffffff;
+  --fc-button-border-color: #e4e9f0;
+  --fc-button-text-color: #52525b;
+  --fc-button-hover-bg-color: #f8fafc;
+  --fc-button-hover-border-color: #cbd5e1;
+  --fc-button-active-bg-color: #f0f9ff;
+  --fc-button-active-border-color: #bae6fd;
+  --fc-event-bg-color: #e0f2fe;
+  --fc-event-border-color: transparent;
+  --fc-event-text-color: #0369a1;
   font-size: 0.8125rem;
 }
 
+.fc .fc-toolbar {
+  margin-bottom: 1rem !important;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
 .fc .fc-toolbar-title {
-  font-size: 1rem;
+  font-size: 0.9375rem;
   font-weight: 600;
-  color: #0f172a;
+  letter-spacing: -0.01em;
+  color: #27272a;
 }
 
 .fc .fc-button {
   font-size: 0.75rem;
-  padding: 0.35rem 0.65rem;
+  font-weight: 500;
+  padding: 0.35rem 0.7rem;
   border-radius: 0.5rem;
+  box-shadow: 0 1px 1px rgba(15, 23, 42, 0.02);
+  transition: background-color 150ms, border-color 150ms, color 150ms;
+}
+
+.fc .fc-button:focus {
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.16) !important;
+}
+
+.fc .fc-button-primary:not(:disabled).fc-button-active,
+.fc .fc-button-primary:not(:disabled):active {
+  color: #0284c7;
+}
+
+.fc .fc-button-group > .fc-button {
+  border-radius: 0;
+}
+
+.fc .fc-button-group > .fc-button:first-child {
+  border-top-left-radius: 0.5rem;
+  border-bottom-left-radius: 0.5rem;
+}
+
+.fc .fc-button-group > .fc-button:last-child {
+  border-top-right-radius: 0.5rem;
+  border-bottom-right-radius: 0.5rem;
+}
+
+.fc .fc-col-header-cell {
+  background: #f8fafc;
+  padding: 0.45rem 0;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: #71717a;
+}
+
+.fc .fc-scrollgrid {
+  border-radius: 0.75rem;
+  overflow: hidden;
+  border-color: #e6ebf1;
 }
 
 .fc .fc-daygrid-day-top {
   flex-direction: row;
   justify-content: space-between;
   align-items: center;
-  padding: 4px 6px 2px;
+  padding: 5px 7px 3px;
+}
+
+.fc .fc-daygrid-day-frame {
+  min-height: 5.5rem;
+  transition: background-color 120ms;
+}
+
+.fc .fc-daygrid-day:hover .fc-daygrid-day-frame {
+  background-color: #f8fafc;
+}
+
+.fc .fc-day-today {
+  background-color: #f0f9ff !important;
+}
+
+.fc .fc-day-other .fc-daygrid-day-top {
+  opacity: 0.4;
+}
+
+.fc .fc-daygrid-event {
+  border-radius: 0.375rem;
+  padding: 1px 6px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  margin-top: 2px;
+}
+
+.fc .fc-timegrid-slot-label {
+  font-size: 0.6875rem;
+  color: #71717a;
 }

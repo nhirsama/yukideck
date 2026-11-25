@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Eye, EyeOff, Plus, Trash2 } from 'lucide-react';
+import { Eye, EyeOff, Pencil, Plus, Trash2 } from 'lucide-react';
 import { aiUsageApi, type Device } from './api';
 import { formatDateTime } from './format';
 
@@ -22,7 +22,8 @@ export default function AIUsageSettingsPanel() {
   });
 
   // Device inline rename state
-  const [editingDeviceNames, setEditingDeviceNames] = useState<Record<string, string>>({});
+  const [editingDevice, setEditingDevice] = useState<{ id: string; value: string } | null>(null);
+  const cancelEditRef = useRef(false);
 
   // Alias form state
   const [aliasPattern, setAliasPattern] = useState('');
@@ -106,9 +107,20 @@ export default function AIUsageSettingsPanel() {
   const customPrices = pricesRes?.custom ?? [];
   const builtinPrices = pricesRes?.builtin ?? [];
 
-  const handleSaveDevice = (d: Device, nextHidden?: boolean) => {
-    const name = (editingDeviceNames[d.device_id] ?? d.name).trim() || d.device_id;
-    updateDevMut.mutate({ deviceId: d.device_id, name, hidden: nextHidden ?? d.hidden });
+  const commitDeviceRename = (d: Device) => {
+    if (cancelEditRef.current) {
+      cancelEditRef.current = false;
+      setEditingDevice(null);
+      return;
+    }
+    const nextName = (editingDevice?.id === d.device_id ? editingDevice.value : d.name).trim();
+    setEditingDevice(null);
+    if (!nextName || nextName === d.name) return;
+    updateDevMut.mutate({ deviceId: d.device_id, name: nextName, hidden: d.hidden });
+  };
+
+  const toggleDeviceHidden = (d: Device) => {
+    updateDevMut.mutate({ deviceId: d.device_id, name: d.name, hidden: !d.hidden });
   };
 
   const handleAliasSubmit = (e: React.FormEvent) => {
@@ -138,28 +150,24 @@ export default function AIUsageSettingsPanel() {
 
   return (
     <div className="space-y-6">
-      {notice && (
-        <div className="rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs text-slate-700">
-          {notice}
-        </div>
-      )}
+      {notice && <div className="yd-notice">{notice}</div>}
 
       {/* 1. Devices */}
-      <section className="rounded-xl border border-slate-200 bg-white p-6 space-y-4">
+      <section className="yd-card p-6 space-y-4">
         <div>
-          <h2 className="text-base font-semibold text-slate-900">设备与探针</h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            探针首次上报时自动注册设备；隐藏退役设备后默认看板将不计入该设备，但历史记录保留。
+          <h2 className="text-sm font-semibold text-zinc-800">设备与探针</h2>
+          <p className="text-xs text-zinc-500 mt-0.5">
+            探针上报时自动注册；隐藏后不计入默认看板，历史数据保留。
           </p>
         </div>
         {loadingDevices ? (
-          <div className="text-xs text-slate-500">加载中...</div>
+          <div className="text-xs text-zinc-400">加载中...</div>
         ) : devices.length === 0 ? (
-          <div className="text-xs text-slate-500">暂无已上报设备。</div>
+          <div className="text-xs text-zinc-400">暂无已上报设备。</div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="border-b border-slate-200 text-slate-500">
+            <table className="yd-table">
+              <thead className="yd-thead">
                 <tr>
                   <th className="py-2 pr-3 font-medium">设备名称</th>
                   <th className="py-2 pr-3 font-medium">Device ID</th>
@@ -169,54 +177,78 @@ export default function AIUsageSettingsPanel() {
                   <th className="py-2 text-right font-medium">操作</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
-                {devices.map((d) => (
-                  <tr key={d.device_id} className={d.hidden ? 'opacity-50' : ''}>
-                    <td className="py-2 pr-3">
-                      <div className="flex items-center gap-1.5">
-                        <input
-                          value={editingDeviceNames[d.device_id] ?? d.name}
-                          onChange={(e) =>
-                            setEditingDeviceNames((prev) => ({ ...prev, [d.device_id]: e.target.value }))
-                          }
-                          className="w-40 rounded border border-slate-200 px-2 py-1 text-xs"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => handleSaveDevice(d)}
-                          className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
-                        >
-                          保存
-                        </button>
-                      </div>
-                    </td>
-                    <td className="py-2 pr-3 font-mono text-slate-600">{d.device_id}</td>
-                    <td className="py-2 pr-3 text-slate-600">
-                      {[d.os, d.arch].filter(Boolean).join('/') || '-'}
-                    </td>
-                    <td className="py-2 pr-3 font-mono text-slate-600">{d.collector_version || '-'}</td>
-                    <td className="py-2 pr-3 text-slate-600">{formatDateTime(d.last_synced_at)}</td>
-                    <td className="py-2 text-right space-x-1.5 whitespace-nowrap">
-                      <button
-                        type="button"
-                        onClick={() => handleSaveDevice(d, !d.hidden)}
-                        className="inline-flex items-center gap-1 rounded border border-slate-200 px-2 py-1 text-slate-700 hover:bg-slate-50"
-                        title={d.hidden ? '取消隐藏' : '隐藏设备'}
-                      >
-                        {d.hidden ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
-                        {d.hidden ? '显示' : '隐藏'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => deleteDevMut.mutate(d.device_id)}
-                        className="inline-flex items-center rounded border border-rose-200 p-1 text-rose-600 hover:bg-rose-50"
-                        title="删除设备元信息"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+              <tbody className="yd-tbody tabular-nums">
+                {devices.map((d) => {
+                  const isEditing = editingDevice?.id === d.device_id;
+                  return (
+                    <tr key={d.device_id} className={`group ${d.hidden ? 'opacity-50' : ''}`}>
+                      <td className="py-2.5 pr-3">
+                        {isEditing ? (
+                          <input
+                            autoFocus
+                            value={editingDevice.value}
+                            onChange={(e) =>
+                              setEditingDevice({ id: d.device_id, value: e.target.value })
+                            }
+                            onBlur={() => commitDeviceRename(d)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                e.currentTarget.blur();
+                              } else if (e.key === 'Escape') {
+                                cancelEditRef.current = true;
+                                setEditingDevice(null);
+                              }
+                            }}
+                            className="yd-input-sm w-44"
+                          />
+                        ) : (
+                          <div className="inline-flex items-center gap-1 max-w-[210px]">
+                            <span className="font-medium text-zinc-800 truncate">{d.name}</span>
+                            <button
+                              type="button"
+                              title="重命名设备"
+                              onClick={() => {
+                                cancelEditRef.current = false;
+                                setEditingDevice({ id: d.device_id, value: d.name });
+                              }}
+                              className="yd-btn-icon p-1 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity shrink-0"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                      <td className="py-2.5 pr-3 font-mono text-zinc-600">{d.device_id}</td>
+                      <td className="py-2.5 pr-3 text-zinc-600">
+                        {[d.os, d.arch].filter(Boolean).join('/') || '-'}
+                      </td>
+                      <td className="py-2.5 pr-3 font-mono text-zinc-600">{d.collector_version || '-'}</td>
+                      <td className="py-2.5 pr-3 text-zinc-500">{formatDateTime(d.last_synced_at)}</td>
+                      <td className="py-2.5 text-right whitespace-nowrap">
+                        <div className="inline-flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => toggleDeviceHidden(d)}
+                            className="yd-btn-secondary py-1"
+                            title={d.hidden ? '取消隐藏' : '隐藏设备'}
+                          >
+                            {d.hidden ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                            {d.hidden ? '显示' : '隐藏'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteDevMut.mutate(d.device_id)}
+                            className="yd-btn-danger-icon"
+                            title="删除设备元信息"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -224,11 +256,11 @@ export default function AIUsageSettingsPanel() {
       </section>
 
       {/* 2. Model Aliases */}
-      <section className="rounded-xl border border-slate-200 bg-white p-6 space-y-4">
+      <section className="yd-card p-6 space-y-4">
         <div>
-          <h2 className="text-base font-semibold text-slate-900">模型别名规则</h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            事实表保留原始模型名；匹配规则支持 <code className="font-mono">*</code> 通配符，priority 越小越优先，归一化后自动合并展示并复用标准单价。
+          <h2 className="text-sm font-semibold text-zinc-800">模型别名规则</h2>
+          <p className="text-xs text-zinc-500 mt-0.5">
+            支持 <code className="yd-code">*</code> 通配符，priority 越小越优先，归一化后合并统计。
           </p>
         </div>
 
@@ -238,26 +270,26 @@ export default function AIUsageSettingsPanel() {
             placeholder="匹配模式（如 my-relay/sonnet*）"
             value={aliasPattern}
             onChange={(e) => setAliasPattern(e.target.value)}
-            className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-mono"
+            className="yd-input-sm font-mono"
           />
           <input
             required
             placeholder="标准模型名（如 claude-sonnet-4.6）"
             value={aliasCanonical}
             onChange={(e) => setAliasCanonical(e.target.value)}
-            className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-mono"
+            className="yd-input-sm font-mono"
           />
           <input
             type="number"
             placeholder="优先级（默认 100）"
             value={aliasPriority}
             onChange={(e) => setAliasPriority(Number(e.target.value))}
-            className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs"
+            className="yd-input-sm tabular-nums"
           />
           <button
             type="submit"
             disabled={saveAliasMut.isPending}
-            className="inline-flex items-center justify-center gap-1 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+            className="yd-btn-primary py-1.5"
           >
             <Plus className="h-3.5 w-3.5" />
             保存别名
@@ -265,13 +297,15 @@ export default function AIUsageSettingsPanel() {
         </form>
 
         {loadingAliases ? (
-          <div className="text-xs text-slate-500">加载中...</div>
+          <div className="text-xs text-zinc-400">加载中...</div>
         ) : aliases.length === 0 ? (
-          <div className="text-xs text-slate-500">暂无自定义别名规则（当前使用内置前缀与日期后缀清洗）。</div>
+          <div className="text-xs text-zinc-400">
+            暂无自定义别名规则（当前使用内置前缀与日期后缀清洗）。
+          </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="border-b border-slate-200 text-slate-500">
+            <table className="yd-table">
+              <thead className="yd-thead">
                 <tr>
                   <th className="py-2 pr-3 font-medium">匹配模式</th>
                   <th className="py-2 pr-3 font-medium">标准模型名</th>
@@ -279,17 +313,18 @@ export default function AIUsageSettingsPanel() {
                   <th className="py-2 text-right font-medium">操作</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="yd-tbody tabular-nums">
                 {aliases.map((a) => (
                   <tr key={a.id}>
-                    <td className="py-2 pr-3 font-mono text-slate-800">{a.match_pattern}</td>
-                    <td className="py-2 pr-3 font-mono text-slate-800">{a.canonical_model}</td>
-                    <td className="py-2 pr-3 text-slate-600">{a.priority}</td>
-                    <td className="py-2 text-right">
+                    <td className="py-2.5 pr-3 font-mono text-zinc-800">{a.match_pattern}</td>
+                    <td className="py-2.5 pr-3 font-mono text-zinc-800">{a.canonical_model}</td>
+                    <td className="py-2.5 pr-3 text-zinc-600">{a.priority}</td>
+                    <td className="py-2.5 text-right">
                       <button
                         type="button"
+                        title="删除"
                         onClick={() => deleteAliasMut.mutate(a.id)}
-                        className="inline-flex items-center rounded border border-rose-200 p-1 text-rose-600 hover:bg-rose-50"
+                        className="yd-btn-danger-icon"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -303,86 +338,104 @@ export default function AIUsageSettingsPanel() {
       </section>
 
       {/* 3. Model Prices */}
-      <section className="rounded-xl border border-slate-200 bg-white p-6 space-y-4">
-        <div className="flex items-center justify-between gap-2">
+      <section className="yd-card p-6 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h2 className="text-base font-semibold text-slate-900">模型单价（USD / 1M Tokens）</h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              自定义单价优先覆盖内置默认单价，保存后所有历史统计即时按新单价重算。
+            <h2 className="text-sm font-semibold text-zinc-800">模型单价（USD / 1M Tokens）</h2>
+            <p className="text-xs text-zinc-500 mt-0.5">
+              自定义单价优先覆盖内置单价，保存后即时重算历史费用。
             </p>
           </div>
           <button
             type="button"
             onClick={() => setShowBuiltinPrices((v) => !v)}
-            className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
+            className="yd-btn-secondary"
           >
             {showBuiltinPrices ? '收起内置单价' : `查看内置单价 (${builtinPrices.length})`}
           </button>
         </div>
 
-        <form onSubmit={handlePriceSubmit} className="grid grid-cols-2 sm:grid-cols-7 gap-2">
-          <input
-            required
-            placeholder="模型模式（如 claude-sonnet-4.6）"
-            value={pricePattern}
-            onChange={(e) => setPricePattern(e.target.value)}
-            className="col-span-2 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-mono"
-          />
-          <input
-            type="number"
-            step="any"
-            min="0"
-            placeholder="Input"
-            title="Input USD / 1M"
-            value={inputPerM}
-            onChange={(e) => setInputPerM(e.target.value)}
-            className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs"
-          />
-          <input
-            type="number"
-            step="any"
-            min="0"
-            placeholder="Output"
-            title="Output USD / 1M"
-            value={outputPerM}
-            onChange={(e) => setOutputPerM(e.target.value)}
-            className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs"
-          />
-          <input
-            type="number"
-            step="any"
-            min="0"
-            placeholder="Cache Read"
-            title="Cache Read USD / 1M"
-            value={cacheReadPerM}
-            onChange={(e) => setCacheReadPerM(e.target.value)}
-            className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs"
-          />
-          <input
-            type="number"
-            step="any"
-            min="0"
-            placeholder="Cache Write"
-            title="Cache Write (5m) USD / 1M"
-            value={cacheWritePerM}
-            onChange={(e) => setCacheWritePerM(e.target.value)}
-            className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs"
-          />
-          <div className="flex gap-1.5">
+        <form onSubmit={handlePriceSubmit} className="grid grid-cols-2 sm:grid-cols-7 gap-2 items-end">
+          <label className="col-span-2 block space-y-1">
+            <span className="text-[11px] text-zinc-500">模型模式</span>
+            <input
+              required
+              placeholder="如 claude-sonnet-4.6"
+              value={pricePattern}
+              onChange={(e) => setPricePattern(e.target.value)}
+              className="yd-input-sm w-full font-mono"
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-[11px] text-zinc-500">Input</span>
             <input
               type="number"
               step="any"
               min="0"
-              placeholder="Write 1h"
-              title="Cache Write (1h) USD / 1M"
-              value={cacheWrite1hPerM}
-              onChange={(e) => setCacheWrite1hPerM(e.target.value)}
-              className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs"
+              placeholder="Input"
+              title="Input USD / 1M"
+              value={inputPerM}
+              onChange={(e) => setInputPerM(e.target.value)}
+              className="yd-input-sm w-full tabular-nums"
             />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-[11px] text-zinc-500">Output</span>
+            <input
+              type="number"
+              step="any"
+              min="0"
+              placeholder="Output"
+              title="Output USD / 1M"
+              value={outputPerM}
+              onChange={(e) => setOutputPerM(e.target.value)}
+              className="yd-input-sm w-full tabular-nums"
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-[11px] text-zinc-500">Cache Read</span>
+            <input
+              type="number"
+              step="any"
+              min="0"
+              placeholder="Cache Read"
+              title="Cache Read USD / 1M"
+              value={cacheReadPerM}
+              onChange={(e) => setCacheReadPerM(e.target.value)}
+              className="yd-input-sm w-full tabular-nums"
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-[11px] text-zinc-500">Cache Write</span>
+            <input
+              type="number"
+              step="any"
+              min="0"
+              placeholder="Cache Write"
+              title="Cache Write (5m) USD / 1M"
+              value={cacheWritePerM}
+              onChange={(e) => setCacheWritePerM(e.target.value)}
+              className="yd-input-sm w-full tabular-nums"
+            />
+          </label>
+          <div className="flex items-end gap-1.5">
+            <label className="block flex-1 min-w-0 space-y-1">
+              <span className="text-[11px] text-zinc-500 truncate block">Write 1h</span>
+              <input
+                type="number"
+                step="any"
+                min="0"
+                placeholder="Write 1h"
+                title="Cache Write (1h) USD / 1M"
+                value={cacheWrite1hPerM}
+                onChange={(e) => setCacheWrite1hPerM(e.target.value)}
+                className="yd-input-sm w-full tabular-nums"
+              />
+            </label>
             <button
               type="submit"
               disabled={savePriceMut.isPending}
-              className="shrink-0 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+              className="yd-btn-primary shrink-0 py-1.5"
             >
               保存
             </button>
@@ -390,11 +443,11 @@ export default function AIUsageSettingsPanel() {
         </form>
 
         {loadingPrices ? (
-          <div className="text-xs text-slate-500">加载中...</div>
+          <div className="text-xs text-zinc-400">加载中...</div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="border-b border-slate-200 text-slate-500">
+            <table className="yd-table">
+              <thead className="yd-thead">
                 <tr>
                   <th className="py-2 pr-3 font-medium">模型模式</th>
                   <th className="py-2 pr-3 font-medium">Input</th>
@@ -405,20 +458,21 @@ export default function AIUsageSettingsPanel() {
                   <th className="py-2 text-right font-medium">操作</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="yd-tbody tabular-nums">
                 {customPrices.map((p) => (
                   <tr key={`custom-${p.id}`}>
-                    <td className="py-2 pr-3 font-mono text-slate-900">{p.model_pattern}</td>
-                    <td className="py-2 pr-3">${p.input_per_m}</td>
-                    <td className="py-2 pr-3">${p.output_per_m}</td>
-                    <td className="py-2 pr-3">${p.cache_read_per_m}</td>
-                    <td className="py-2 pr-3">${p.cache_write_per_m}</td>
-                    <td className="py-2 pr-3">${p.cache_write_1h_per_m}</td>
-                    <td className="py-2 text-right">
+                    <td className="py-2.5 pr-3 font-mono text-zinc-900">{p.model_pattern}</td>
+                    <td className="py-2.5 pr-3 text-zinc-700">${p.input_per_m}</td>
+                    <td className="py-2.5 pr-3 text-zinc-700">${p.output_per_m}</td>
+                    <td className="py-2.5 pr-3 text-zinc-700">${p.cache_read_per_m}</td>
+                    <td className="py-2.5 pr-3 text-zinc-700">${p.cache_write_per_m}</td>
+                    <td className="py-2.5 pr-3 text-zinc-700">${p.cache_write_1h_per_m}</td>
+                    <td className="py-2.5 text-right">
                       <button
                         type="button"
+                        title="删除"
                         onClick={() => p.id && deletePriceMut.mutate(p.id)}
-                        className="inline-flex items-center rounded border border-rose-200 p-1 text-rose-600 hover:bg-rose-50"
+                        className="yd-btn-danger-icon"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -427,7 +481,7 @@ export default function AIUsageSettingsPanel() {
                 ))}
                 {customPrices.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="py-3 text-slate-500">
+                    <td colSpan={7} className="py-4 text-zinc-400">
                       暂无自定义覆盖单价。
                     </td>
                   </tr>
@@ -438,10 +492,10 @@ export default function AIUsageSettingsPanel() {
         )}
 
         {showBuiltinPrices && (
-          <div className="pt-3 border-t border-slate-100 overflow-x-auto">
-            <div className="text-xs font-medium text-slate-600 mb-2">内置默认单价参考</div>
-            <table className="w-full text-left text-xs text-slate-600">
-              <thead className="border-b border-slate-200 text-slate-500">
+          <div className="pt-4 border-t border-zinc-100 overflow-x-auto">
+            <div className="text-xs font-medium text-zinc-500 mb-2">内置默认单价参考</div>
+            <table className="yd-table text-zinc-600">
+              <thead className="yd-thead">
                 <tr>
                   <th className="py-1.5 pr-3 font-medium">模型模式</th>
                   <th className="py-1.5 pr-3 font-medium">Input</th>
@@ -451,7 +505,7 @@ export default function AIUsageSettingsPanel() {
                   <th className="py-1.5 font-medium">Cache Write 1h</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="yd-tbody tabular-nums">
                 {builtinPrices.map((p) => (
                   <tr key={`builtin-${p.model_pattern}`}>
                     <td className="py-1.5 pr-3 font-mono">{p.model_pattern}</td>
@@ -469,13 +523,12 @@ export default function AIUsageSettingsPanel() {
       </section>
 
       {/* 4. Collector quick reference */}
-      <section className="rounded-xl border border-slate-200 bg-white p-6 space-y-2 text-xs text-slate-600">
-        <h2 className="text-base font-semibold text-slate-900">探针接入参考（`collector/`）</h2>
+      <section className="yd-card p-6 space-y-2.5 text-xs text-zinc-500">
+        <h2 className="text-sm font-semibold text-zinc-800">探针接入</h2>
         <p>
-          先在「系统设置 → API Keys」签发具备 <code className="font-mono text-slate-800">ai-usage:ingest</code>{' '}
-          权限的密钥，然后在各开发机执行：
+          先在 API Keys 签发 <code className="yd-code">ai-usage:ingest</code> 密钥，然后在开发机执行：
         </p>
-        <pre className="rounded-lg bg-slate-900 p-3 text-slate-100 overflow-x-auto font-mono">
+        <pre className="rounded-lg border border-zinc-200/80 bg-[#f4f7fa] px-4 py-3 text-zinc-700 overflow-x-auto font-mono text-[11px] leading-relaxed">
 {`yukideck-collector init --server ${serverOrigin} --api-key ydk_xxx --device-name my-laptop
 yukideck-collector doctor
 yukideck-collector sync --all`}

@@ -261,3 +261,127 @@ export function getExtension(filename: string, mime?: string): string {
   }
   return '';
 }
+
+/**
+ * Extracts image pixel dimensions from binary container headers (PNG, JPEG, WebP, GIF).
+ * Accounts for JPEG EXIF orientation (5-8 swaps width/height).
+ */
+export function extractImageDimensions(input: Uint8Array): { width: number; height: number } | null {
+  if (input.byteLength < 12) return null;
+  const view = new DataView(input.buffer, input.byteOffset, input.byteLength);
+  try {
+    // PNG: IHDR width at 16, height at 20
+    if (isPng(input) && input.byteLength >= 24) {
+      const width = view.getUint32(16, false);
+      const height = view.getUint32(20, false);
+      return width > 0 && height > 0 ? { width, height } : null;
+    }
+
+    // GIF: GIF87a / GIF89a width at 6, height at 8 (LE)
+    if (
+      input[0] === 0x47 &&
+      input[1] === 0x49 &&
+      input[2] === 0x46 &&
+      input[3] === 0x38 &&
+      input.byteLength >= 10
+    ) {
+      const width = view.getUint16(6, true);
+      const height = view.getUint16(8, true);
+      return width > 0 && height > 0 ? { width, height } : null;
+    }
+
+    // WebP: VP8X / VP8L / VP8
+    if (isWebp(input) && input.byteLength >= 30) {
+      const chunk = String.fromCharCode(input[12], input[13], input[14], input[15]);
+      if (chunk === 'VP8X') {
+        const width = 1 + (input[24] | (input[25] << 8) | (input[26] << 16));
+        const height = 1 + (input[27] | (input[28] << 8) | (input[29] << 16));
+        return width > 0 && height > 0 ? { width, height } : null;
+      }
+      if (chunk === 'VP8L' && input[20] === 0x2f) {
+        const bits = view.getUint32(21, true);
+        const width = (bits & 0x3fff) + 1;
+        const height = ((bits >> 14) & 0x3fff) + 1;
+        return width > 0 && height > 0 ? { width, height } : null;
+      }
+      if (chunk === 'VP8 ' && input[23] === 0x9d && input[24] === 0x01 && input[25] === 0x2a) {
+        const width = view.getUint16(26, true) & 0x3fff;
+        const height = view.getUint16(28, true) & 0x3fff;
+        return width > 0 && height > 0 ? { width, height } : null;
+      }
+    }
+
+    // JPEG: scan SOF markers + EXIF orientation
+    if (isJpeg(input)) {
+      let pos = 2;
+      let orientation = 1;
+      while (pos < input.byteLength) {
+        if (input[pos] !== 0xff) break;
+        while (pos < input.byteLength && input[pos] === 0xff) pos++;
+        if (pos >= input.byteLength) break;
+        const marker = input[pos++];
+        if (marker === 0xd9 || marker === 0xda) break;
+        if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+        if (pos + 2 > input.byteLength) break;
+        const segLen = view.getUint16(pos, false);
+        if (segLen < 2 || pos + segLen > input.byteLength) break;
+
+        if (marker === 0xe1) {
+          const ori = extractJpegExifOrientation(input.subarray(pos + 2, pos + segLen));
+          if (ori !== null) orientation = ori;
+        }
+        const isSOF =
+          (marker >= 0xc0 && marker <= 0xc3) ||
+          (marker >= 0xc5 && marker <= 0xc7) ||
+          (marker >= 0xc9 && marker <= 0xcb) ||
+          (marker >= 0xcd && marker <= 0xcf);
+        if (isSOF && segLen >= 7) {
+          const height = view.getUint16(pos + 3, false);
+          const width = view.getUint16(pos + 5, false);
+          if (width > 0 && height > 0) {
+            return orientation >= 5 && orientation <= 8
+              ? { width: height, height: width }
+              : { width, height };
+          }
+          break;
+        }
+        pos += segLen;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+const DIMS_STORAGE_KEY = 'yukideck_storage_img_dims_v1';
+const DIMS_CACHE_LIMIT = 1500;
+
+export function loadCachedDimensions(): Record<string, [number, number]> {
+  try {
+    const raw = localStorage.getItem(DIMS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, [number, number]>;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveCachedDimensionsBatch(entries: Record<string, [number, number]>): void {
+  try {
+    const merged = { ...loadCachedDimensions(), ...entries };
+    const keys = Object.keys(merged);
+    if (keys.length > DIMS_CACHE_LIMIT) {
+      const trimmed: Record<string, [number, number]> = {};
+      for (const k of keys.slice(keys.length - DIMS_CACHE_LIMIT)) {
+        trimmed[k] = merged[k];
+      }
+      localStorage.setItem(DIMS_STORAGE_KEY, JSON.stringify(trimmed));
+    } else {
+      localStorage.setItem(DIMS_STORAGE_KEY, JSON.stringify(merged));
+    }
+  } catch {
+    // Ignore storage quota errors
+  }
+}

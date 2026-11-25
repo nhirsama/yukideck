@@ -146,7 +146,8 @@ export default function PlannerPage() {
         id: ev.id,
         title: ev.title,
         start: ev.start,
-        backgroundColor: ev.status === 'done' ? '#94a3b8' : ev.has_reminder ? '#0f172a' : '#475569',
+        backgroundColor: ev.status === 'done' ? '#f4f4f5' : ev.has_reminder ? '#e0f2fe' : '#f1f5f9',
+        textColor: ev.status === 'done' ? '#94a3b8' : ev.has_reminder ? '#0369a1' : '#475569',
         borderColor: 'transparent',
         extendedProps: { itemId: ev.item_id },
       })),
@@ -155,18 +156,13 @@ export default function PlannerPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">日程与提醒</h1>
-          <p className="text-sm text-slate-500 mt-1">
-            统一管理待办、公历/农历计划与精确到分钟的多时间点独立推送。
-          </p>
-        </div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="yd-page-title">日程与提醒</h1>
 
         <button
           type="button"
           onClick={() => setModalState({ open: true, item: null })}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-2 text-xs font-medium text-white hover:bg-slate-800"
+          className="yd-btn-primary"
         >
           <Plus className="h-3.5 w-3.5" />
           新建事项
@@ -174,35 +170,27 @@ export default function PlannerPage() {
       </div>
 
       {/* View Switch Tabs */}
-      <div className="flex gap-1 border-b border-slate-200">
+      <div className="yd-tabs">
         {(
           [
-            ['list', '清单视图', ListTodo],
-            ['calendar', '日历视图', CalendarIcon],
-            ['logs', '推送历史', History],
+            ['list', '清单', ListTodo],
+            ['calendar', '日历', CalendarIcon],
+            ['logs', '推送记录', History],
           ] as const
         ).map(([key, label, Icon]) => (
           <button
             key={key}
             type="button"
             onClick={() => setTab(key)}
-            className={`inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              tab === key
-                ? 'border-slate-900 text-slate-900'
-                : 'border-transparent text-slate-500 hover:text-slate-700'
-            }`}
+            className={`yd-tab ${tab === key ? 'yd-tab-active' : 'yd-tab-idle'}`}
           >
-            <Icon className="h-4 w-4" />
+            <Icon className="h-3.5 w-3.5" />
             {label}
           </button>
         ))}
       </div>
 
-      {toast && (
-        <div className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-xs text-slate-700">
-          {toast}
-        </div>
-      )}
+      {toast && <div className="yd-notice">{toast}</div>}
 
       {/* TAB 1: Unified Todo & Schedule List */}
       {tab === 'list' && (
@@ -213,31 +201,34 @@ export default function PlannerPage() {
               e.preventDefault();
               if (quickTitle.trim()) quickAddMut.mutate(quickTitle.trim());
             }}
-            className="flex gap-2"
+            className="yd-card flex items-center gap-2 px-3 py-1.5 focus-within:border-sky-300 focus-within:ring-2 focus-within:ring-sky-500/12 transition-colors"
           >
+            <Plus className="h-4 w-4 text-zinc-400 shrink-0" />
             <input
               value={quickTitle}
               onChange={(e) => setQuickTitle(e.target.value)}
-              placeholder="快速添加待办（仅输入标题回车即可，需要时间或推送点右上角「新建事项」）..."
-              className="flex-1 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm outline-none focus:border-slate-400"
+              placeholder="输入待办事项，回车快速添加..."
+              className="flex-1 bg-transparent py-1.5 text-[13px] text-zinc-800 placeholder:text-zinc-400 outline-none"
             />
-            <button
-              type="submit"
-              disabled={!quickTitle.trim() || quickAddMut.isPending}
-              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-            >
-              添加
-            </button>
+            {quickTitle.trim() && (
+              <button
+                type="submit"
+                disabled={quickAddMut.isPending}
+                className="yd-btn-primary py-1 px-3"
+              >
+                添加
+              </button>
+            )}
           </form>
 
           {/* Filter pills */}
-          <div className="inline-flex flex-wrap rounded-lg border border-slate-200 bg-white p-1 text-xs">
+          <div className="yd-segment">
             {(
               [
-                ['pending', '全部待办'],
+                ['pending', '全部'],
                 ['today', '今日'],
-                ['upcoming', '有时间计划'],
-                ['undated', '无日期 Todo'],
+                ['upcoming', '有时间'],
+                ['undated', '无日期'],
                 ['done', '已完成'],
               ] as const
             ).map(([k, label]) => (
@@ -245,9 +236,7 @@ export default function PlannerPage() {
                 key={k}
                 type="button"
                 onClick={() => setFilter(k)}
-                className={`rounded-md px-3 py-1.5 font-medium transition-colors ${
-                  filter === k ? 'bg-slate-900 text-white' : 'text-slate-600 hover:text-slate-900'
-                }`}
+                className={`yd-segment-btn ${filter === k ? 'yd-segment-active' : 'yd-segment-idle'}`}
               >
                 {label}
               </button>
@@ -255,20 +244,18 @@ export default function PlannerPage() {
           </div>
 
           {itemsLoading ? (
-            <div className="text-sm text-slate-500">加载中...</div>
+            <div className="text-xs text-zinc-400">加载中...</div>
           ) : filteredItems.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500">
-              当前筛选下暂无事项。
-            </div>
+            <div className="yd-empty p-10 text-xs">当前筛选下暂无事项。</div>
           ) : (
-            <div className="space-y-2.5">
+            <div className="space-y-2">
               {filteredItems.map((it) => {
                 const isDone = it.status === 'done';
                 const repeatLabel = formatRepeatLabel(it.repeat_type, it.repeat_config);
                 return (
                   <div
                     key={it.id}
-                    className="rounded-xl border border-slate-200 bg-white p-4 flex items-start justify-between gap-4 hover:border-slate-300 transition-colors"
+                    className="group yd-card p-4 flex items-start justify-between gap-4 transition-colors hover:border-zinc-300"
                   >
                     <div className="flex items-start gap-3 min-w-0">
                       <button
@@ -283,64 +270,75 @@ export default function PlannerPage() {
                         onClick={() =>
                           isDone ? reopenMut.mutate(it.id) : completeMut.mutate(it.id)
                         }
-                        className={`mt-0.5 h-5 w-5 rounded-md border flex items-center justify-center shrink-0 transition-colors ${
+                        className={`mt-0.5 h-[18px] w-[18px] rounded-[5px] border flex items-center justify-center shrink-0 transition-colors ${
                           isDone
-                            ? 'bg-slate-900 border-slate-900 text-white'
-                            : 'border-slate-300 hover:border-slate-900'
+                            ? 'bg-sky-500 border-sky-500 text-white'
+                            : 'border-zinc-300 hover:border-sky-400'
                         }`}
                       >
-                        {isDone ? <Check className="h-3.5 w-3.5" /> : null}
+                        {isDone ? <Check className="h-3 w-3" /> : null}
                       </button>
 
                       <div className="min-w-0 space-y-1">
                         <div
-                          className={`text-sm font-medium ${
-                            isDone ? 'line-through text-slate-400' : 'text-slate-900'
+                          className={`text-[13px] font-medium leading-snug ${
+                            isDone ? 'line-through text-zinc-400' : 'text-zinc-900'
                           }`}
                         >
                           {it.title}
                         </div>
-                        {it.note && <p className="text-xs text-slate-500 whitespace-pre-wrap">{it.note}</p>}
+                        {it.note && (
+                          <p className="text-xs text-zinc-500 whitespace-pre-wrap leading-relaxed">
+                            {it.note}
+                          </p>
+                        )}
 
-                        <div className="flex flex-wrap items-center gap-2 pt-0.5 text-[11px] text-slate-500">
-                          {it.target_local && (
-                            <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-0.5 text-slate-700">
-                              <Clock className="h-3 w-3" />
-                              {it.target_local.replace('T', ' ')}
-                              {it.calendar_type === 'lunar' && it.lunar_label ? ` · ${it.lunar_label}` : ''}
-                            </span>
-                          )}
-                          {repeatLabel && (
-                            <span className="inline-flex items-center gap-1 rounded bg-blue-50 px-2 py-0.5 text-blue-700">
-                              <Repeat className="h-3 w-3" />
-                              {repeatLabel}
-                            </span>
-                          )}
-                          {it.remind_offsets.map((o) => (
-                            <span
-                              key={`${o.unit}:${o.value}`}
-                              className="inline-flex items-center gap-1 rounded bg-emerald-50 px-2 py-0.5 text-emerald-700"
-                            >
-                              <Bell className="h-3 w-3" />
-                              {formatOffsetLabel(o)}
-                            </span>
-                          ))}
-                          {it.next_trigger_at && !isDone && (
-                            <span className="text-slate-400">
-                              下次推送：{formatDateTimeShort(it.next_trigger_at)}
-                            </span>
-                          )}
-                        </div>
+                        {(it.target_local ||
+                          repeatLabel ||
+                          it.remind_offsets.length > 0 ||
+                          (it.next_trigger_at && !isDone)) && (
+                          <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[11px] text-zinc-500 tabular-nums">
+                            {it.target_local && (
+                              <span className="yd-badge yd-badge-neutral">
+                                <Clock className="h-3 w-3 text-zinc-400" />
+                                {it.target_local.replace('T', ' ')}
+                                {it.calendar_type === 'lunar' && it.lunar_label
+                                  ? ` · ${it.lunar_label}`
+                                  : ''}
+                              </span>
+                            )}
+                            {repeatLabel && (
+                              <span className="yd-badge yd-badge-sky">
+                                <Repeat className="h-3 w-3" />
+                                {repeatLabel}
+                              </span>
+                            )}
+                            {it.remind_offsets.map((o) => (
+                              <span
+                                key={`${o.unit}:${o.value}`}
+                                className="yd-badge yd-badge-emerald"
+                              >
+                                <Bell className="h-3 w-3" />
+                                {formatOffsetLabel(o)}
+                              </span>
+                            ))}
+                            {it.next_trigger_at && !isDone && (
+                              <span className="text-zinc-400 ml-0.5">
+                                下次推送：{formatDateTimeShort(it.next_trigger_at)}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1 shrink-0">
+                    <div className="flex items-center gap-0.5 shrink-0 opacity-75 group-hover:opacity-100 transition-opacity">
                       {!isDone && (
                         <button
                           type="button"
                           title="测试推送"
                           onClick={() => testMut.mutate(it.id)}
-                          className="p-1.5 rounded-lg text-slate-400 hover:text-slate-800 hover:bg-slate-100"
+                          className="yd-btn-icon"
                         >
                           <Send className="h-3.5 w-3.5" />
                         </button>
@@ -350,7 +348,7 @@ export default function PlannerPage() {
                           type="button"
                           title="恢复待办"
                           onClick={() => reopenMut.mutate(it.id)}
-                          className="p-1.5 rounded-lg text-slate-400 hover:text-slate-800 hover:bg-slate-100"
+                          className="yd-btn-icon"
                         >
                           <RotateCcw className="h-3.5 w-3.5" />
                         </button>
@@ -359,7 +357,7 @@ export default function PlannerPage() {
                         type="button"
                         title="编辑"
                         onClick={() => setModalState({ open: true, item: it })}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-slate-800 hover:bg-slate-100"
+                        className="yd-btn-icon"
                       >
                         <Pencil className="h-3.5 w-3.5" />
                       </button>
@@ -371,7 +369,7 @@ export default function PlannerPage() {
                             deleteMut.mutate(it.id);
                           }
                         }}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50"
+                        className="yd-btn-danger-icon"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -386,7 +384,7 @@ export default function PlannerPage() {
 
       {/* TAB 2: FullCalendar with Solar + Lunar Display */}
       {tab === 'calendar' && (
-        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="yd-card p-5">
           <FullCalendar
             plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
             initialView="dayGridMonth"
@@ -411,11 +409,19 @@ export default function PlannerPage() {
               const lunar = getLunarDayBadge(arg.date);
               return (
                 <div className="w-full flex items-center justify-between gap-1">
-                  <span className="text-xs font-medium text-slate-700">{arg.date.getDate()}</span>
+                  <span
+                    className={`text-xs tabular-nums ${
+                      arg.isToday
+                        ? 'inline-flex h-5 w-5 items-center justify-center rounded-full bg-sky-500 font-medium text-white'
+                        : 'font-medium text-zinc-700'
+                    }`}
+                  >
+                    {arg.date.getDate()}
+                  </span>
                   {lunar.text && (
                     <span
                       className={`text-[10px] ${
-                        lunar.highlight ? 'text-blue-600 font-medium' : 'text-slate-400'
+                        lunar.highlight ? 'text-sky-600 font-medium' : 'text-zinc-400'
                       }`}
                     >
                       {lunar.text}
@@ -438,28 +444,24 @@ export default function PlannerPage() {
 
       {/* TAB 3: Push History Logs */}
       {tab === 'logs' && (
-        <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+        <div className="yd-card overflow-hidden">
           {logsLoading ? (
-            <div className="p-6 text-sm text-slate-500">加载推送历史...</div>
+            <div className="p-6 text-xs text-zinc-400">加载推送历史...</div>
           ) : (logsData?.logs ?? []).length === 0 ? (
-            <div className="p-10 text-center text-sm text-slate-500">暂无定时推送记录。</div>
+            <div className="p-10 text-center text-xs text-zinc-500">暂无定时推送记录。</div>
           ) : (
-            <div className="divide-y divide-slate-100">
+            <div className="divide-y divide-zinc-100">
               {(logsData?.logs ?? []).map((log) => (
                 <div key={log.id} className="px-4 py-3 flex items-center justify-between gap-4 text-xs">
                   <div className="min-w-0 space-y-0.5">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-slate-900 truncate">{log.item_title}</span>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-medium text-zinc-900 truncate">{log.item_title}</span>
                       {log.trigger_label && (
-                        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600">
-                          {log.trigger_label}
-                        </span>
+                        <span className="yd-badge yd-badge-neutral">{log.trigger_label}</span>
                       )}
                       <span
-                        className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
-                          log.status === 'ok'
-                            ? 'bg-emerald-50 text-emerald-700'
-                            : 'bg-red-50 text-red-700'
+                        className={`yd-badge ${
+                          log.status === 'ok' ? 'yd-badge-emerald' : 'yd-badge-red'
                         }`}
                       >
                         {log.status === 'ok' ? '成功' : '失败'}
@@ -467,7 +469,9 @@ export default function PlannerPage() {
                     </div>
                     {log.error && <div className="text-red-600">{log.error}</div>}
                   </div>
-                  <div className="text-slate-400 shrink-0">{formatDateTimeShort(log.sent_at)}</div>
+                  <div className="text-zinc-400 shrink-0 tabular-nums">
+                    {formatDateTimeShort(log.sent_at)}
+                  </div>
                 </div>
               ))}
             </div>
