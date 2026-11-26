@@ -2463,6 +2463,7 @@ dependencies = [
  "fs2",
  "hex",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",

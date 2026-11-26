@@ -5,8 +5,11 @@ use chrono::{DateTime, Duration, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::Path;
-use tokscale_core::{CostSource, LocalParseOptions, ParsedMessage};
+use std::pin::pin;
+use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use tokscale_core::{CostSource, LocalParseOptions, UnifiedMessage};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestSlice {
@@ -77,7 +80,33 @@ pub struct AggregateStats {
     pub dropped_missing_fields: usize,
 }
 
-pub fn collect_slices(cfg: &CollectorConfig, all_history: bool, lookback_override: Option<u64>) -> Result<CollectSummary> {
+/// Polls a synchronous future that completes immediately (such as
+/// `tokscale_core::parse_local_unified_messages_with_pricing` which contains no `.await` points)
+/// without spinning up a Tokio runtime.
+fn block_on_ready<F: Future>(fut: F) -> Result<F::Output> {
+    fn clone_noop(_: *const ()) -> RawWaker {
+        RawWaker::new(std::ptr::null(), &VTABLE)
+    }
+    fn noop(_: *const ()) {}
+    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_noop, noop, noop, noop);
+
+    let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
+    let mut cx = Context::from_waker(&waker);
+    let mut pinned = pin!(fut);
+    match pinned.as_mut().poll(&mut cx) {
+        Poll::Ready(val) => Ok(val),
+        Poll::Pending => Err(anyhow!(
+            "unexpected async pending state from tokscale-core cached parser"
+        )),
+    }
+}
+
+pub fn collect_slices(
+    cfg: &CollectorConfig,
+    all_history: bool,
+    lookback_override: Option<u64>,
+    tool_cache_path: Option<&Path>,
+) -> Result<CollectSummary> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("cannot determine home directory"))?;
     let lookback_hours = lookback_override.unwrap_or(cfg.lookback_hours);
 
@@ -94,27 +123,33 @@ pub fn collect_slices(cfg: &CollectorConfig, all_history: bool, lookback_overrid
         Some(cfg.agents.clone())
     };
 
-    let parsed = tokscale_core::parse_local_clients(LocalParseOptions {
-        home_dir: Some(home.to_string_lossy().to_string()),
-        use_env_roots: true,
-        clients,
-        since,
-        until: None,
-        year: None,
-        scanner_settings: Default::default(),
-    })
+    // Use tokscale-core's persistent sharded source-message-cache-v2 + incremental SQLite/JSONL
+    // checkpoint rescanning instead of the uncached `parse_local_clients` full-scan entry point.
+    // Pass `pricing = None` so no external pricing network requests are made (YukiDeck computes
+    // pricing server-side while preserving `ProviderReported` costs).
+    let messages = block_on_ready(tokscale_core::parse_local_unified_messages_with_pricing(
+        LocalParseOptions {
+            home_dir: Some(home.to_string_lossy().to_string()),
+            use_env_roots: true,
+            clients,
+            since,
+            until: None,
+            year: None,
+            scanner_settings: Default::default(),
+        },
+        None,
+    ))?
     .map_err(|e| anyhow!("tokscale-core parse failed: {e}"))?;
 
-    let mut client_counts = BTreeMap::new();
-    for cid in tokscale_core::ClientId::iter() {
-        let count = parsed.counts.get(cid);
-        if count > 0 {
-            client_counts.insert(cid.as_str().to_string(), count);
-        }
+    let mut client_counts: BTreeMap<String, i32> = BTreeMap::new();
+    for msg in &messages {
+        let n = msg.message_count.max(1);
+        *client_counts.entry(msg.client.to_string()).or_insert(0) += n;
     }
 
-    let sidecar = ToolSidecar::collect(&home, cutoff, &cfg.agents);
-    let (slices, stats) = aggregate_messages_with_stats(&parsed.messages, cutoff, cfg.project_privacy, &sidecar);
+    let sidecar = ToolSidecar::collect_cached(&home, cutoff, &cfg.agents, tool_cache_path);
+    let (slices, stats) =
+        aggregate_messages_with_stats(&messages, cutoff, cfg.project_privacy, &sidecar);
 
     let mut slices_by_agent = BTreeMap::new();
     let mut earliest_bucket: Option<DateTime<Utc>> = None;
@@ -132,7 +167,7 @@ pub fn collect_slices(cfg: &CollectorConfig, all_history: bool, lookback_overrid
     }
 
     Ok(CollectSummary {
-        raw_messages: parsed.messages.len(),
+        raw_messages: messages.len(),
         client_counts,
         slices_by_agent,
         dropped_invalid_ts: stats.dropped_invalid_ts,
@@ -146,7 +181,7 @@ pub fn collect_slices(cfg: &CollectorConfig, all_history: bool, lookback_overrid
 
 #[cfg(test)]
 pub fn aggregate_messages(
-    messages: &[ParsedMessage],
+    messages: &[UnifiedMessage],
     cutoff: Option<DateTime<Utc>>,
     privacy: ProjectPrivacy,
     sidecar: &ToolSidecar,
@@ -155,7 +190,7 @@ pub fn aggregate_messages(
 }
 
 pub fn aggregate_messages_with_stats(
-    messages: &[ParsedMessage],
+    messages: &[UnifiedMessage],
     cutoff: Option<DateTime<Utc>>,
     privacy: ProjectPrivacy,
     sidecar: &ToolSidecar,
@@ -190,12 +225,25 @@ pub fn aggregate_messages_with_stats(
             continue;
         }
 
-        let (sidecar_sub, parent_session_id) = sidecar
+        let (sidecar_sub, sidecar_parent) = sidecar
             .subagent_meta
             .get(&(agent.clone(), session_id.clone()))
             .cloned()
             .unwrap_or((false, String::new()));
+        let msg_parent = msg
+            .parent_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != session_id.as_str())
+            .unwrap_or("")
+            .to_string();
+        let parent_session_id = if !sidecar_parent.is_empty() {
+            sidecar_parent
+        } else {
+            msg_parent
+        };
         let is_subagent = sidecar_sub
+            || !parent_session_id.is_empty()
             || msg
                 .agent
                 .as_deref()
@@ -210,13 +258,13 @@ pub fn aggregate_messages_with_stats(
             privacy,
         );
 
-        let input = msg.input.max(0);
-        let output = msg.output.max(0);
-        let cache_read = msg.cache_read.max(0);
+        let input = msg.tokens.input.max(0);
+        let output = msg.tokens.output.max(0);
+        let cache_read = msg.tokens.cache_read.max(0);
         // tokscale-core's cache_write INCLUDES cache_write_1h; split without double counting.
-        let cache_write_1h = msg.cache_write_1h.max(0).min(msg.cache_write.max(0));
-        let cache_write_5m = msg.cache_write.max(0).saturating_sub(cache_write_1h);
-        let reasoning = msg.reasoning.max(0);
+        let cache_write_1h = msg.tokens.cache_write_1h.max(0).min(msg.tokens.cache_write.max(0));
+        let cache_write_5m = msg.tokens.cache_write.max(0).saturating_sub(cache_write_1h);
+        let reasoning = msg.tokens.reasoning.max(0);
         let turn_context = input
             .saturating_add(cache_read)
             .saturating_add(cache_write_5m)
@@ -228,7 +276,13 @@ pub fn aggregate_messages_with_stats(
             0.0
         };
 
-        let key: Key = (agent.clone(), session_id.clone(), hour_bucket, model.clone(), is_subagent);
+        let key: Key = (
+            agent.clone(),
+            session_id.clone(),
+            hour_bucket,
+            model.clone(),
+            is_subagent,
+        );
         let entry = map.entry(key).or_insert_with(|| IngestSlice {
             agent: agent.clone(),
             session_id: session_id.clone(),
@@ -350,34 +404,30 @@ pub fn sanitize_project(raw: Option<&str>, privacy: ProjectPrivacy) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokscale_core::sessions::{BillingIdentity, EstimateStatus, SharedStr};
+    use tokscale_core::{TokenBreakdown, UnifiedMessage};
 
-    fn dummy_msg(ts_ms: i64, cache_write: i64, cache_write_1h: i64) -> ParsedMessage {
-        ParsedMessage {
-            estimate_status: EstimateStatus::Unpriced,
-            billing_identity: BillingIdentity::Unknown,
-            pricing_model_id: None,
-            client: SharedStr::from("claude"),
-            model_id: SharedStr::from("claude-sonnet-4-6-20260514"),
-            provider_id: SharedStr::from("anthropic"),
-            session_id: SharedStr::from("sess-1"),
-            workspace_key: Some(SharedStr::from("/home/alice/code/yukideck")),
-            workspace_label: Some(SharedStr::from("yukideck")),
-            timestamp: ts_ms,
-            date: SharedStr::from("2026-11-24"),
-            input: 1000,
-            output: 200,
-            cache_read: 5000,
-            cache_write,
-            cache_write_1h,
-            reasoning: 0,
-            duration_ms: None,
-            message_count: 1,
-            agent: None,
-            cost: 0.0,
-            cost_source: CostSource::Unknown,
-            service_tier: None,
-        }
+    fn dummy_msg(ts_ms: i64, cache_write: i64, cache_write_1h: i64) -> UnifiedMessage {
+        let mut msg = UnifiedMessage::new(
+            "claude",
+            "claude-sonnet-4-6-20260514",
+            "anthropic",
+            "sess-1",
+            ts_ms,
+            TokenBreakdown {
+                input: 1000,
+                output: 200,
+                cache_read: 5000,
+                cache_write,
+                cache_write_1h,
+                reasoning: 0,
+            },
+            0.0,
+        );
+        msg.set_workspace(
+            Some("/home/alice/code/yukideck".to_string()),
+            Some("yukideck".to_string()),
+        );
+        msg
     }
 
     #[test]

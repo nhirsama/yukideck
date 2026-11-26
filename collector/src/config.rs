@@ -83,6 +83,13 @@ impl CollectorConfig {
             .join("sync.lock")
     }
 
+    pub fn tool_cache_path_for(state_path: &Path) -> PathBuf {
+        state_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("tool-cache.json")
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("failed to read config at {} (run `init` first)", path.display()))?;

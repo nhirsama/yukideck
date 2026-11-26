@@ -12,6 +12,7 @@ use anyhow::{anyhow, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use std::time::Instant;
 use uuid::Uuid;
 
 #[derive(Parser)]
@@ -95,9 +96,20 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    // Keep background sync gentle on CPU by capping Rayon parallelism when the user did not
+    // explicitly configure `RAYON_NUM_THREADS`. Called at process start before any threads spawn.
+    if std::env::var_os("RAYON_NUM_THREADS").is_none() {
+        let cpus = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2);
+        let gentle = (cpus / 4).clamp(2, 4);
+        std::env::set_var("RAYON_NUM_THREADS", gentle.to_string());
+    }
+
     let cli = Cli::parse();
     let cfg_path = cli.config.unwrap_or_else(CollectorConfig::default_config_path);
     let state_path = cli.state.unwrap_or_else(CollectorConfig::default_state_path);
+    let tool_cache_path = CollectorConfig::tool_cache_path_for(&state_path);
 
     match cli.command {
         Commands::Init {
@@ -173,14 +185,16 @@ fn main() -> Result<()> {
                 println!("Last sync:  never");
             }
 
-            let summary = collect_slices(&cfg, all, None)?;
+            let scan_start = Instant::now();
+            let summary = collect_slices(&cfg, all, None, Some(&tool_cache_path))?;
+            let scan_ms = scan_start.elapsed().as_millis();
             let scope = if all {
                 "all history".to_string()
             } else {
                 format!("{}h window", cfg.lookback_hours)
             };
             println!(
-                "Local scan ({scope}): {} raw messages -> {} hourly slices",
+                "Local scan ({scope}, {scan_ms}ms): {} raw messages -> {} hourly slices",
                 summary.raw_messages,
                 summary.slices.len()
             );
@@ -241,7 +255,9 @@ fn main() -> Result<()> {
             let _lock = acquire_sync_lock(&lock_path)?;
 
             let mut st = CollectorState::load(&state_path);
-            let summary = collect_slices(&cfg, all, lookback_hours)?;
+            let scan_start = Instant::now();
+            let summary = collect_slices(&cfg, all, lookback_hours, Some(&tool_cache_path))?;
+            let scan_ms = scan_start.elapsed().as_millis();
             let total_slices = summary.slices.len();
 
             let mut to_upload = Vec::new();
@@ -283,7 +299,7 @@ fn main() -> Result<()> {
 
             if to_upload.is_empty() {
                 println!(
-                    "No changed slices to sync (mode={mode_label}, total={total_slices}, skipped_unchanged={skipped_unchanged}, span={span_label})."
+                    "No changed slices to sync (mode={mode_label}, scan={scan_ms}ms, total={total_slices}, skipped_unchanged={skipped_unchanged}, span={span_label})."
                 );
                 return Ok(());
             }
@@ -310,7 +326,7 @@ fn main() -> Result<()> {
             }
 
             println!(
-                "Synced {total_accepted} slices (mode={mode_label}, raw={}, total_slices={total_slices}, skipped_unchanged={skipped_unchanged}, span={span_label}, dropped=ts:{}/cutoff:{}/fields:{}).",
+                "Synced {total_accepted} slices (mode={mode_label}, scan={scan_ms}ms, raw={}, total_slices={total_slices}, skipped_unchanged={skipped_unchanged}, span={span_label}, dropped=ts:{}/cutoff:{}/fields:{}).",
                 summary.raw_messages,
                 summary.dropped_invalid_ts,
                 summary.dropped_cutoff,
