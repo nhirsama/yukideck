@@ -123,6 +123,11 @@ func (m *memStore) UpsertHourlySessions(_ context.Context, userID int64, rows []
 			}
 		}
 		m.slices[k] = r
+		if r.IsSubagent && r.ParentSessionID != "" && r.ParentSessionID != r.SessionID {
+			nonSub := r
+			nonSub.IsSubagent = false
+			delete(m.slices, sliceKey(userID, nonSub))
+		}
 	}
 	return nil
 }
@@ -995,5 +1000,71 @@ func TestExactBeforeWildcardAndMultiLevelChannelStrip(t *testing.T) {
 	}
 	if stdSess == nil || len(stdSess.ModelAliases) != 0 {
 		t.Fatalf("expected stdSess to have empty ModelAliases, got %+v", stdSess)
+	}
+}
+
+func TestIngestReplacesLegacyNonSubagentOrphanSlice(t *testing.T) {
+	ctx := context.Background()
+	st := newMemStore()
+	svc := NewService(st)
+	h := time.Date(2026, 9, 28, 9, 0, 0, 0, time.UTC)
+
+	// 1. Simulate legacy collector sync (is_subagent=false, tool_call_count=0)
+	if _, err := svc.Ingest(ctx, 1, IngestRequest{
+		Device: IngestDevice{DeviceID: "dev-1", Name: "Ling"},
+		Slices: []IngestSlice{
+			{
+				Agent:         "opencode",
+				SessionID:     "ses_child",
+				HourBucket:    h,
+				Model:         "grok-4.7",
+				IsSubagent:    false,
+				InputTokens:   1000,
+				OutputTokens:  200,
+				RequestCount:  2,
+				ToolCallCount: 0,
+				FirstEventAt:  h,
+				LastEventAt:   h.Add(time.Minute),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("legacy Ingest: %v", err)
+	}
+
+	// 2. Simulate upgraded collector sync (is_subagent=true, parent_session_id set, tools extracted)
+	if _, err := svc.Ingest(ctx, 1, IngestRequest{
+		Device:         IngestDevice{DeviceID: "dev-1", Name: "Ling"},
+		ForceOverwrite: true,
+		Slices: []IngestSlice{
+			{
+				Agent:           "opencode",
+				SessionID:       "ses_child",
+				HourBucket:      h,
+				Model:           "grok-4.7",
+				IsSubagent:      true,
+				ParentSessionID: "ses_root",
+				InputTokens:     1000,
+				OutputTokens:    200,
+				RequestCount:    2,
+				ToolCallCount:   5,
+				ToolCalls:       map[string]int32{"bash": 3, "read": 2},
+				FirstEventAt:    h,
+				LastEventAt:     h.Add(time.Minute),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("upgraded Ingest: %v", err)
+	}
+
+	filter := QueryFilter{Start: h.Add(-time.Hour), End: h.Add(2 * time.Hour), Timezone: "UTC"}
+	sessRes, err := svc.Sessions(ctx, 1, filter, 1, 20)
+	if err != nil {
+		t.Fatalf("Sessions: %v", err)
+	}
+	if len(sessRes.Sessions) != 1 || sessRes.Sessions[0].SessionID != "ses_root" {
+		t.Fatalf("expected legacy orphan removed leaving only ses_root, got %+v", sessRes.Sessions)
+	}
+	if sessRes.Sessions[0].ToolCallCount != 5 || sessRes.Sessions[0].Tokens.TotalTokens != 1200 {
+		t.Fatalf("expected deduplicated tool_call_count=5 and total_tokens=1200, got %+v", sessRes.Sessions[0])
 	}
 }

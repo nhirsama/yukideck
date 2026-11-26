@@ -17,6 +17,70 @@ var (
 	ErrBatchAlreadyClosed = errors.New("batch already closed")
 )
 
+const deleteOrphanNonSubagentHourlySession = `-- name: DeleteOrphanNonSubagentHourlySession :batchexec
+DELETE FROM ai_usage_hourly_sessions
+WHERE user_id = $1
+  AND device_id = $2
+  AND agent = $3
+  AND session_id = $4
+  AND hour_bucket = $5
+  AND model = $6
+  AND is_subagent = FALSE
+`
+
+type DeleteOrphanNonSubagentHourlySessionBatchResults struct {
+	br     pgx.BatchResults
+	tot    int
+	closed bool
+}
+
+type DeleteOrphanNonSubagentHourlySessionParams struct {
+	UserID     int64
+	DeviceID   string
+	Agent      string
+	SessionID  string
+	HourBucket time.Time
+	Model      string
+}
+
+func (q *Queries) DeleteOrphanNonSubagentHourlySession(ctx context.Context, arg []DeleteOrphanNonSubagentHourlySessionParams) *DeleteOrphanNonSubagentHourlySessionBatchResults {
+	batch := &pgx.Batch{}
+	for _, a := range arg {
+		vals := []interface{}{
+			a.UserID,
+			a.DeviceID,
+			a.Agent,
+			a.SessionID,
+			a.HourBucket,
+			a.Model,
+		}
+		batch.Queue(deleteOrphanNonSubagentHourlySession, vals...)
+	}
+	br := q.db.SendBatch(ctx, batch)
+	return &DeleteOrphanNonSubagentHourlySessionBatchResults{br, len(arg), false}
+}
+
+func (b *DeleteOrphanNonSubagentHourlySessionBatchResults) Exec(f func(int, error)) {
+	defer b.br.Close()
+	for t := 0; t < b.tot; t++ {
+		if b.closed {
+			if f != nil {
+				f(t, ErrBatchAlreadyClosed)
+			}
+			continue
+		}
+		_, err := b.br.Exec()
+		if f != nil {
+			f(t, err)
+		}
+	}
+}
+
+func (b *DeleteOrphanNonSubagentHourlySessionBatchResults) Close() error {
+	b.closed = true
+	return b.br.Close()
+}
+
 const upsertHourlySession = `-- name: UpsertHourlySession :batchexec
 INSERT INTO ai_usage_hourly_sessions (
     user_id, device_id, agent, session_id, hour_bucket, model, is_subagent,

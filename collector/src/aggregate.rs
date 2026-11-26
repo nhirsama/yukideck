@@ -335,25 +335,54 @@ pub fn aggregate_messages_with_stats(
         }
     }
 
-    // Attach tool_calls once per (agent, session_id, hour_bucket) to the primary slice in that bucket
-    // (the one with the highest request_count) so tool counts are never duplicated across models.
+    // Attach tool_calls per (agent, session_id, hour_bucket):
+    // 1) First attach model-specific tool calls directly to matching model slices.
+    // 2) Then attach any unattributed or unmatched-model tool calls once to the primary slice
+    //    in that bucket (highest request_count), ensuring zero loss and zero double-counting.
     let mut slices: Vec<IngestSlice> = map.into_values().collect();
     slices.sort_by(|a, b| {
         a.hour_bucket
             .cmp(&b.hour_bucket)
             .then_with(|| b.request_count.cmp(&a.request_count))
     });
+
+    let mut consumed_models =
+        std::collections::HashSet::<(String, String, DateTime<Utc>, String)>::new();
+    for sl in &mut slices {
+        let mk = (
+            sl.agent.clone(),
+            sl.session_id.clone(),
+            sl.hour_bucket,
+            sl.model.clone(),
+        );
+        if consumed_models.contains(&mk) {
+            continue;
+        }
+        if let Some(tools) =
+            sidecar.lookup_model_tool_calls(&sl.agent, &sl.session_id, sl.hour_bucket, &sl.model)
+        {
+            for (name, count) in tools {
+                *sl.tool_calls.entry(name.clone()).or_insert(0) += *count;
+                sl.tool_call_count += *count;
+            }
+            consumed_models.insert(mk);
+        }
+    }
+
     for sl in &mut slices {
         let tk = (sl.agent.clone(), sl.session_id.clone(), sl.hour_bucket);
         if attached_tools.contains(&tk) {
             continue;
         }
-        if let Some(tools) = sidecar.lookup_tool_calls(&sl.agent, &sl.session_id, sl.hour_bucket) {
-            let sum: i32 = tools.values().copied().sum();
-            sl.tool_calls = tools.clone();
-            sl.tool_call_count = sum;
-            attached_tools.insert(tk);
+        let remainder =
+            sidecar.collect_remaining_tool_calls(&sl.agent, &sl.session_id, sl.hour_bucket, &consumed_models);
+        if !remainder.is_empty() {
+            for (name, count) in remainder {
+                *sl.tool_calls.entry(name).or_insert(0) += count;
+                sl.tool_call_count += count;
+            }
         }
+        attached_tools.insert(tk);
     }
 
     (slices, stats)
@@ -478,5 +507,76 @@ mod tests {
         let hashed = sanitize_project(Some("/home/user/secret/my-repo"), ProjectPrivacy::Hash);
         assert!(hashed.starts_with("proj-"));
         assert_eq!(hashed.len(), 13);
+    }
+
+    #[test]
+    fn test_model_attributed_and_fallback_tool_calls() {
+        let t1 = DateTime::parse_from_rfc3339("2026-11-25T08:10:00Z")
+            .unwrap()
+            .timestamp_millis();
+        let t2 = DateTime::parse_from_rfc3339("2026-11-25T08:20:00Z")
+            .unwrap()
+            .timestamp_millis();
+        let bucket = DateTime::parse_from_rfc3339("2026-11-25T08:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let m_primary_1 = UnifiedMessage::new(
+            "opencode",
+            "gemini-3.7-flash",
+            "google",
+            "ses_multi",
+            t1,
+            TokenBreakdown { input: 100, output: 50, cache_read: 0, cache_write: 0, cache_write_1h: 0, reasoning: 0 },
+            0.0,
+        );
+        let m_primary_2 = UnifiedMessage::new(
+            "opencode",
+            "gemini-3.7-flash",
+            "google",
+            "ses_multi",
+            t2,
+            TokenBreakdown { input: 100, output: 50, cache_read: 0, cache_write: 0, cache_write_1h: 0, reasoning: 0 },
+            0.0,
+        );
+        let m_secondary = UnifiedMessage::new(
+            "opencode",
+            "gemini-3.7-flash-high",
+            "google",
+            "ses_multi",
+            t2,
+            TokenBreakdown { input: 100, output: 50, cache_read: 0, cache_write: 0, cache_write_1h: 0, reasoning: 0 },
+            0.0,
+        );
+
+        let mut sidecar = ToolSidecar::default();
+        sidecar.model_tool_calls.insert(
+            ("opencode".into(), "ses_multi".into(), bucket, "gemini-3.7-flash".into()),
+            BTreeMap::from([("bash".into(), 3)]),
+        );
+        sidecar.model_tool_calls.insert(
+            ("opencode".into(), "ses_multi".into(), bucket, "gemini-3.7-flash-high".into()),
+            BTreeMap::from([("edit".into(), 2)]),
+        );
+        // Tool from a tokenless assistant row of another model should fall back to primary slice
+        sidecar.model_tool_calls.insert(
+            ("opencode".into(), "ses_multi".into(), bucket, "unseen-model".into()),
+            BTreeMap::from([("read".into(), 1)]),
+        );
+
+        let slices = aggregate_messages(
+            &[m_primary_1, m_primary_2, m_secondary],
+            None,
+            ProjectPrivacy::Name,
+            &sidecar,
+        );
+        assert_eq!(slices.len(), 2);
+        let primary = slices.iter().find(|s| s.model == "gemini-3.7-flash").unwrap();
+        let secondary = slices.iter().find(|s| s.model == "gemini-3.7-flash-high").unwrap();
+        assert_eq!(primary.tool_call_count, 4);
+        assert_eq!(primary.tool_calls.get("bash"), Some(&3));
+        assert_eq!(primary.tool_calls.get("read"), Some(&1));
+        assert_eq!(secondary.tool_call_count, 2);
+        assert_eq!(secondary.tool_calls.get("edit"), Some(&2));
     }
 }

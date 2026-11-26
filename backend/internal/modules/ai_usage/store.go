@@ -195,6 +195,7 @@ func (s *PGStore) UpsertHourlySessions(ctx context.Context, userID int64, rows [
 
 	qtx := s.q.WithTx(tx)
 	params := make([]sqlcgen.UpsertHourlySessionParams, 0, len(rows))
+	orphanDeletes := make([]sqlcgen.DeleteOrphanNonSubagentHourlySessionParams, 0)
 	for _, r := range rows {
 		tc := r.ToolCalls
 		if tc == nil {
@@ -230,6 +231,16 @@ func (s *PGStore) UpsertHourlySessions(ctx context.Context, userID int64, rows [
 			LastEventAt:        r.LastEventAt.UTC(),
 			Column24:           forceOverwrite,
 		})
+		if r.IsSubagent && r.ParentSessionID != "" && r.ParentSessionID != r.SessionID {
+			orphanDeletes = append(orphanDeletes, sqlcgen.DeleteOrphanNonSubagentHourlySessionParams{
+				UserID:     userID,
+				DeviceID:   r.DeviceID,
+				Agent:      r.Agent,
+				SessionID:  r.SessionID,
+				HourBucket: r.HourBucket.UTC(),
+				Model:      r.Model,
+			})
+		}
 	}
 
 	var batchErr error
@@ -241,6 +252,18 @@ func (s *PGStore) UpsertHourlySessions(ctx context.Context, userID int64, rows [
 	})
 	if batchErr != nil {
 		return fmt.Errorf("upsert hourly session: %w", batchErr)
+	}
+	if len(orphanDeletes) > 0 {
+		var delErr error
+		dbr := qtx.DeleteOrphanNonSubagentHourlySession(ctx, orphanDeletes)
+		dbr.Exec(func(_ int, err error) {
+			if err != nil && delErr == nil {
+				delErr = err
+			}
+		})
+		if delErr != nil {
+			return fmt.Errorf("delete orphan non-subagent hourly session: %w", delErr)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit ai_usage ingest tx: %w", err)

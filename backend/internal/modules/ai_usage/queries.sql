@@ -55,6 +55,16 @@ WHERE
         OR ai_usage_hourly_sessions.last_event_at      IS DISTINCT FROM EXCLUDED.last_event_at
     );
 
+-- name: DeleteOrphanNonSubagentHourlySession :batchexec
+DELETE FROM ai_usage_hourly_sessions
+WHERE user_id = $1
+  AND device_id = $2
+  AND agent = $3
+  AND session_id = $4
+  AND hour_bucket = $5
+  AND model = $6
+  AND is_subagent = FALSE;
+
 -- name: ListHourlySessions :many
 SELECT
     id, user_id, device_id, agent, session_id, hour_bucket, model, is_subagent,

@@ -4,18 +4,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
-const TOOL_CACHE_VERSION: u32 = 1;
+const TOOL_CACHE_VERSION: u32 = 2;
 const MAX_CACHED_FILES: usize = 8_000;
 
 #[derive(Debug, Default)]
 pub struct ToolSidecar {
-    /// Key: (agent, session_id, hour_bucket) -> { tool_name: count }
+    /// Key: (agent, session_id, hour_bucket) -> { tool_name: count } (model-agnostic)
     pub tool_calls: HashMap<(String, String, DateTime<Utc>), BTreeMap<String, i32>>,
+    /// Key: (agent, session_id, hour_bucket, model) -> { tool_name: count } (model-attributed)
+    pub model_tool_calls: HashMap<(String, String, DateTime<Utc>, String), BTreeMap<String, i32>>,
     /// Key: (agent, alias_session_id) -> primary_session_id stored in `tool_calls`
     pub session_aliases: HashMap<(String, String), String>,
     /// Key: (agent, session_id) -> (is_subagent, parent_session_id)
@@ -34,6 +36,8 @@ struct FileScanResult {
 struct CachedBucketTools {
     session_id: String,
     hour_ts: i64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    model: String,
     tools: BTreeMap<String, i32>,
 }
 
@@ -56,6 +60,8 @@ struct SqliteFileSig {
     wal_exists: bool,
     wal_size: u64,
     wal_modified_ns: u64,
+    #[serde(default)]
+    wal_sample: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,32 +217,115 @@ impl ToolSidecar {
         out
     }
 
+    fn resolve_session_id<'a>(&'a self, agent: &str, session_id: &'a str) -> &'a str {
+        self.session_aliases
+            .get(&(agent.to_string(), session_id.to_string()))
+            .map(String::as_str)
+            .unwrap_or(session_id)
+    }
+
+    pub fn lookup_model_tool_calls(
+        &self,
+        agent: &str,
+        session_id: &str,
+        hour_bucket: DateTime<Utc>,
+        model: &str,
+    ) -> Option<&BTreeMap<String, i32>> {
+        if model.is_empty() {
+            return None;
+        }
+        let key = (
+            agent.to_string(),
+            session_id.to_string(),
+            hour_bucket,
+            model.to_string(),
+        );
+        if let Some(tools) = self.model_tool_calls.get(&key) {
+            return Some(tools);
+        }
+        let canonical = self.resolve_session_id(agent, session_id);
+        if canonical != session_id {
+            return self.model_tool_calls.get(&(
+                agent.to_string(),
+                canonical.to_string(),
+                hour_bucket,
+                model.to_string(),
+            ));
+        }
+        None
+    }
+
+    pub fn collect_remaining_tool_calls(
+        &self,
+        agent: &str,
+        session_id: &str,
+        hour_bucket: DateTime<Utc>,
+        consumed_models: &HashSet<(String, String, DateTime<Utc>, String)>,
+    ) -> BTreeMap<String, i32> {
+        let mut out = BTreeMap::new();
+        let canonical = self.resolve_session_id(agent, session_id);
+        let mut sids = vec![session_id];
+        if canonical != session_id {
+            sids.push(canonical);
+        }
+
+        for sid in &sids {
+            if let Some(tools) = self
+                .tool_calls
+                .get(&(agent.to_string(), (*sid).to_string(), hour_bucket))
+            {
+                for (name, count) in tools {
+                    *out.entry(name.clone()).or_insert(0) += *count;
+                }
+            }
+        }
+
+        for ((a, sid, b, model), tools) in &self.model_tool_calls {
+            if a != agent || *b != hour_bucket || !sids.contains(&sid.as_str()) {
+                continue;
+            }
+            if consumed_models.contains(&(
+                agent.to_string(),
+                session_id.to_string(),
+                hour_bucket,
+                model.clone(),
+            )) {
+                continue;
+            }
+            for (name, count) in tools {
+                *out.entry(name.clone()).or_insert(0) += *count;
+            }
+        }
+
+        out
+    }
+
+    #[cfg(test)]
     pub fn lookup_tool_calls(
         &self,
         agent: &str,
         session_id: &str,
         hour_bucket: DateTime<Utc>,
-    ) -> Option<&BTreeMap<String, i32>> {
-        let key = (agent.to_string(), session_id.to_string(), hour_bucket);
-        if let Some(tools) = self.tool_calls.get(&key) {
-            return Some(tools);
+    ) -> Option<BTreeMap<String, i32>> {
+        let merged = self.collect_remaining_tool_calls(
+            agent,
+            session_id,
+            hour_bucket,
+            &HashSet::new(),
+        );
+        if merged.is_empty() {
+            None
+        } else {
+            Some(merged)
         }
-        if let Some(canonical_sid) = self
-            .session_aliases
-            .get(&(agent.to_string(), session_id.to_string()))
-        {
-            return self
-                .tool_calls
-                .get(&(agent.to_string(), canonical_sid.clone(), hour_bucket));
-        }
-        None
     }
 
-    fn merge_cached_entry(
+    fn merge_cached_entry_filtered(
         &mut self,
         agent: &str,
         entry: &CachedFileEntry,
         cutoff_bucket_ts: Option<i64>,
+        skip_sessions: Option<&HashSet<String>>,
     ) {
         for (alias, primary) in &entry.aliases {
             self.session_aliases
@@ -249,6 +338,11 @@ impl ToolSidecar {
                 .or_insert_with(|| (*is_sub, parent.clone()));
         }
         for b in &entry.buckets {
+            if let Some(skip) = skip_sessions {
+                if skip.contains(&b.session_id) {
+                    continue;
+                }
+            }
             if let Some(min_ts) = cutoff_bucket_ts {
                 if b.hour_ts < min_ts {
                     continue;
@@ -257,10 +351,20 @@ impl ToolSidecar {
             let Some(bucket) = DateTime::from_timestamp(b.hour_ts, 0) else {
                 continue;
             };
-            let dest = self
-                .tool_calls
-                .entry((agent.to_string(), b.session_id.clone(), bucket))
-                .or_default();
+            let dest = if b.model.is_empty() {
+                self.tool_calls
+                    .entry((agent.to_string(), b.session_id.clone(), bucket))
+                    .or_default()
+            } else {
+                self.model_tool_calls
+                    .entry((
+                        agent.to_string(),
+                        b.session_id.clone(),
+                        bucket,
+                        b.model.clone(),
+                    ))
+                    .or_default()
+            };
             for (name, count) in &b.tools {
                 *dest.entry(name.clone()).or_insert(0) += *count;
             }
@@ -279,14 +383,39 @@ fn file_signature(path: &Path) -> Option<(u64, u64)> {
     Some((meta.len(), modified_ns))
 }
 
+fn read_wal_sample(wal_path: &Path, size: u64) -> Vec<u8> {
+    if size == 0 {
+        return Vec::new();
+    }
+    let Ok(mut f) = File::open(wal_path) else {
+        return Vec::new();
+    };
+    let mut sample = Vec::with_capacity(64);
+    let head_len = size.min(32) as usize;
+    let mut head = vec![0u8; head_len];
+    if f.read_exact(&mut head).is_ok() {
+        sample.extend_from_slice(&head);
+    }
+    if size > 32 {
+        let tail_len = (size - 32).min(32) as usize;
+        if f.seek(SeekFrom::End(-(tail_len as i64))).is_ok() {
+            let mut tail = vec![0u8; tail_len];
+            if f.read_exact(&mut tail).is_ok() {
+                sample.extend_from_slice(&tail);
+            }
+        }
+    }
+    sample
+}
+
 fn sqlite_signature(db_path: &Path) -> Option<SqliteFileSig> {
     let (db_size, db_modified_ns) = file_signature(db_path)?;
     let mut wal_os = db_path.as_os_str().to_os_string();
     wal_os.push("-wal");
     let wal_path = PathBuf::from(wal_os);
-    let (wal_exists, wal_size, wal_modified_ns) = match file_signature(&wal_path) {
-        Some((s, m)) => (true, s, m),
-        None => (false, 0, 0),
+    let (wal_exists, wal_size, wal_modified_ns, wal_sample) = match file_signature(&wal_path) {
+        Some((s, m)) => (true, s, m, read_wal_sample(&wal_path, s)),
+        None => (false, 0, 0, Vec::new()),
     };
     Some(SqliteFileSig {
         db_size,
@@ -294,6 +423,7 @@ fn sqlite_signature(db_path: &Path) -> Option<SqliteFileSig> {
         wal_exists,
         wal_size,
         wal_modified_ns,
+        wal_sample,
     })
 }
 
@@ -365,6 +495,20 @@ fn scan_file_cached<F>(
 ) where
     F: FnOnce(&Path) -> FileScanResult,
 {
+    scan_file_cached_filtered(agent, path, cutoff, None, cache, out, parse_fn);
+}
+
+fn scan_file_cached_filtered<F>(
+    agent: &str,
+    path: &Path,
+    cutoff: Option<DateTime<Utc>>,
+    skip_sessions: Option<&HashSet<String>>,
+    cache: &mut ToolCache,
+    out: &mut ToolSidecar,
+    parse_fn: F,
+) where
+    F: FnOnce(&Path) -> FileScanResult,
+{
     if !file_recently_modified(path, cutoff) {
         return;
     }
@@ -375,7 +519,7 @@ fn scan_file_cached<F>(
     if let Some((size, modified_ns)) = sig {
         if let Some(cached) = cache.files.get(&key) {
             if cached.size == size && cached.modified_ns == modified_ns {
-                out.merge_cached_entry(agent, cached, min_bucket);
+                out.merge_cached_entry_filtered(agent, cached, min_bucket, skip_sessions);
                 return;
             }
         }
@@ -388,6 +532,7 @@ fn scan_file_cached<F>(
         .map(|((session_id, hour_ts), tools)| CachedBucketTools {
             session_id,
             hour_ts,
+            model: String::new(),
             tools,
         })
         .collect();
@@ -398,7 +543,7 @@ fn scan_file_cached<F>(
         aliases: parsed.aliases,
         subagent_meta: parsed.subagent_meta,
     };
-    out.merge_cached_entry(agent, &entry, min_bucket);
+    out.merge_cached_entry_filtered(agent, &entry, min_bucket, skip_sessions);
     if sig.is_some() {
         cache.files.insert(key, entry);
         cache.dirty = true;
@@ -831,24 +976,31 @@ fn discover_opencode_dirs_and_dbs(home_dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf
     let mut data_dirs: Vec<PathBuf> = Vec::new();
     let mut seen_dirs: HashSet<PathBuf> = HashSet::new();
 
+    let mut push_dir = |p: PathBuf| {
+        if !p.is_dir() {
+            return;
+        }
+        let canon = fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+        if seen_dirs.insert(canon) {
+            data_dirs.push(p);
+        }
+    };
+
+    if let Ok(explicit_dir) = std::env::var("OPENCODE_DATA_DIR") {
+        let trimmed = explicit_dir.trim();
+        if !trimmed.is_empty() {
+            push_dir(PathBuf::from(trimmed));
+        }
+    }
     if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
         let trimmed = xdg.trim();
         if !trimmed.is_empty() {
-            let p = PathBuf::from(trimmed).join("opencode");
-            if p.is_dir() {
-                let canon = fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
-                if seen_dirs.insert(canon) {
-                    data_dirs.push(p);
-                }
-            }
+            push_dir(PathBuf::from(trimmed).join("opencode"));
         }
     }
-    let default_dir = home_dir.join(".local").join("share").join("opencode");
-    if default_dir.is_dir() {
-        let canon = fs::canonicalize(&default_dir).unwrap_or_else(|_| default_dir.clone());
-        if seen_dirs.insert(canon) {
-            data_dirs.push(default_dir);
-        }
+    push_dir(home_dir.join(".local").join("share").join("opencode"));
+    if let Some(local_data) = dirs::data_local_dir() {
+        push_dir(local_data.join("opencode"));
     }
 
     let mut dbs: Vec<PathBuf> = Vec::new();
@@ -929,6 +1081,49 @@ fn table_exists(conn: &Connection, table: &str) -> bool {
     .unwrap_or(false)
 }
 
+fn table_columns(conn: &Connection, table: &str) -> HashSet<String> {
+    let mut cols = HashSet::new();
+    let sql = format!("PRAGMA table_info(\"{}\")", table.replace('"', "\"\""));
+    let Ok(mut stmt) = conn.prepare(&sql) else {
+        return cols;
+    };
+    let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(1)) else {
+        return cols;
+    };
+    for name in rows.flatten() {
+        cols.insert(name.to_ascii_lowercase());
+    }
+    cols
+}
+
+fn extract_opencode_model_id(v: &Value) -> String {
+    v.get("modelID")
+        .and_then(Value::as_str)
+        .or_else(|| v.pointer("/model/id").and_then(Value::as_str))
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string()
+}
+
+fn extract_opencode_tool_name(item: &Value) -> Option<&str> {
+    let kind = item.get("type").and_then(Value::as_str)?;
+    let is_tool_part = matches!(
+        kind,
+        "tool" | "tool-call" | "tool-invocation" | "tool_use" | "tool_call" | "dynamic-tool"
+    ) || kind.starts_with("tool-");
+    if !is_tool_part {
+        return None;
+    }
+    item.get("name")
+        .or_else(|| item.get("tool"))
+        .or_else(|| item.get("toolName"))
+        .or_else(|| item.pointer("/toolInvocation/toolName"))
+        .or_else(|| item.pointer("/toolInvocation/name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
 fn scan_opencode_sqlite_cached(
     db_path: &Path,
     cutoff: Option<DateTime<Utc>>,
@@ -1006,10 +1201,20 @@ fn merge_opencode_db_results(
         let Some(bucket) = DateTime::from_timestamp(b.hour_ts, 0) else {
             continue;
         };
-        let dest = out
-            .tool_calls
-            .entry(("opencode".to_string(), b.session_id.clone(), bucket))
-            .or_default();
+        let dest = if b.model.is_empty() {
+            out.tool_calls
+                .entry(("opencode".to_string(), b.session_id.clone(), bucket))
+                .or_default()
+        } else {
+            out.model_tool_calls
+                .entry((
+                    "opencode".to_string(),
+                    b.session_id.clone(),
+                    bucket,
+                    b.model.clone(),
+                ))
+                .or_default()
+        };
         for (name, count) in &b.tools {
             *dest.entry(name.clone()).or_insert(0) += *count;
         }
@@ -1031,58 +1236,95 @@ fn scan_opencode_sqlite_db(db_path: &Path, cutoff: Option<DateTime<Utc>>) -> Opt
     let _ = conn.busy_timeout(std::time::Duration::from_millis(2000));
     conn.execute_batch("BEGIN DEFERRED").ok()?;
 
-    let mut tool_map: HashMap<(String, i64), BTreeMap<String, i32>> = HashMap::new();
+    // Key: (session_id, hour_bucket_ts, model) -> { tool_name: count }
+    let mut tool_map: HashMap<(String, i64, String), BTreeMap<String, i32>> = HashMap::new();
     let mut subagent_map: HashMap<String, String> = HashMap::new();
-    let mut v2_sessions: HashSet<String> = HashSet::new();
+    // Sessions that genuinely have assistant rows in `session_message` (v2).
+    let mut v2_msg_sessions: HashSet<String> = HashSet::new();
     let mut all_covered: HashSet<String> = HashSet::new();
 
     // 1h safety margin on SQL predicates to guard against minor clock / timestamp skew.
     let sql_cutoff_ms = cutoff.map(|dt| (dt - Duration::hours(1)).timestamp_millis());
+    let sql_cutoff_sec = cutoff.map(|dt| (dt - Duration::hours(1)).timestamp());
 
     let has_session_v2 = table_exists(&conn, "session_v2");
     let has_session_v1 = table_exists(&conn, "session");
     let has_session_message = table_exists(&conn, "session_message");
+    let has_message = table_exists(&conn, "message");
     let has_part = table_exists(&conn, "part");
 
-    // 1. Read session_v2 metadata (lightweight table, hundreds of rows).
+    // 1. Read `session_v2` parent_id metadata when available.
+    // Do NOT blindly mark every `session_v2` row as covered by `session_message`: partially
+    // migrated databases may still keep tool parts in v1 `part` for sessions absent from
+    // `session_message`.
     if has_session_v2 {
-        if let Ok(mut stmt) = conn.prepare("SELECT id, parent_id FROM session_v2") {
-            if let Ok(rows) = stmt.query_map([], |row| {
-                let id: String = row.get(0)?;
-                let parent_id: Option<String> = row.get(1).ok().flatten();
-                Ok((id, parent_id))
-            }) {
-                for row in rows.flatten() {
-                    let sid = row.0.trim().to_string();
-                    if sid.is_empty() {
-                        continue;
-                    }
-                    v2_sessions.insert(sid.clone());
-                    all_covered.insert(sid.clone());
-                    if let Some(pid) = row.1.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                        subagent_map.entry(sid).or_insert_with(|| pid.to_string());
+        let cols = table_columns(&conn, "session_v2");
+        if cols.contains("id") && cols.contains("parent_id") {
+            if let Ok(mut stmt) = conn.prepare("SELECT id, parent_id FROM session_v2") {
+                if let Ok(rows) = stmt.query_map([], |row| {
+                    let id: String = row.get(0)?;
+                    let parent_id: Option<String> = row.get(1).ok().flatten();
+                    Ok((id, parent_id))
+                }) {
+                    for row in rows.flatten() {
+                        let sid = row.0.trim().to_string();
+                        if sid.is_empty() {
+                            continue;
+                        }
+                        if let Some(pid) = row.1.as_deref().map(str::trim).filter(|s| !s.is_empty())
+                        {
+                            subagent_map.entry(sid).or_insert_with(|| pid.to_string());
+                        }
                     }
                 }
             }
         }
     }
 
-    // 2. Scan OpenCode v2 `session_message` (uses `session_message_time_created_idx` when cutoff is set).
+    // 2. Scan OpenCode v2 `session_message`.
     if has_session_message {
+        let sm_cols = table_columns(&conn, "session_message");
+        let sm_has_type = sm_cols.contains("type");
+        let sm_has_time_created = sm_cols.contains("time_created");
+
+        // Record which sessions actually have assistant messages in `session_message` so v1
+        // `part` scanning skips ONLY genuinely migrated sessions (uses index on session_id/type).
+        let distinct_sql = if sm_has_type {
+            "SELECT DISTINCT session_id FROM session_message WHERE type = 'assistant'"
+        } else {
+            "SELECT DISTINCT session_id FROM session_message"
+        };
+        if let Ok(mut stmt) = conn.prepare(distinct_sql) {
+            if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+                for sid in rows.flatten() {
+                    let sid = sid.trim().to_string();
+                    if !sid.is_empty() {
+                        v2_msg_sessions.insert(sid.clone());
+                        all_covered.insert(sid);
+                    }
+                }
+            }
+        }
+
         let mut handle_v2_row = |sid: String, row_ts: i64, data: String| {
             let sid = sid.trim().to_string();
             if sid.is_empty() {
                 return;
             }
-            v2_sessions.insert(sid.clone());
+            v2_msg_sessions.insert(sid.clone());
             all_covered.insert(sid.clone());
-            // Fast pre-filter before JSON parsing.
-            if !data.contains("\"tool\"") {
+            // Fast pre-filter before JSON parsing (accepts "tool", "tool-call", "tool_use", etc.).
+            if !data.contains("tool") {
                 return;
             }
             let Ok(v) = serde_json::from_str::<Value>(&data) else {
                 return;
             };
+            if let Some(role) = v.get("role").and_then(Value::as_str) {
+                if role != "assistant" {
+                    return;
+                }
+            }
             let Some(ts) = v
                 .pointer("/time/created")
                 .and_then(parse_rfc3339_utc)
@@ -1095,24 +1337,19 @@ fn scan_opencode_sqlite_db(db_path: &Path, cutoff: Option<DateTime<Utc>>) -> Opt
                     return;
                 }
             }
-            let Some(content) = v.get("content").and_then(Value::as_array) else {
+            let Some(items) = v
+                .get("content")
+                .and_then(Value::as_array)
+                .or_else(|| v.get("parts").and_then(Value::as_array))
+            else {
                 return;
             };
+            let model = extract_opencode_model_id(&v);
             let bucket_ts = truncate_hour(ts).timestamp();
-            for item in content {
-                if item.get("type").and_then(Value::as_str) != Some("tool") {
-                    continue;
-                }
-                let name = item
-                    .get("name")
-                    .or_else(|| item.get("tool"))
-                    .or_else(|| item.get("toolName"))
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty());
-                if let Some(clean) = name {
+            for item in items {
+                if let Some(clean) = extract_opencode_tool_name(item) {
                     *tool_map
-                        .entry((sid.clone(), bucket_ts))
+                        .entry((sid.clone(), bucket_ts, model.clone()))
                         .or_default()
                         .entry(clean.to_string())
                         .or_insert(0) += 1;
@@ -1120,11 +1357,21 @@ fn scan_opencode_sqlite_db(db_path: &Path, cutoff: Option<DateTime<Utc>>) -> Opt
             }
         };
 
-        if let Some(min_ms) = sql_cutoff_ms {
-            if let Ok(mut stmt) = conn.prepare(
-                "SELECT session_id, time_created, data FROM session_message WHERE type = 'assistant' AND time_created >= ?1",
-            ) {
-                if let Ok(rows) = stmt.query_map([min_ms], |row| {
+        let type_filter = if sm_has_type {
+            "type = 'assistant'"
+        } else {
+            "1 = 1"
+        };
+
+        if let (Some(min_ms), Some(min_sec), true) =
+            (sql_cutoff_ms, sql_cutoff_sec, sm_has_time_created)
+        {
+            let sql = format!(
+                "SELECT session_id, time_created, data FROM session_message \
+                 WHERE {type_filter} AND (time_created >= ?1 OR (time_created > 0 AND time_created < 1000000000000 AND time_created >= ?2) OR time_created IS NULL OR time_created = 0)"
+            );
+            if let Ok(mut stmt) = conn.prepare(&sql) {
+                if let Ok(rows) = stmt.query_map(rusqlite::params![min_ms, min_sec], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, i64>(1).unwrap_or(0),
@@ -1136,170 +1383,16 @@ fn scan_opencode_sqlite_db(db_path: &Path, cutoff: Option<DateTime<Utc>>) -> Opt
                     }
                 }
             }
-        } else if let Ok(mut stmt) = conn.prepare(
-            "SELECT session_id, time_created, data FROM session_message WHERE type = 'assistant'",
-        ) {
-            if let Ok(rows) = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1).unwrap_or(0),
-                    row.get::<_, String>(2)?,
-                ))
-            }) {
-                for row in rows.flatten() {
-                    handle_v2_row(row.0, row.1, row.2);
-                }
-            }
-        }
-    }
-
-    // 3. Scan OpenCode v1 `session` + `part` ONLY for sessions NOT already migrated into v2!
-    // On v2 databases (which may keep a multi-GB legacy `part` table with no `time_created` index),
-    // `v1_only_sessions` is empty so `part` is never touched at all.
-    let mut v1_only_sessions: Vec<String> = Vec::new();
-    if has_session_v1 {
-        let query_ok = if let Some(min_ms) = sql_cutoff_ms {
-            conn.prepare("SELECT id, parent_id FROM session WHERE time_updated >= ?1")
-                .and_then(|mut stmt| {
-                    let rows = stmt.query_map([min_ms], |row| {
-                        let id: String = row.get(0)?;
-                        let parent_id: Option<String> = row.get(1).ok().flatten();
-                        Ok((id, parent_id))
-                    })?;
-                    for row in rows.flatten() {
-                        let sid = row.0.trim().to_string();
-                        if sid.is_empty() {
-                            continue;
-                        }
-                        all_covered.insert(sid.clone());
-                        if let Some(pid) = row.1.as_deref().map(str::trim).filter(|s| !s.is_empty())
-                        {
-                            subagent_map.entry(sid.clone()).or_insert_with(|| pid.to_string());
-                        }
-                        if !v2_sessions.contains(&sid) {
-                            v1_only_sessions.push(sid);
-                        }
-                    }
-                    Ok(())
-                })
-                .is_ok()
         } else {
-            false
-        };
-
-        if !query_ok {
-            // Full history or older `session` table without `time_updated`.
-            let sql = "SELECT id, parent_id FROM session";
-            if let Ok(mut stmt) = conn.prepare(sql) {
-                if let Ok(rows) = stmt.query_map([], |row| {
-                    let id: String = row.get(0)?;
-                    let parent_id: Option<String> = row.get(1).ok().flatten();
-                    Ok((id, parent_id))
-                }) {
-                    for row in rows.flatten() {
-                        let sid = row.0.trim().to_string();
-                        if sid.is_empty() {
-                            continue;
-                        }
-                        all_covered.insert(sid.clone());
-                        if let Some(pid) = row.1.as_deref().map(str::trim).filter(|s| !s.is_empty())
-                        {
-                            subagent_map.entry(sid.clone()).or_insert_with(|| pid.to_string());
-                        }
-                        if !v2_sessions.contains(&sid) {
-                            v1_only_sessions.push(sid);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if has_part {
-        let mut handle_v1_part = |sid: String, row_ts: i64, data: String| {
-            let sid = sid.trim().to_string();
-            if sid.is_empty() || v2_sessions.contains(&sid) {
-                return;
-            }
-            if !data.contains("\"tool\"") {
-                return;
-            }
-            let Ok(v) = serde_json::from_str::<Value>(&data) else {
-                return;
+            let ts_expr = if sm_has_time_created {
+                "COALESCE(time_created, 0)"
+            } else {
+                "0"
             };
-            if v.get("type").and_then(Value::as_str) != Some("tool") {
-                return;
-            }
-            let name = v
-                .get("tool")
-                .or_else(|| v.get("name"))
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
-            let Some(clean) = name else {
-                return;
-            };
-            let Some(ts) = parse_epoch_utc(row_ts)
-                .or_else(|| v.pointer("/state/time/start").and_then(parse_rfc3339_utc))
-                .or_else(|| v.pointer("/time/start").and_then(parse_rfc3339_utc))
-            else {
-                return;
-            };
-            if let Some(min_ts) = cutoff {
-                if ts < min_ts {
-                    return;
-                }
-            }
-            all_covered.insert(sid.clone());
-            let bucket_ts = truncate_hour(ts).timestamp();
-            *tool_map
-                .entry((sid, bucket_ts))
-                .or_default()
-                .entry(clean.to_string())
-                .or_insert(0) += 1;
-        };
-
-        if has_session_v1 {
-            // Query `part` strictly per v1-only session via `part_session_idx`!
-            if !v1_only_sessions.is_empty() {
-                if let Ok(mut stmt) =
-                    conn.prepare("SELECT time_created, data FROM part WHERE session_id = ?1")
-                {
-                    for sid in &v1_only_sessions {
-                        if let Ok(rows) = stmt.query_map([sid.as_str()], |row| {
-                            Ok((
-                                row.get::<_, i64>(0).unwrap_or(0),
-                                row.get::<_, String>(1)?,
-                            ))
-                        }) {
-                            for row in rows.flatten() {
-                                handle_v1_part(sid.clone(), row.0, row.1);
-                            }
-                        }
-                    }
-                }
-            }
-        } else if !has_session_message {
-            // Rare minimal DB with only `part` and neither `session` nor `session_message`.
-            if let Some(min_ms) = sql_cutoff_ms {
-                if let Ok(mut stmt) = conn.prepare(
-                    "SELECT session_id, time_created, data FROM part WHERE time_created >= ?1",
-                ) {
-                    if let Ok(rows) = stmt.query_map([min_ms], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, i64>(1).unwrap_or(0),
-                            row.get::<_, String>(2)?,
-                        ))
-                    }) {
-                        for row in rows.flatten() {
-                            handle_v1_part(row.0, row.1, row.2);
-                        }
-                    }
-                }
-            } else if let Ok(mut stmt) =
-                conn.prepare("SELECT session_id, time_created, data FROM part")
-            {
+            let sql = format!(
+                "SELECT session_id, {ts_expr}, data FROM session_message WHERE {type_filter}"
+            );
+            if let Ok(mut stmt) = conn.prepare(&sql) {
                 if let Ok(rows) = stmt.query_map([], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
@@ -1308,7 +1401,216 @@ fn scan_opencode_sqlite_db(db_path: &Path, cutoff: Option<DateTime<Utc>>) -> Opt
                     ))
                 }) {
                     for row in rows.flatten() {
-                        handle_v1_part(row.0, row.1, row.2);
+                        handle_v2_row(row.0, row.1, row.2);
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Scan OpenCode v1 `session` + `part` (joined with `message` for accurate hour_bucket & model)
+    // ONLY for sessions NOT already present in v2 `session_message`!
+    // On fully-migrated v2 databases, `v1_only_sessions` is empty so legacy `part` is never touched.
+    let mut v1_only_sessions: Vec<String> = Vec::new();
+    let mut seen_v1_sessions: HashSet<String> = HashSet::new();
+    if has_session_v1 {
+        let s_cols = table_columns(&conn, "session");
+        if s_cols.contains("id") {
+            let parent_expr = if s_cols.contains("parent_id") {
+                "parent_id"
+            } else {
+                "NULL"
+            };
+            let mut collect_session_row = |id: String, parent_id: Option<String>| {
+                let sid = id.trim().to_string();
+                if sid.is_empty() {
+                    return;
+                }
+                all_covered.insert(sid.clone());
+                if let Some(pid) = parent_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                    subagent_map.entry(sid.clone()).or_insert_with(|| pid.to_string());
+                }
+                if !v2_msg_sessions.contains(&sid) && seen_v1_sessions.insert(sid.clone()) {
+                    v1_only_sessions.push(sid);
+                }
+            };
+
+            if let (Some(min_ms), Some(min_sec), true) =
+                (sql_cutoff_ms, sql_cutoff_sec, s_cols.contains("time_updated"))
+            {
+                let sql = format!(
+                    "SELECT id, {parent_expr} FROM session \
+                     WHERE time_updated >= ?1 OR (time_updated > 0 AND time_updated < 1000000000000 AND time_updated >= ?2) OR time_updated IS NULL OR time_updated = 0"
+                );
+                if let Ok(mut stmt) = conn.prepare(&sql) {
+                    if let Ok(rows) = stmt.query_map(rusqlite::params![min_ms, min_sec], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1).ok().flatten()))
+                    }) {
+                        for row in rows.flatten() {
+                            collect_session_row(row.0, row.1);
+                        }
+                    }
+                }
+            } else {
+                let sql = format!("SELECT id, {parent_expr} FROM session");
+                if let Ok(mut stmt) = conn.prepare(&sql) {
+                    if let Ok(rows) = stmt.query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1).ok().flatten()))
+                    }) {
+                        for row in rows.flatten() {
+                            collect_session_row(row.0, row.1);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if has_part {
+        let p_cols = table_columns(&conn, "part");
+        let m_cols = if has_message {
+            table_columns(&conn, "message")
+        } else {
+            HashSet::new()
+        };
+        let can_join_message = has_message
+            && p_cols.contains("message_id")
+            && m_cols.contains("id")
+            && m_cols.contains("data");
+        let p_has_ts = p_cols.contains("time_created");
+        let m_has_ts = can_join_message && m_cols.contains("time_created");
+
+        let mut handle_v1_part =
+            |sid: String, part_ts: i64, part_data: String, msg_ts: i64, msg_data: Option<String>| {
+                let sid = sid.trim().to_string();
+                if sid.is_empty() || v2_msg_sessions.contains(&sid) {
+                    return;
+                }
+                if !part_data.contains("tool") {
+                    return;
+                }
+                let Ok(v) = serde_json::from_str::<Value>(&part_data) else {
+                    return;
+                };
+                let Some(clean) = extract_opencode_tool_name(&v) else {
+                    return;
+                };
+
+                // Align timestamp & model with the parent `message` row (matching tokscale-core,
+                // which buckets usage by `message.data -> $.time.created`). Fall back to part
+                // timestamps when message metadata is absent.
+                let msg_val = msg_data
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+                let model = msg_val
+                    .as_ref()
+                    .map(extract_opencode_model_id)
+                    .unwrap_or_default();
+                let Some(ts) = msg_val
+                    .as_ref()
+                    .and_then(|mv| mv.pointer("/time/created").and_then(parse_rfc3339_utc))
+                    .or_else(|| parse_epoch_utc(msg_ts))
+                    .or_else(|| parse_epoch_utc(part_ts))
+                    .or_else(|| v.pointer("/state/time/start").and_then(parse_rfc3339_utc))
+                    .or_else(|| v.pointer("/time/start").and_then(parse_rfc3339_utc))
+                    .or_else(|| v.pointer("/time/created").and_then(parse_rfc3339_utc))
+                else {
+                    return;
+                };
+                if let Some(min_ts) = cutoff {
+                    if ts < min_ts {
+                        return;
+                    }
+                }
+                all_covered.insert(sid.clone());
+                let bucket_ts = truncate_hour(ts).timestamp();
+                *tool_map
+                    .entry((sid, bucket_ts, model))
+                    .or_default()
+                    .entry(clean.to_string())
+                    .or_insert(0) += 1;
+            };
+
+        let p_ts_expr = if p_has_ts { "COALESCE(p.time_created, 0)" } else { "0" };
+        let m_ts_expr = if m_has_ts { "COALESCE(m.time_created, 0)" } else { "0" };
+
+        if has_session_v1 {
+            // Query `part` strictly per v1-only session via `part_session_idx`!
+            if !v1_only_sessions.is_empty() && p_cols.contains("session_id") && p_cols.contains("data") {
+                let sql = if can_join_message {
+                    format!(
+                        "SELECT {p_ts_expr}, p.data, {m_ts_expr}, m.data \
+                         FROM part p LEFT JOIN message m ON m.id = p.message_id \
+                         WHERE p.session_id = ?1"
+                    )
+                } else {
+                    format!(
+                        "SELECT {p_ts_expr}, p.data, 0, NULL FROM part p WHERE p.session_id = ?1"
+                    )
+                };
+                if let Ok(mut stmt) = conn.prepare(&sql) {
+                    for sid in &v1_only_sessions {
+                        if let Ok(rows) = stmt.query_map([sid.as_str()], |row| {
+                            Ok((
+                                row.get::<_, i64>(0).unwrap_or(0),
+                                row.get::<_, String>(1)?,
+                                row.get::<_, i64>(2).unwrap_or(0),
+                                row.get::<_, Option<String>>(3).ok().flatten(),
+                            ))
+                        }) {
+                            for row in rows.flatten() {
+                                handle_v1_part(sid.clone(), row.0, row.1, row.2, row.3);
+                            }
+                        }
+                    }
+                }
+            }
+        } else if !has_session_message && p_cols.contains("session_id") && p_cols.contains("data") {
+            // Rare minimal DB with `part` and neither `session` nor `session_message`.
+            let from_clause = if can_join_message {
+                "FROM part p LEFT JOIN message m ON m.id = p.message_id"
+            } else {
+                "FROM part p"
+            };
+            let m_data_expr = if can_join_message { "m.data" } else { "NULL" };
+
+            if let (Some(min_ms), Some(min_sec), true) = (sql_cutoff_ms, sql_cutoff_sec, p_has_ts) {
+                let sql = format!(
+                    "SELECT p.session_id, {p_ts_expr}, p.data, {m_ts_expr}, {m_data_expr} {from_clause} \
+                     WHERE p.time_created >= ?1 OR (p.time_created > 0 AND p.time_created < 1000000000000 AND p.time_created >= ?2) OR p.time_created IS NULL OR p.time_created = 0"
+                );
+                if let Ok(mut stmt) = conn.prepare(&sql) {
+                    if let Ok(rows) = stmt.query_map(rusqlite::params![min_ms, min_sec], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1).unwrap_or(0),
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3).unwrap_or(0),
+                            row.get::<_, Option<String>>(4).ok().flatten(),
+                        ))
+                    }) {
+                        for row in rows.flatten() {
+                            handle_v1_part(row.0, row.1, row.2, row.3, row.4);
+                        }
+                    }
+                }
+            } else {
+                let sql = format!(
+                    "SELECT p.session_id, {p_ts_expr}, p.data, {m_ts_expr}, {m_data_expr} {from_clause}"
+                );
+                if let Ok(mut stmt) = conn.prepare(&sql) {
+                    if let Ok(rows) = stmt.query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1).unwrap_or(0),
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3).unwrap_or(0),
+                            row.get::<_, Option<String>>(4).ok().flatten(),
+                        ))
+                    }) {
+                        for row in rows.flatten() {
+                            handle_v1_part(row.0, row.1, row.2, row.3, row.4);
+                        }
                     }
                 }
             }
@@ -1317,9 +1619,10 @@ fn scan_opencode_sqlite_db(db_path: &Path, cutoff: Option<DateTime<Utc>>) -> Opt
 
     let buckets = tool_map
         .into_iter()
-        .map(|((session_id, hour_ts), tools)| CachedBucketTools {
+        .map(|((session_id, hour_ts, model), tools)| CachedBucketTools {
             session_id,
             hour_ts,
+            model,
             tools,
         })
         .collect();
@@ -1354,44 +1657,37 @@ fn scan_opencode_legacy_parts(
         if !file_recently_modified(path, cutoff) {
             continue;
         }
-        scan_file_cached("opencode", path, cutoff, cache, out, |p| {
-            parse_opencode_legacy_part_file(p, covered_sessions)
-        });
+        // Cache the raw parsed part file unconditionally and apply `covered_sessions` filtering
+        // only at merge time so cache entries remain valid when SQLite coverage changes.
+        scan_file_cached_filtered(
+            "opencode",
+            path,
+            cutoff,
+            Some(covered_sessions),
+            cache,
+            out,
+            parse_opencode_legacy_part_file,
+        );
     }
 }
 
-fn parse_opencode_legacy_part_file(
-    path: &Path,
-    covered_sessions: &HashSet<String>,
-) -> FileScanResult {
+fn parse_opencode_legacy_part_file(path: &Path) -> FileScanResult {
     let mut res = FileScanResult::default();
     let Ok(raw) = fs::read_to_string(path) else {
         return res;
     };
-    if !raw.contains("\"tool\"") {
+    if !raw.contains("tool") {
         return res;
     }
     let Ok(v) = serde_json::from_str::<Value>(&raw) else {
         return res;
     };
-    if v.get("type").and_then(Value::as_str) != Some("tool") {
+    let Some(name) = extract_opencode_tool_name(&v) else {
         return res;
-    }
+    };
     let Some(sid) = v
         .get("sessionID")
         .or_else(|| v.get("session_id"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    else {
-        return res;
-    };
-    if covered_sessions.contains(sid) {
-        return res;
-    }
-    let Some(name) = v
-        .get("tool")
-        .or_else(|| v.get("name"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -1716,6 +2012,129 @@ mod tests {
             .lookup_tool_calls("opencode", "ses_legacy", bucket)
             .expect("should read legacy JSON part");
         assert_eq!(tools.get("bash"), Some(&1));
+
+        // Re-scanning with `ses_legacy` now covered by SQLite must filter it out even on cache hit.
+        let mut covered_after = HashSet::new();
+        covered_after.insert("ses_legacy".to_string());
+        let mut sidecar_covered = ToolSidecar::default();
+        scan_opencode_legacy_parts(&dir, None, &covered_after, &mut cache, &mut sidecar_covered);
+        assert!(sidecar_covered
+            .lookup_tool_calls("opencode", "ses_legacy", bucket)
+            .is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_opencode_v1_cross_hour_alignment_missing_columns_and_partial_v2() {
+        let dir = unique_tmp_dir("opencode-edge-cases");
+        let db_path = dir.join("opencode.db");
+        let conn = Connection::open(&db_path).unwrap();
+        // Deliberately omit `parent_id` and `time_updated` on `session`, omit `time_created` on
+        // `session_message`, and include a `session_v2` row whose messages were NOT migrated yet.
+        conn.execute_batch(
+            "CREATE TABLE session_v2 (
+                id TEXT PRIMARY KEY,
+                directory TEXT NOT NULL
+            );
+            CREATE TABLE session_message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                data TEXT NOT NULL
+            );
+            CREATE TABLE session (
+                id TEXT PRIMARY KEY,
+                directory TEXT NOT NULL
+            );
+            CREATE TABLE message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                time_created INTEGER NOT NULL,
+                data TEXT NOT NULL
+            );
+            CREATE TABLE part (
+                id TEXT PRIMARY KEY,
+                message_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                time_created INTEGER NOT NULL,
+                data TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+
+        let msg_ts = DateTime::parse_from_rfc3339("2026-11-25T10:59:55Z")
+            .unwrap()
+            .timestamp_millis();
+        let part_ts = DateTime::parse_from_rfc3339("2026-11-25T11:00:08Z")
+            .unwrap()
+            .timestamp_millis();
+        let v2_ts = DateTime::parse_from_rfc3339("2026-11-25T12:10:00Z")
+            .unwrap()
+            .timestamp_millis();
+
+        // Partially migrated: exists in `session_v2`, but has NO rows in `session_message`.
+        conn.execute(
+            "INSERT INTO session_v2 (id, directory) VALUES ('ses_partial', '/repo')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session (id, directory) VALUES ('ses_partial', '/repo')",
+            [],
+        )
+        .unwrap();
+        let v1_msg_data = format!(
+            r#"{{"role":"assistant","modelID":"claude-sonnet-4","time":{{"created":{msg_ts}}}}}"#
+        );
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_created, data) VALUES ('msg_cross', 'ses_partial', ?1, ?2)",
+            rusqlite::params![msg_ts, v1_msg_data],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO part (id, message_id, session_id, time_created, data) VALUES ('prt_cross', 'msg_cross', 'ses_partial', ?1, ?2)",
+            rusqlite::params![part_ts, r#"{"type":"tool","tool":"bash"}"#],
+        )
+        .unwrap();
+
+        // v2 `session_message` without `time_created` column, using `tool-invocation` shape + model.
+        let v2_data = format!(
+            r#"{{"time":{{"created":{v2_ts}}},"model":{{"id":"gpt-6-astra"}},"content":[{{"type":"tool-invocation","toolInvocation":{{"toolName":"edit"}}}},{{"type":"tool-call","toolName":"read"}}]}}"#
+        );
+        conn.execute(
+            "INSERT INTO session_message (id, session_id, type, data) VALUES ('sm_1', 'ses_v2_notime', 'assistant', ?1)",
+            rusqlite::params![v2_data],
+        )
+        .unwrap();
+        drop(conn);
+
+        let cutoff = DateTime::parse_from_rfc3339("2026-11-25T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut cache = ToolCache::default();
+        let mut sidecar = ToolSidecar::default();
+        let mut covered = HashSet::new();
+        scan_opencode_sqlite_cached(&db_path, Some(cutoff), &mut cache, &mut sidecar, &mut covered);
+
+        // Cross-hour v1 part must align to parent message's 10:00 bucket (NOT 11:00) AND carry model!
+        let b10 = DateTime::parse_from_rfc3339("2026-11-25T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let t_partial = sidecar
+            .lookup_model_tool_calls("opencode", "ses_partial", b10, "claude-sonnet-4")
+            .expect("partially migrated v1 part should align to parent message hour & model");
+        assert_eq!(t_partial.get("bash"), Some(&1));
+
+        // v2 without `time_created` column must still parse tool-invocation & tool-call!
+        let b12 = DateTime::parse_from_rfc3339("2026-11-25T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let t_v2 = sidecar
+            .lookup_model_tool_calls("opencode", "ses_v2_notime", b12, "gpt-6-astra")
+            .expect("v2 session_message without time_created should still extract tools");
+        assert_eq!(t_v2.get("edit"), Some(&1));
+        assert_eq!(t_v2.get("read"), Some(&1));
 
         let _ = fs::remove_dir_all(&dir);
     }
