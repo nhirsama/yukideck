@@ -22,6 +22,30 @@ type RemindOffset struct {
 	Value int    `json:"value"` // >=0; 0 means on-time
 }
 
+// OverdueConfig controls persistent nagging after target_at has passed while the item remains pending.
+type OverdueConfig struct {
+	Enabled       bool   `json:"enabled"`
+	IntervalUnit  string `json:"interval_unit,omitempty" tstype:"'hour' | 'day'"` // default "day"
+	IntervalValue int    `json:"interval_value,omitempty"`                        // >= 1
+	MaxCount      int    `json:"max_count,omitempty"`                             // default 3, clamped to 1..10
+}
+
+// RetryState holds bounded backoff state for a single failed trigger awaiting automatic retry.
+type RetryState struct {
+	TriggerKey   string    `json:"trigger_key"`
+	TriggerLabel string    `json:"trigger_label"`
+	EventType    string    `json:"event_type" tstype:"'reminder' | 'overdue'"`
+	OverdueIndex int       `json:"overdue_index,omitempty"`
+	Attempt      int       `json:"attempt"` // failed attempts so far (1..3)
+	NextRetryAt  time.Time `json:"next_retry_at"`
+	LastError    string    `json:"last_error"`
+}
+
+type PauseItemInput struct {
+	Until      *time.Time `json:"until,omitempty"`
+	Indefinite bool       `json:"indefinite,omitempty"`
+}
+
 type LunarDateInput struct {
 	Year   int  `json:"year"`
 	Month  int  `json:"month"`
@@ -42,6 +66,7 @@ type UpsertItemInput struct {
 	RepeatConfig  RepeatConfig    `json:"repeat_config,omitempty"`
 	AutoAdvance   *bool           `json:"auto_advance,omitempty"`
 	RemindOffsets []RemindOffset  `json:"remind_offsets,omitempty"`
+	OverdueConfig *OverdueConfig  `json:"overdue_config,omitempty"`
 	ChannelIDs    []int64         `json:"channel_ids,omitempty"`
 }
 
@@ -59,6 +84,10 @@ type ItemView struct {
 	RepeatConfig  RepeatConfig   `json:"repeat_config"`
 	AutoAdvance   bool           `json:"auto_advance"`
 	RemindOffsets []RemindOffset `json:"remind_offsets"`
+	OverdueConfig OverdueConfig  `json:"overdue_config"`
+	Paused        bool           `json:"paused"`
+	PausedUntil   *time.Time     `json:"paused_until,omitempty"`
+	RetryState    *RetryState    `json:"retry_state,omitempty"`
 	ChannelIDs    []int64        `json:"channel_ids"`
 	NextTriggerAt *time.Time     `json:"next_trigger_at,omitempty"`
 	CreatedAt     time.Time      `json:"created_at"`
@@ -79,13 +108,17 @@ type CalendarEventView struct {
 }
 
 type LogRecord struct {
-	ID           int64     `json:"id"`
-	UserID       int64     `json:"-"`
-	ItemID       *int64    `json:"item_id,omitempty"`
-	ItemTitle    string    `json:"item_title"`
-	TriggerKey   string    `json:"trigger_key"`
-	TriggerLabel string    `json:"trigger_label"`
-	Status       string    `json:"status" tstype:"'ok' | 'failed'"`
-	Error        string    `json:"error,omitempty"`
-	SentAt       time.Time `json:"sent_at"`
+	ID           int64      `json:"id"`
+	UserID       int64      `json:"-"`
+	ItemID       *int64     `json:"item_id,omitempty"`
+	ItemTitle    string     `json:"item_title"`
+	TriggerKey   string     `json:"trigger_key"`
+	TriggerLabel string     `json:"trigger_label"`
+	EventType    string     `json:"event_type" tstype:"'reminder' | 'overdue' | 'pause'"`
+	Status       string     `json:"status" tstype:"'ok' | 'retrying' | 'failed' | 'skipped'"`
+	Reason       string     `json:"reason,omitempty"`
+	Attempt      int        `json:"attempt"`
+	NextRetryAt  *time.Time `json:"next_retry_at,omitempty"`
+	Error        string     `json:"error,omitempty"`
+	SentAt       time.Time  `json:"sent_at"`
 }

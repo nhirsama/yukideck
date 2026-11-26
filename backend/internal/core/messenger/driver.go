@@ -13,6 +13,37 @@ var (
 	ErrUnauthorizedWebhook   = errors.New("unauthorized inbound webhook request")
 )
 
+// PermanentError marks a non-retryable channel failure (e.g. invalid credentials or 4xx config error).
+type PermanentError struct {
+	Err error
+}
+
+func (e *PermanentError) Error() string {
+	if e == nil || e.Err == nil {
+		return ""
+	}
+	return e.Err.Error()
+}
+
+func (e *PermanentError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func NewPermanentError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &PermanentError{Err: err}
+}
+
+func IsPermanentError(err error) bool {
+	var pe *PermanentError
+	return errors.As(err, &pe)
+}
+
 func (d DriverInfo) Supports(cap Capability) bool {
 	for _, c := range d.Capabilities {
 		if c == cap {

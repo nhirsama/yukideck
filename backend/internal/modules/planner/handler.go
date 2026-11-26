@@ -35,6 +35,8 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.With(writeMW).Delete("/items/{id}", httpx.Handle(h.logger, h.deleteItem))
 	r.With(writeMW).Post("/items/{id}/complete", httpx.Handle(h.logger, h.completeItem))
 	r.With(writeMW).Post("/items/{id}/reopen", httpx.Handle(h.logger, h.reopenItem))
+	r.With(writeMW).Post("/items/{id}/pause", httpx.Handle(h.logger, h.pauseItem))
+	r.With(writeMW).Post("/items/{id}/resume", httpx.Handle(h.logger, h.resumeItem))
 	r.With(writeMW).Post("/items/{id}/test", httpx.Handle(h.logger, h.testItem))
 
 	r.With(readMW).Get("/calendar", httpx.Handle(h.logger, h.listCalendar))
@@ -142,6 +144,44 @@ func (h *Handler) reopenItem(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+func (h *Handler) pauseItem(w http.ResponseWriter, r *http.Request) error {
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		return httpx.Unauthorized("未登录")
+	}
+	id, err := parseID(r)
+	if err != nil {
+		return err
+	}
+	var in PauseItemInput
+	if err := httpx.DecodeJSON(w, r, h.maxBodyBytes, &in); err != nil {
+		return err
+	}
+	item, err := h.svc.PauseItem(r.Context(), uid, id, in)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"item": item})
+	return nil
+}
+
+func (h *Handler) resumeItem(w http.ResponseWriter, r *http.Request) error {
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		return httpx.Unauthorized("未登录")
+	}
+	id, err := parseID(r)
+	if err != nil {
+		return err
+	}
+	item, err := h.svc.ResumeItem(r.Context(), uid, id)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"item": item})
+	return nil
+}
+
 func (h *Handler) testItem(w http.ResponseWriter, r *http.Request) error {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -184,7 +224,14 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) error {
 	if !ok {
 		return httpx.Unauthorized("未登录")
 	}
-	logs, err := h.svc.ListLogs(r.Context(), uid)
+	status := r.URL.Query().Get("status")
+	limit := maxLogsPerUser
+	if rawLimit := r.URL.Query().Get("limit"); rawLimit != "" {
+		if n, err := strconv.Atoi(rawLimit); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	logs, err := h.svc.ListLogs(r.Context(), uid, status, limit)
 	if err != nil {
 		return err
 	}

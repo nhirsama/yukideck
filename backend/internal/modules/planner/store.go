@@ -26,6 +26,10 @@ type ItemRecord struct {
 	RepeatConfig  RepeatConfig
 	AutoAdvance   bool
 	RemindOffsets []RemindOffset
+	OverdueConfig OverdueConfig
+	Paused        bool
+	PausedUntil   *time.Time
+	RetryState    *RetryState
 	ChannelIDs    []int64
 	NextTriggerAt *time.Time
 	CreatedAt     time.Time
@@ -43,9 +47,10 @@ type Store interface {
 	ListDueItems(ctx context.Context, now time.Time) ([]ItemRecord, error)
 	MinNextTriggerAt(ctx context.Context) (*time.Time, error)
 
-	ListSentTriggerKeys(ctx context.Context, itemID int64) (map[string]struct{}, error)
-	InsertLogAndPrune(ctx context.Context, rec LogRecord, maxKeep int) (bool, error)
-	ListLogs(ctx context.Context, userID int64, limit int) ([]LogRecord, error)
+	ListSettledTriggerKeys(ctx context.Context, itemID int64) (map[string]struct{}, error)
+	InsertSettledLogAndPrune(ctx context.Context, rec LogRecord, maxKeep int) (bool, error)
+	InsertAttemptLogAndPrune(ctx context.Context, rec LogRecord, maxKeep int) error
+	ListLogs(ctx context.Context, userID int64, status string, limit int) ([]LogRecord, error)
 }
 
 type PGStore struct {
@@ -68,6 +73,8 @@ func toItemRecord(row sqlcgen.PlannerItem) ItemRecord {
 		CalendarType:  row.CalendarType,
 		RepeatType:    row.RepeatType,
 		AutoAdvance:   row.AutoAdvance,
+		Paused:        row.Paused,
+		PausedUntil:   row.PausedUntil,
 		ChannelIDs:    row.ChannelIds,
 		NextTriggerAt: row.NextTriggerAt,
 		CreatedAt:     row.CreatedAt,
@@ -79,6 +86,15 @@ func toItemRecord(row sqlcgen.PlannerItem) ItemRecord {
 	if len(row.RemindOffsets) > 0 {
 		_ = json.Unmarshal(row.RemindOffsets, &r.RemindOffsets)
 	}
+	if len(row.OverdueConfig) > 0 {
+		_ = json.Unmarshal(row.OverdueConfig, &r.OverdueConfig)
+	}
+	if len(row.RetryState) > 0 && string(row.RetryState) != "null" {
+		var rs RetryState
+		if err := json.Unmarshal(row.RetryState, &rs); err == nil && rs.TriggerKey != "" {
+			r.RetryState = &rs
+		}
+	}
 	if r.RemindOffsets == nil {
 		r.RemindOffsets = []RemindOffset{}
 	}
@@ -89,6 +105,14 @@ func toItemRecord(row sqlcgen.PlannerItem) ItemRecord {
 }
 
 func toLogRecord(row sqlcgen.PlannerLog) LogRecord {
+	eventType := row.EventType
+	if eventType == "" {
+		eventType = EventReminder
+	}
+	attempt := int(row.Attempt)
+	if attempt <= 0 {
+		attempt = 1
+	}
 	return LogRecord{
 		ID:           row.ID,
 		UserID:       row.UserID,
@@ -96,10 +120,25 @@ func toLogRecord(row sqlcgen.PlannerLog) LogRecord {
 		ItemTitle:    row.ItemTitle,
 		TriggerKey:   row.TriggerKey,
 		TriggerLabel: row.TriggerLabel,
+		EventType:    eventType,
 		Status:       row.Status,
+		Reason:       row.Reason,
+		Attempt:      attempt,
+		NextRetryAt:  row.NextRetryAt,
 		Error:        row.Error,
 		SentAt:       row.SentAt,
 	}
+}
+
+func marshalRetryState(rs *RetryState) []byte {
+	if rs == nil {
+		return nil
+	}
+	b, err := json.Marshal(rs)
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 func (s *PGStore) ListItems(ctx context.Context, userID int64) ([]ItemRecord, error) {
@@ -132,6 +171,8 @@ func (s *PGStore) GetItem(ctx context.Context, userID, id int64) (*ItemRecord, e
 func (s *PGStore) CreateItem(ctx context.Context, rec ItemRecord) (*ItemRecord, error) {
 	repeatJSON, _ := json.Marshal(rec.RepeatConfig)
 	offsetsJSON, _ := json.Marshal(rec.RemindOffsets)
+	overdueJSON, _ := json.Marshal(rec.OverdueConfig)
+	retryJSON := marshalRetryState(rec.RetryState)
 	channelIDs := rec.ChannelIDs
 	if channelIDs == nil {
 		channelIDs = []int64{}
@@ -148,6 +189,10 @@ func (s *PGStore) CreateItem(ctx context.Context, rec ItemRecord) (*ItemRecord, 
 		RepeatConfig:  repeatJSON,
 		AutoAdvance:   rec.AutoAdvance,
 		RemindOffsets: offsetsJSON,
+		OverdueConfig: overdueJSON,
+		Paused:        rec.Paused,
+		PausedUntil:   rec.PausedUntil,
+		RetryState:    retryJSON,
 		ChannelIds:    channelIDs,
 		NextTriggerAt: rec.NextTriggerAt,
 	})
@@ -161,6 +206,8 @@ func (s *PGStore) CreateItem(ctx context.Context, rec ItemRecord) (*ItemRecord, 
 func (s *PGStore) UpdateItem(ctx context.Context, rec ItemRecord) (*ItemRecord, error) {
 	repeatJSON, _ := json.Marshal(rec.RepeatConfig)
 	offsetsJSON, _ := json.Marshal(rec.RemindOffsets)
+	overdueJSON, _ := json.Marshal(rec.OverdueConfig)
+	retryJSON := marshalRetryState(rec.RetryState)
 	channelIDs := rec.ChannelIDs
 	if channelIDs == nil {
 		channelIDs = []int64{}
@@ -178,6 +225,10 @@ func (s *PGStore) UpdateItem(ctx context.Context, rec ItemRecord) (*ItemRecord, 
 		RepeatConfig:  repeatJSON,
 		AutoAdvance:   rec.AutoAdvance,
 		RemindOffsets: offsetsJSON,
+		OverdueConfig: overdueJSON,
+		Paused:        rec.Paused,
+		PausedUntil:   rec.PausedUntil,
+		RetryState:    retryJSON,
 		ChannelIds:    channelIDs,
 		NextTriggerAt: rec.NextTriggerAt,
 	})
@@ -224,9 +275,9 @@ func (s *PGStore) MinNextTriggerAt(ctx context.Context) (*time.Time, error) {
 	return t, nil
 }
 
-func (s *PGStore) ListSentTriggerKeys(ctx context.Context, itemID int64) (map[string]struct{}, error) {
+func (s *PGStore) ListSettledTriggerKeys(ctx context.Context, itemID int64) (map[string]struct{}, error) {
 	id := itemID
-	keys, err := s.q.ListSentTriggerKeys(ctx, &id)
+	keys, err := s.q.ListSettledTriggerKeys(ctx, &id)
 	if err != nil {
 		return nil, err
 	}
@@ -237,16 +288,28 @@ func (s *PGStore) ListSentTriggerKeys(ctx context.Context, itemID int64) (map[st
 	return out, nil
 }
 
-// InsertLogAndPrune atomically inserts a deduplicated log row and prunes older rows beyond maxKeep per user.
-// Returns inserted=false if this (item_id, trigger_key) was already recorded.
-func (s *PGStore) InsertLogAndPrune(ctx context.Context, rec LogRecord, maxKeep int) (bool, error) {
-	rowsAffected, err := s.q.InsertLog(ctx, sqlcgen.InsertLogParams{
+// InsertSettledLogAndPrune atomically inserts a settled (ok/failed/skipped) log row and prunes older rows.
+// Returns inserted=false if this (item_id, trigger_key) was already settled.
+func (s *PGStore) InsertSettledLogAndPrune(ctx context.Context, rec LogRecord, maxKeep int) (bool, error) {
+	eventType := rec.EventType
+	if eventType == "" {
+		eventType = EventReminder
+	}
+	attempt := rec.Attempt
+	if attempt <= 0 {
+		attempt = 1
+	}
+	rowsAffected, err := s.q.InsertSettledLog(ctx, sqlcgen.InsertSettledLogParams{
 		UserID:       rec.UserID,
 		ItemID:       rec.ItemID,
 		ItemTitle:    rec.ItemTitle,
 		TriggerKey:   rec.TriggerKey,
 		TriggerLabel: rec.TriggerLabel,
+		EventType:    eventType,
 		Status:       rec.Status,
+		Reason:       rec.Reason,
+		Attempt:      int32(attempt),
+		NextRetryAt:  rec.NextRetryAt,
 		Error:        rec.Error,
 	})
 	if err != nil {
@@ -262,12 +325,48 @@ func (s *PGStore) InsertLogAndPrune(ctx context.Context, rec LogRecord, maxKeep 
 	return inserted, nil
 }
 
-func (s *PGStore) ListLogs(ctx context.Context, userID int64, limit int) ([]LogRecord, error) {
+// InsertAttemptLogAndPrune inserts a non-settled retry attempt row (status='retrying') without occupying the dedup slot.
+func (s *PGStore) InsertAttemptLogAndPrune(ctx context.Context, rec LogRecord, maxKeep int) error {
+	eventType := rec.EventType
+	if eventType == "" {
+		eventType = EventReminder
+	}
+	attempt := rec.Attempt
+	if attempt <= 0 {
+		attempt = 1
+	}
+	_, err := s.q.InsertAttemptLog(ctx, sqlcgen.InsertAttemptLogParams{
+		UserID:       rec.UserID,
+		ItemID:       rec.ItemID,
+		ItemTitle:    rec.ItemTitle,
+		TriggerKey:   rec.TriggerKey,
+		TriggerLabel: rec.TriggerLabel,
+		EventType:    eventType,
+		Status:       rec.Status,
+		Reason:       rec.Reason,
+		Attempt:      int32(attempt),
+		NextRetryAt:  rec.NextRetryAt,
+		Error:        rec.Error,
+	})
+	if err != nil {
+		return err
+	}
+	if maxKeep > 0 {
+		_ = s.q.PruneUserLogs(ctx, sqlcgen.PruneUserLogsParams{
+			UserID: rec.UserID,
+			Limit:  int32(maxKeep),
+		})
+	}
+	return nil
+}
+
+func (s *PGStore) ListLogs(ctx context.Context, userID int64, status string, limit int) ([]LogRecord, error) {
 	if limit <= 0 {
-		limit = 50
+		limit = maxLogsPerUser
 	}
 	rows, err := s.q.ListLogs(ctx, sqlcgen.ListLogsParams{
 		UserID: userID,
+		Status: status,
 		Limit:  int32(limit),
 	})
 	if err != nil {

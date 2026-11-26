@@ -481,3 +481,112 @@ func TestSymmetricCapabilitiesAndCustomPushEndpoint(t *testing.T) {
 		t.Fatalf("expected CommandBus reply via TG, got %+v", tgSent)
 	}
 }
+
+func TestTransportRetryTransientAndPermanentFastFail(t *testing.T) {
+	var mu sync.Mutex
+	var mode string
+	var calls int
+
+	tgServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		curCall := calls
+		curMode := mode
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		switch curMode {
+		case "flaky_502":
+			if curCall <= 2 {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write([]byte(`{"ok":false,"description":"bad gateway"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+		case "permanent_401":
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"ok":false,"description":"Unauthorized"}`))
+		case "rate_429":
+			if curCall == 1 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"ok":false,"description":"Too Many Requests"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+		default:
+			_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+		}
+	}))
+	defer tgServer.Close()
+
+	box, err := crypto.NewBox([]byte("retry-test-secret-32-bytes-key!!"))
+	if err != nil {
+		t.Fatalf("NewBox: %v", err)
+	}
+	reg := messenger.NewRegistry()
+	tgDriver := drivers.NewTelegramDriver(2 * time.Second)
+	tgDriver.APIBaseURL = tgServer.URL
+	reg.Register(tgDriver)
+
+	store := newMemStore()
+	svc := messenger.NewService(store, reg, messenger.NewCommandBus(), box, "https://example.com", 2*time.Second, nil)
+	svc.SetRetryBackoffs([]time.Duration{time.Millisecond, 2 * time.Millisecond})
+
+	ctx := context.Background()
+	ch, err := svc.CreateChannel(ctx, 1, messenger.UpsertChannelInput{
+		Type:              "telegram",
+		Name:              "TG",
+		EnableOutbound:    true,
+		IsDefaultOutbound: true,
+		Enabled:           true,
+		Config:            map[string]any{"bot_token": "123456:ABC-DEF", "chat_id": "999001"},
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	// 1. Transient 502 recovers automatically on attempt 3 (2 retries)
+	mu.Lock()
+	mode = "flaky_502"
+	calls = 0
+	mu.Unlock()
+	results, err := svc.Send(ctx, 1, []int64{ch.ID}, messenger.Message{Content: "hello"})
+	if err != nil || len(results) != 1 || !results[0].OK {
+		t.Fatalf("expected transient 502 to recover via short retry, got res=%+v err=%v", results, err)
+	}
+	mu.Lock()
+	if calls != 3 {
+		t.Fatalf("expected 3 attempts for flaky_502, got %d", calls)
+	}
+	mu.Unlock()
+
+	// 2. Permanent 401 fails immediately on attempt 1 without retrying
+	mu.Lock()
+	mode = "permanent_401"
+	calls = 0
+	mu.Unlock()
+	results, err = svc.Send(ctx, 1, []int64{ch.ID}, messenger.Message{Content: "hello"})
+	if err != nil || len(results) != 1 || results[0].OK {
+		t.Fatalf("expected permanent 401 failure result, got res=%+v err=%v", results, err)
+	}
+	mu.Lock()
+	if calls != 1 {
+		t.Fatalf("expected permanent 401 to fast-fail on attempt 1, got %d calls", calls)
+	}
+	mu.Unlock()
+
+	// 3. HTTP 429 Too Many Requests IS retried and succeeds on attempt 2
+	mu.Lock()
+	mode = "rate_429"
+	calls = 0
+	mu.Unlock()
+	results, err = svc.Send(ctx, 1, []int64{ch.ID}, messenger.Message{Content: "hello"})
+	if err != nil || len(results) != 1 || !results[0].OK {
+		t.Fatalf("expected 429 rate-limit to recover on retry, got res=%+v err=%v", results, err)
+	}
+	mu.Lock()
+	if calls != 2 {
+		t.Fatalf("expected 2 attempts for rate_429, got %d", calls)
+	}
+	mu.Unlock()
+}

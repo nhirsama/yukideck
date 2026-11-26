@@ -185,6 +185,7 @@ flowchart LR
   - 推送终结点归属 `core/messenger`，用户可自定义多个命名的路由终结点 `slug`（如 `default`、`alert`、`nas`），每个终结点只维护转发规则（默认出站渠道或指定 1~N 个出站渠道），不再各自签发独立 Token。
   - 统一调用路径为 `GET/POST /api/v1/messenger/push/{user_id}/{endpoint}`，同时校验路径 `user_id` 与凭证归属一致、以及 API Key 是否具备 `messenger:push` 且资源范围覆盖 `{endpoint}`（或 `*`）。
   - 为兼容无法设置自定义 Header 的外部监控/NAS/快捷指令，**仅推送自定义终结点**显式标记 `AllowQueryKey: true`，同时支持 `Authorization: Bearer ydk_...` 与查询参数 `?key=ydk_...`（推荐为外部 URL 签发仅限单终结点的最小权限 Key），并兼容 Query / JSON / Form 常见参数别名（`title`、`content`/`text`/`body`/`msg`）。
+- **基础传输级短重试（基础设施职责边界）**：`core/messenger` 出站发送内置秒级瞬时重试（默认最多重发 2 次，退避 `500ms → 1.5s`），自动消化网络闪断、`5xx` 与 `429` 限流，对配置错误或 `4xx` 永久失败（`PermanentError`）立即快速失败不重试，使 `PushURL`、机器人回复及全部业务模块零成本受益；需要与业务状态强绑定的分钟级持久化退避重试与生命周期取消（如 `planner` 的完成/暂停取消）则由各业务模块按需自行实现。
 - **双向指令总线（`CommandBus`）**：具备 `inbound` 能力的渠道鉴权并归一化后投入 `CommandBus`，路由给各业务模块注册的处理器，为后续复杂的 Telegram 机器人交互提供统一底座。
 
 ### 3. 全局调度引擎（`core/scheduler`）

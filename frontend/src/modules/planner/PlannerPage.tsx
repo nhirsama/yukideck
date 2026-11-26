@@ -1,34 +1,48 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import timeGridPlugin from '@fullcalendar/timegrid';
 import interactionPlugin from '@fullcalendar/interaction';
 import {
+  AlertTriangle,
   Bell,
   Calendar as CalendarIcon,
   Check,
   Clock,
   History,
   ListTodo,
+  MoreHorizontal,
+  Pause,
   Pencil,
+  Play,
   Plus,
+  RefreshCw,
   Repeat,
   RotateCcw,
   Send,
   Trash2,
 } from 'lucide-react';
 import {
+  formatLogReason,
   formatOffsetLabel,
+  formatOverdueConfigLabel,
+  formatOverdueElapsed,
   formatRepeatLabel,
   getLunarDayBadge,
+  isItemOverdue,
+  needsConfirmation,
   plannerApi,
+  type LogStatus,
   type PlannerItem,
 } from './api';
 import { ItemModal } from './ItemModal';
+import { NotificationModal } from './NotificationModal';
+import { PauseModal } from './PauseModal';
 
 type TabKey = 'list' | 'calendar' | 'logs';
-type ListFilter = 'pending' | 'today' | 'upcoming' | 'undated' | 'done';
+type ListFilter = 'pending' | 'today' | 'overdue' | 'upcoming' | 'undated' | 'done';
+type LogFilter = '' | LogStatus;
 
 function formatDateTimeShort(iso?: string): string {
   if (!iso) return '';
@@ -42,16 +56,39 @@ function formatDateTimeShort(iso?: string): string {
   });
 }
 
+function logStatusBadge(status: LogStatus): { label: string; cls: string } {
+  switch (status) {
+    case 'ok':
+      return { label: '成功', cls: 'yd-badge-emerald' };
+    case 'retrying':
+      return {
+        label: '重试中',
+        cls: 'bg-amber-50 text-amber-700 border border-amber-200/80',
+      };
+    case 'failed':
+      return { label: '失败', cls: 'yd-badge-red' };
+    case 'skipped':
+      return { label: '已跳过', cls: 'yd-badge-neutral' };
+  }
+}
+
 export default function PlannerPage() {
   const qc = useQueryClient();
   const [tab, setTab] = useState<TabKey>('list');
   const [filter, setFilter] = useState<ListFilter>('pending');
+  const [logFilter, setLogFilter] = useState<LogFilter>('');
   const [quickTitle, setQuickTitle] = useState('');
+  const [openMenuId, setOpenMenuId] = useState<number | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
   const [modalState, setModalState] = useState<{
     open: boolean;
     item: PlannerItem | null;
     prefillDate?: string;
   }>({ open: false, item: null });
+  const [notifyModalItem, setNotifyModalItem] = useState<PlannerItem | null>(null);
+  const [pauseModalItem, setPauseModalItem] = useState<PlannerItem | null>(null);
+
   const [calRange, setCalRange] = useState(() => {
     const now = new Date();
     const start = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -59,6 +96,23 @@ export default function PlannerPage() {
     return { start: start.toISOString(), end: end.toISOString() };
   });
   const [toast, setToast] = useState('');
+
+  useEffect(() => {
+    if (openMenuId === null) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (menuRef.current?.contains(e.target as Node)) return;
+      setOpenMenuId(null);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpenMenuId(null);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [openMenuId]);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -82,8 +136,8 @@ export default function PlannerPage() {
   });
 
   const { data: logsData, isLoading: logsLoading } = useQuery({
-    queryKey: ['planner', 'logs'],
-    queryFn: plannerApi.listLogs,
+    queryKey: ['planner', 'logs', logFilter],
+    queryFn: () => plannerApi.listLogs(logFilter || undefined),
     enabled: tab === 'logs',
   });
 
@@ -110,11 +164,22 @@ export default function PlannerPage() {
   const reopenMut = useMutation({
     mutationFn: (id: number) => plannerApi.reopenItem(id),
     onSuccess: invalidateAll,
+    onError: (err: Error) => showToast(err.message),
+  });
+
+  const resumeMut = useMutation({
+    mutationFn: (id: number) => plannerApi.resumeItem(id),
+    onSuccess: () => {
+      invalidateAll();
+      showToast('已恢复通知');
+    },
+    onError: (err: Error) => showToast(err.message),
   });
 
   const deleteMut = useMutation({
     mutationFn: (id: number) => plannerApi.deleteItem(id),
     onSuccess: invalidateAll,
+    onError: (err: Error) => showToast(err.message),
   });
 
   const testMut = useMutation({
@@ -123,8 +188,14 @@ export default function PlannerPage() {
     onError: (err: Error) => showToast(`推送失败：${err.message}`),
   });
 
+  const overdueCount = useMemo(
+    () => items.filter((it) => isItemOverdue(it)).length,
+    [items],
+  );
+
   const filteredItems = useMemo(() => {
     const now = new Date();
+    const nowMs = now.getTime();
     const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
       now.getDate(),
     ).padStart(2, '0')}`;
@@ -133,6 +204,7 @@ export default function PlannerPage() {
       if (filter === 'done') return it.status === 'done';
       if (it.status !== 'pending') return false;
       if (filter === 'pending') return true;
+      if (filter === 'overdue') return isItemOverdue(it, nowMs);
       if (filter === 'undated') return !it.target_at;
       if (filter === 'today') return Boolean(it.target_local?.startsWith(todayStr));
       if (filter === 'upcoming') return Boolean(it.target_at);
@@ -227,6 +299,7 @@ export default function PlannerPage() {
               [
                 ['pending', '全部'],
                 ['today', '今日'],
+                ['overdue', overdueCount > 0 ? `已逾期 (${overdueCount})` : '已逾期'],
                 ['upcoming', '有时间'],
                 ['undated', '无日期'],
                 ['done', '已完成'],
@@ -251,128 +324,218 @@ export default function PlannerPage() {
             <div className="space-y-2">
               {filteredItems.map((it) => {
                 const isDone = it.status === 'done';
+                const overdue = isItemOverdue(it);
+                const canConfirm = needsConfirmation(it);
+                const hasPushConfig =
+                  it.remind_offsets.length > 0 || Boolean(it.overdue_config?.enabled);
                 const repeatLabel = formatRepeatLabel(it.repeat_type, it.repeat_config);
+                const overdueCfgLabel = formatOverdueConfigLabel(it.overdue_config);
+                const menuOpen = openMenuId === it.id;
+
                 return (
                   <div
                     key={it.id}
-                    className="group yd-card p-4 flex items-start justify-between gap-4 transition-colors hover:border-zinc-300"
+                    className={`group yd-card p-4 flex items-start justify-between gap-4 transition-colors hover:border-zinc-300 ${
+                      overdue && !it.paused ? 'border-red-200/80' : ''
+                    }`}
                   >
-                    <div className="flex items-start gap-3 min-w-0">
-                      <button
-                        type="button"
-                        title={
-                          isDone
-                            ? '恢复为待办'
-                            : it.repeat_type !== 'none'
-                              ? '完成本期并推进至下一周期'
-                              : '标记完成'
-                        }
-                        onClick={() =>
-                          isDone ? reopenMut.mutate(it.id) : completeMut.mutate(it.id)
-                        }
-                        className={`mt-0.5 h-[18px] w-[18px] rounded-[5px] border flex items-center justify-center shrink-0 transition-colors ${
-                          isDone
-                            ? 'bg-sky-500 border-sky-500 text-white'
-                            : 'border-zinc-300 hover:border-sky-400'
+                    <div className="min-w-0 space-y-1 flex-1">
+                      <div
+                        className={`text-[13px] font-medium leading-snug ${
+                          isDone ? 'line-through text-zinc-400' : 'text-zinc-900'
                         }`}
                       >
-                        {isDone ? <Check className="h-3 w-3" /> : null}
-                      </button>
-
-                      <div className="min-w-0 space-y-1">
-                        <div
-                          className={`text-[13px] font-medium leading-snug ${
-                            isDone ? 'line-through text-zinc-400' : 'text-zinc-900'
-                          }`}
-                        >
-                          {it.title}
-                        </div>
-                        {it.note && (
-                          <p className="text-xs text-zinc-500 whitespace-pre-wrap leading-relaxed">
-                            {it.note}
-                          </p>
-                        )}
-
-                        {(it.target_local ||
-                          repeatLabel ||
-                          it.remind_offsets.length > 0 ||
-                          (it.next_trigger_at && !isDone)) && (
-                          <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[11px] text-zinc-500 tabular-nums">
-                            {it.target_local && (
-                              <span className="yd-badge yd-badge-neutral">
-                                <Clock className="h-3 w-3 text-zinc-400" />
-                                {it.target_local.replace('T', ' ')}
-                                {it.calendar_type === 'lunar' && it.lunar_label
-                                  ? ` · ${it.lunar_label}`
-                                  : ''}
-                              </span>
-                            )}
-                            {repeatLabel && (
-                              <span className="yd-badge yd-badge-sky">
-                                <Repeat className="h-3 w-3" />
-                                {repeatLabel}
-                              </span>
-                            )}
-                            {it.remind_offsets.map((o) => (
-                              <span
-                                key={`${o.unit}:${o.value}`}
-                                className="yd-badge yd-badge-emerald"
-                              >
-                                <Bell className="h-3 w-3" />
-                                {formatOffsetLabel(o)}
-                              </span>
-                            ))}
-                            {it.next_trigger_at && !isDone && (
-                              <span className="text-zinc-400 ml-0.5">
-                                下次推送：{formatDateTimeShort(it.next_trigger_at)}
-                              </span>
-                            )}
-                          </div>
-                        )}
+                        {it.title}
                       </div>
+                      {it.note && (
+                        <p className="text-xs text-zinc-500 whitespace-pre-wrap leading-relaxed">
+                          {it.note}
+                        </p>
+                      )}
+
+                      {(it.target_local ||
+                        repeatLabel ||
+                        it.remind_offsets.length > 0 ||
+                        overdueCfgLabel ||
+                        it.paused ||
+                        it.retry_state ||
+                        (it.next_trigger_at && !isDone)) && (
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[11px] text-zinc-500 tabular-nums">
+                          {it.target_local && (
+                            <span className="yd-badge yd-badge-neutral">
+                              <Clock className="h-3 w-3 text-zinc-400" />
+                              {it.target_local.replace('T', ' ')}
+                              {it.calendar_type === 'lunar' && it.lunar_label
+                                ? ` · ${it.lunar_label}`
+                                : ''}
+                            </span>
+                          )}
+                          {overdue && it.target_at && (
+                            <span className="yd-badge yd-badge-red">
+                              <AlertTriangle className="h-3 w-3" />
+                              {formatOverdueElapsed(it.target_at)}
+                            </span>
+                          )}
+                          {it.paused && (
+                            <span className="yd-badge bg-amber-50 text-amber-700 border border-amber-200/80">
+                              <Pause className="h-3 w-3" />
+                              {it.paused_until
+                                ? `已暂停至 ${formatDateTimeShort(it.paused_until)}`
+                                : '已一直暂停'}
+                            </span>
+                          )}
+                          {!it.paused && it.retry_state && (
+                            <span className="yd-badge bg-amber-50 text-amber-700 border border-amber-200/80">
+                              <RefreshCw className="h-3 w-3" />
+                              重试中（下次 {formatDateTimeShort(it.retry_state.next_retry_at)}）
+                            </span>
+                          )}
+                          {repeatLabel && (
+                            <span className="yd-badge yd-badge-sky">
+                              <Repeat className="h-3 w-3" />
+                              {repeatLabel}
+                            </span>
+                          )}
+                          {it.remind_offsets.map((o) => (
+                            <span
+                              key={`${o.unit}:${o.value}`}
+                              className="yd-badge yd-badge-emerald"
+                            >
+                              <Bell className="h-3 w-3" />
+                              {formatOffsetLabel(o)}
+                            </span>
+                          ))}
+                          {overdueCfgLabel && (
+                            <span className="yd-badge yd-badge-neutral">
+                              {overdueCfgLabel}
+                            </span>
+                          )}
+                          {it.next_trigger_at && !isDone && !it.paused && (
+                            <span className="text-zinc-400 ml-0.5">
+                              下次推送：{formatDateTimeShort(it.next_trigger_at)}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
 
-                    <div className="flex items-center gap-0.5 shrink-0 opacity-75 group-hover:opacity-100 transition-opacity">
+                    {/* Right action bar: [Check?] [Bell?] [Pause/Resume?] [Edit?] [More...] */}
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      {!isDone && canConfirm && (
+                        <button
+                          type="button"
+                          title={
+                            it.repeat_type !== 'none'
+                              ? '确认本期并推进至下一周期'
+                              : '确认完成'
+                          }
+                          onClick={() => completeMut.mutate(it.id)}
+                          className="yd-btn-icon text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700"
+                        >
+                          <Check className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+
+                      {!isDone && it.target_at && (
+                        <button
+                          type="button"
+                          title="通知配置"
+                          onClick={() => setNotifyModalItem(it)}
+                          className={`yd-btn-icon ${
+                            hasPushConfig ? 'text-sky-600 hover:text-sky-700' : ''
+                          }`}
+                        >
+                          <Bell className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+
+                      {!isDone && it.target_at && (
+                        <button
+                          type="button"
+                          title={it.paused ? '恢复通知' : '暂停通知'}
+                          onClick={() => {
+                            if (it.paused) {
+                              resumeMut.mutate(it.id);
+                            } else {
+                              setPauseModalItem(it);
+                            }
+                          }}
+                          className={`yd-btn-icon ${
+                            it.paused ? 'text-amber-600 hover:text-amber-700 hover:bg-amber-50' : ''
+                          }`}
+                        >
+                          {it.paused ? (
+                            <Play className="h-3.5 w-3.5" />
+                          ) : (
+                            <Pause className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                      )}
+
                       {!isDone && (
                         <button
                           type="button"
-                          title="测试推送"
-                          onClick={() => testMut.mutate(it.id)}
+                          title="修改"
+                          onClick={() => setModalState({ open: true, item: it })}
                           className="yd-btn-icon"
                         >
-                          <Send className="h-3.5 w-3.5" />
+                          <Pencil className="h-3.5 w-3.5" />
                         </button>
                       )}
-                      {isDone && (
+
+                      <div className="relative" ref={menuOpen ? menuRef : undefined}>
                         <button
                           type="button"
-                          title="恢复待办"
-                          onClick={() => reopenMut.mutate(it.id)}
+                          title="更多操作"
+                          onClick={() => setOpenMenuId(menuOpen ? null : it.id)}
                           className="yd-btn-icon"
                         >
-                          <RotateCcw className="h-3.5 w-3.5" />
+                          <MoreHorizontal className="h-3.5 w-3.5" />
                         </button>
-                      )}
-                      <button
-                        type="button"
-                        title="编辑"
-                        onClick={() => setModalState({ open: true, item: it })}
-                        className="yd-btn-icon"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        title="删除"
-                        onClick={() => {
-                          if (window.confirm(`确定删除「${it.title}」吗？`)) {
-                            deleteMut.mutate(it.id);
-                          }
-                        }}
-                        className="yd-btn-danger-icon"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+
+                        {menuOpen && (
+                          <div className="absolute right-0 mt-1.5 w-32 rounded-xl border border-zinc-200/90 bg-white py-1 shadow-lg z-30">
+                            {!isDone ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setOpenMenuId(null);
+                                  testMut.mutate(it.id);
+                                }}
+                                className="w-full px-3 py-1.5 text-left text-xs text-zinc-700 hover:bg-zinc-50 flex items-center gap-2"
+                              >
+                                <Send className="h-3.5 w-3.5 text-zinc-400" />
+                                测试通知
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setOpenMenuId(null);
+                                  reopenMut.mutate(it.id);
+                                }}
+                                className="w-full px-3 py-1.5 text-left text-xs text-zinc-700 hover:bg-zinc-50 flex items-center gap-2"
+                              >
+                                <RotateCcw className="h-3.5 w-3.5 text-zinc-400" />
+                                恢复待办
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenMenuId(null);
+                                if (window.confirm(`确定删除「${it.title}」吗？`)) {
+                                  deleteMut.mutate(it.id);
+                                }
+                              }}
+                              className="w-full px-3 py-1.5 text-left text-xs text-red-600 hover:bg-red-50/70 flex items-center gap-2"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              删除
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 );
@@ -442,40 +605,83 @@ export default function PlannerPage() {
         </div>
       )}
 
-      {/* TAB 3: Push History Logs */}
+      {/* TAB 3: Push & Diagnostic Logs */}
       {tab === 'logs' && (
-        <div className="yd-card overflow-hidden">
-          {logsLoading ? (
-            <div className="p-6 text-xs text-zinc-400">加载推送历史...</div>
-          ) : (logsData?.logs ?? []).length === 0 ? (
-            <div className="p-10 text-center text-xs text-zinc-500">暂无定时推送记录。</div>
-          ) : (
-            <div className="divide-y divide-zinc-100">
-              {(logsData?.logs ?? []).map((log) => (
-                <div key={log.id} className="px-4 py-3 flex items-center justify-between gap-4 text-xs">
-                  <div className="min-w-0 space-y-0.5">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="font-medium text-zinc-900 truncate">{log.item_title}</span>
-                      {log.trigger_label && (
-                        <span className="yd-badge yd-badge-neutral">{log.trigger_label}</span>
-                      )}
-                      <span
-                        className={`yd-badge ${
-                          log.status === 'ok' ? 'yd-badge-emerald' : 'yd-badge-red'
-                        }`}
-                      >
-                        {log.status === 'ok' ? '成功' : '失败'}
-                      </span>
+        <div className="space-y-4">
+          <div className="yd-segment">
+            {(
+              [
+                ['', '全部'],
+                ['ok', '成功'],
+                ['retrying', '重试中'],
+                ['failed', '失败'],
+                ['skipped', '已跳过'],
+              ] as const
+            ).map(([k, label]) => (
+              <button
+                key={k || 'all'}
+                type="button"
+                onClick={() => setLogFilter(k)}
+                className={`yd-segment-btn ${
+                  logFilter === k ? 'yd-segment-active' : 'yd-segment-idle'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div className="yd-card overflow-hidden">
+            {logsLoading ? (
+              <div className="p-6 text-xs text-zinc-400">加载推送与诊断记录...</div>
+            ) : (logsData?.logs ?? []).length === 0 ? (
+              <div className="p-10 text-center text-xs text-zinc-500">
+                当前筛选下暂无推送或诊断记录。
+              </div>
+            ) : (
+              <div className="divide-y divide-zinc-100">
+                {(logsData?.logs ?? []).map((log) => {
+                  const badge = logStatusBadge(log.status);
+                  const reasonText = formatLogReason(log.reason);
+                  return (
+                    <div
+                      key={log.id}
+                      className="px-4 py-3 flex items-start justify-between gap-4 text-xs"
+                    >
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-medium text-zinc-900 truncate">
+                            {log.item_title}
+                          </span>
+                          {log.trigger_label && (
+                            <span className="yd-badge yd-badge-neutral">{log.trigger_label}</span>
+                          )}
+                          <span className={`yd-badge ${badge.cls}`}>{badge.label}</span>
+                          {log.attempt > 1 && (
+                            <span className="yd-badge yd-badge-neutral tabular-nums">
+                              第 {log.attempt} 次尝试
+                            </span>
+                          )}
+                        </div>
+                        {reasonText && (
+                          <div className="text-zinc-500">
+                            {reasonText}
+                            {log.status === 'retrying' && log.next_retry_at
+                              ? ` · 下次重试：${formatDateTimeShort(log.next_retry_at)}`
+                              : ''}
+                          </div>
+                        )}
+                        {log.error && <div className="text-red-600 break-all">{log.error}</div>}
+                      </div>
+                      <div className="text-zinc-400 shrink-0 tabular-nums">
+                        {formatDateTimeShort(log.sent_at)}
+                      </div>
                     </div>
-                    {log.error && <div className="text-red-600">{log.error}</div>}
-                  </div>
-                  <div className="text-zinc-400 shrink-0 tabular-nums">
-                    {formatDateTimeShort(log.sent_at)}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -487,6 +693,30 @@ export default function PlannerPage() {
           onSaved={() => {
             setModalState({ open: false, item: null });
             invalidateAll();
+          }}
+        />
+      )}
+
+      {notifyModalItem && (
+        <NotificationModal
+          item={notifyModalItem}
+          onClose={() => setNotifyModalItem(null)}
+          onSaved={() => {
+            setNotifyModalItem(null);
+            invalidateAll();
+            showToast('通知配置已更新');
+          }}
+        />
+      )}
+
+      {pauseModalItem && (
+        <PauseModal
+          item={pauseModalItem}
+          onClose={() => setPauseModalItem(null)}
+          onSaved={() => {
+            setPauseModalItem(null);
+            invalidateAll();
+            showToast('已暂停通知');
           }}
         />
       )}

@@ -15,13 +15,15 @@ INSERT INTO planner_items (
     user_id, title, note, status,
     target_at, timezone, calendar_type,
     repeat_type, repeat_config, auto_advance,
-    remind_offsets, channel_ids, next_trigger_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    remind_offsets, overdue_config, paused, paused_until, retry_state,
+    channel_ids, next_trigger_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 RETURNING id, user_id, title, note, status,
           target_at, timezone, calendar_type,
           repeat_type, repeat_config, auto_advance,
           remind_offsets, channel_ids, next_trigger_at,
-          created_at, updated_at
+          created_at, updated_at,
+          overdue_config, paused, paused_until, retry_state
 `
 
 type CreateItemParams struct {
@@ -36,6 +38,10 @@ type CreateItemParams struct {
 	RepeatConfig  []byte
 	AutoAdvance   bool
 	RemindOffsets []byte
+	OverdueConfig []byte
+	Paused        bool
+	PausedUntil   *time.Time
+	RetryState    []byte
 	ChannelIds    []int64
 	NextTriggerAt *time.Time
 }
@@ -53,6 +59,10 @@ func (q *Queries) CreateItem(ctx context.Context, arg CreateItemParams) (Planner
 		arg.RepeatConfig,
 		arg.AutoAdvance,
 		arg.RemindOffsets,
+		arg.OverdueConfig,
+		arg.Paused,
+		arg.PausedUntil,
+		arg.RetryState,
 		arg.ChannelIds,
 		arg.NextTriggerAt,
 	)
@@ -74,6 +84,10 @@ func (q *Queries) CreateItem(ctx context.Context, arg CreateItemParams) (Planner
 		&i.NextTriggerAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OverdueConfig,
+		&i.Paused,
+		&i.PausedUntil,
+		&i.RetryState,
 	)
 	return i, err
 }
@@ -98,7 +112,8 @@ SELECT id, user_id, title, note, status,
        target_at, timezone, calendar_type,
        repeat_type, repeat_config, auto_advance,
        remind_offsets, channel_ids, next_trigger_at,
-       created_at, updated_at
+       created_at, updated_at,
+       overdue_config, paused, paused_until, retry_state
 FROM planner_items
 WHERE user_id = $1 AND id = $2
 `
@@ -128,35 +143,91 @@ func (q *Queries) GetItem(ctx context.Context, arg GetItemParams) (PlannerItem, 
 		&i.NextTriggerAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OverdueConfig,
+		&i.Paused,
+		&i.PausedUntil,
+		&i.RetryState,
 	)
 	return i, err
 }
 
-const insertLog = `-- name: InsertLog :execrows
+const insertAttemptLog = `-- name: InsertAttemptLog :one
 INSERT INTO planner_logs (
-    user_id, item_id, item_title, trigger_key, trigger_label, status, error
-) VALUES ($1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT (item_id, trigger_key) WHERE item_id IS NOT NULL DO NOTHING
+    user_id, item_id, item_title, trigger_key, trigger_label,
+    event_type, status, reason, attempt, next_retry_at, error
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+RETURNING id
 `
 
-type InsertLogParams struct {
+type InsertAttemptLogParams struct {
 	UserID       int64
 	ItemID       *int64
 	ItemTitle    string
 	TriggerKey   string
 	TriggerLabel string
+	EventType    string
 	Status       string
+	Reason       string
+	Attempt      int32
+	NextRetryAt  *time.Time
 	Error        string
 }
 
-func (q *Queries) InsertLog(ctx context.Context, arg InsertLogParams) (int64, error) {
-	result, err := q.db.Exec(ctx, insertLog,
+func (q *Queries) InsertAttemptLog(ctx context.Context, arg InsertAttemptLogParams) (int64, error) {
+	row := q.db.QueryRow(ctx, insertAttemptLog,
 		arg.UserID,
 		arg.ItemID,
 		arg.ItemTitle,
 		arg.TriggerKey,
 		arg.TriggerLabel,
+		arg.EventType,
 		arg.Status,
+		arg.Reason,
+		arg.Attempt,
+		arg.NextRetryAt,
+		arg.Error,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const insertSettledLog = `-- name: InsertSettledLog :execrows
+INSERT INTO planner_logs (
+    user_id, item_id, item_title, trigger_key, trigger_label,
+    event_type, status, reason, attempt, next_retry_at, error
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+ON CONFLICT (item_id, trigger_key)
+    WHERE item_id IS NOT NULL AND status IN ('ok', 'failed', 'skipped')
+    DO NOTHING
+`
+
+type InsertSettledLogParams struct {
+	UserID       int64
+	ItemID       *int64
+	ItemTitle    string
+	TriggerKey   string
+	TriggerLabel string
+	EventType    string
+	Status       string
+	Reason       string
+	Attempt      int32
+	NextRetryAt  *time.Time
+	Error        string
+}
+
+func (q *Queries) InsertSettledLog(ctx context.Context, arg InsertSettledLogParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertSettledLog,
+		arg.UserID,
+		arg.ItemID,
+		arg.ItemTitle,
+		arg.TriggerKey,
+		arg.TriggerLabel,
+		arg.EventType,
+		arg.Status,
+		arg.Reason,
+		arg.Attempt,
+		arg.NextRetryAt,
 		arg.Error,
 	)
 	if err != nil {
@@ -170,7 +241,8 @@ SELECT id, user_id, title, note, status,
        target_at, timezone, calendar_type,
        repeat_type, repeat_config, auto_advance,
        remind_offsets, channel_ids, next_trigger_at,
-       created_at, updated_at
+       created_at, updated_at,
+       overdue_config, paused, paused_until, retry_state
 FROM planner_items
 WHERE status = 'pending'
   AND next_trigger_at IS NOT NULL
@@ -205,6 +277,10 @@ func (q *Queries) ListDueItems(ctx context.Context, nextTriggerAt *time.Time) ([
 			&i.NextTriggerAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.OverdueConfig,
+			&i.Paused,
+			&i.PausedUntil,
+			&i.RetryState,
 		); err != nil {
 			return nil, err
 		}
@@ -221,7 +297,8 @@ SELECT id, user_id, title, note, status,
        target_at, timezone, calendar_type,
        repeat_type, repeat_config, auto_advance,
        remind_offsets, channel_ids, next_trigger_at,
-       created_at, updated_at
+       created_at, updated_at,
+       overdue_config, paused, paused_until, retry_state
 FROM planner_items
 WHERE user_id = $1
 ORDER BY
@@ -256,6 +333,10 @@ func (q *Queries) ListItems(ctx context.Context, userID int64) ([]PlannerItem, e
 			&i.NextTriggerAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.OverdueConfig,
+			&i.Paused,
+			&i.PausedUntil,
+			&i.RetryState,
 		); err != nil {
 			return nil, err
 		}
@@ -268,9 +349,12 @@ func (q *Queries) ListItems(ctx context.Context, userID int64) ([]PlannerItem, e
 }
 
 const listLogs = `-- name: ListLogs :many
-SELECT id, user_id, item_id, item_title, trigger_key, trigger_label, status, error, sent_at
+SELECT id, user_id, item_id, item_title, trigger_key, trigger_label,
+       status, error, sent_at,
+       event_type, reason, attempt, next_retry_at
 FROM planner_logs
 WHERE user_id = $1
+  AND ($3::text = '' OR status = $3::text)
 ORDER BY sent_at DESC, id DESC
 LIMIT $2
 `
@@ -278,10 +362,11 @@ LIMIT $2
 type ListLogsParams struct {
 	UserID int64
 	Limit  int32
+	Status string
 }
 
 func (q *Queries) ListLogs(ctx context.Context, arg ListLogsParams) ([]PlannerLog, error) {
-	rows, err := q.db.Query(ctx, listLogs, arg.UserID, arg.Limit)
+	rows, err := q.db.Query(ctx, listLogs, arg.UserID, arg.Limit, arg.Status)
 	if err != nil {
 		return nil, err
 	}
@@ -299,6 +384,10 @@ func (q *Queries) ListLogs(ctx context.Context, arg ListLogsParams) ([]PlannerLo
 			&i.Status,
 			&i.Error,
 			&i.SentAt,
+			&i.EventType,
+			&i.Reason,
+			&i.Attempt,
+			&i.NextRetryAt,
 		); err != nil {
 			return nil, err
 		}
@@ -310,14 +399,15 @@ func (q *Queries) ListLogs(ctx context.Context, arg ListLogsParams) ([]PlannerLo
 	return items, nil
 }
 
-const listSentTriggerKeys = `-- name: ListSentTriggerKeys :many
+const listSettledTriggerKeys = `-- name: ListSettledTriggerKeys :many
 SELECT trigger_key
 FROM planner_logs
 WHERE item_id = $1
+  AND status IN ('ok', 'failed', 'skipped')
 `
 
-func (q *Queries) ListSentTriggerKeys(ctx context.Context, itemID *int64) ([]string, error) {
-	rows, err := q.db.Query(ctx, listSentTriggerKeys, itemID)
+func (q *Queries) ListSettledTriggerKeys(ctx context.Context, itemID *int64) ([]string, error) {
+	rows, err := q.db.Query(ctx, listSettledTriggerKeys, itemID)
 	if err != nil {
 		return nil, err
 	}
@@ -386,15 +476,20 @@ SET title = $3,
     repeat_config = $10,
     auto_advance = $11,
     remind_offsets = $12,
-    channel_ids = $13,
-    next_trigger_at = $14,
+    overdue_config = $13,
+    paused = $14,
+    paused_until = $15,
+    retry_state = $16,
+    channel_ids = $17,
+    next_trigger_at = $18,
     updated_at = NOW()
 WHERE user_id = $1 AND id = $2
 RETURNING id, user_id, title, note, status,
           target_at, timezone, calendar_type,
           repeat_type, repeat_config, auto_advance,
           remind_offsets, channel_ids, next_trigger_at,
-          created_at, updated_at
+          created_at, updated_at,
+          overdue_config, paused, paused_until, retry_state
 `
 
 type UpdateItemParams struct {
@@ -410,6 +505,10 @@ type UpdateItemParams struct {
 	RepeatConfig  []byte
 	AutoAdvance   bool
 	RemindOffsets []byte
+	OverdueConfig []byte
+	Paused        bool
+	PausedUntil   *time.Time
+	RetryState    []byte
 	ChannelIds    []int64
 	NextTriggerAt *time.Time
 }
@@ -428,6 +527,10 @@ func (q *Queries) UpdateItem(ctx context.Context, arg UpdateItemParams) (Planner
 		arg.RepeatConfig,
 		arg.AutoAdvance,
 		arg.RemindOffsets,
+		arg.OverdueConfig,
+		arg.Paused,
+		arg.PausedUntil,
+		arg.RetryState,
 		arg.ChannelIds,
 		arg.NextTriggerAt,
 	)
@@ -449,6 +552,10 @@ func (q *Queries) UpdateItem(ctx context.Context, arg UpdateItemParams) (Planner
 		&i.NextTriggerAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OverdueConfig,
+		&i.Paused,
+		&i.PausedUntil,
+		&i.RetryState,
 	)
 	return i, err
 }

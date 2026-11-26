@@ -93,7 +93,7 @@ func (d *TelegramDriver) Send(ctx context.Context, cfg map[string]any, msg messe
 	botToken := getString(cfg, "bot_token")
 	chatID := getString(cfg, "chat_id")
 	if botToken == "" || chatID == "" {
-		return errors.New("telegram 配置不完整")
+		return messenger.NewPermanentError(errors.New("telegram 配置不完整"))
 	}
 
 	text := strings.TrimSpace(msg.Content)
@@ -105,7 +105,7 @@ func (d *TelegramDriver) Send(ctx context.Context, cfg map[string]any, msg messe
 		}
 	}
 	if text == "" {
-		return errors.New("消息内容不能为空")
+		return messenger.NewPermanentError(errors.New("消息内容不能为空"))
 	}
 
 	payload := map[string]any{
@@ -286,16 +286,28 @@ func (d *TelegramDriver) callAPI(ctx context.Context, botToken, method string, p
 		return err
 	}
 
+	isPermanentHTTP := resp.StatusCode >= 400 && resp.StatusCode < 500 &&
+		resp.StatusCode != http.StatusTooManyRequests &&
+		resp.StatusCode != http.StatusRequestTimeout
+
 	var apiResp struct {
 		OK          bool            `json:"ok"`
 		Description string          `json:"description"`
 		Result      json.RawMessage `json:"result"`
 	}
 	if err := json.Unmarshal(respBytes, &apiResp); err != nil {
-		return fmt.Errorf("telegram %s invalid response (status %d)", method, resp.StatusCode)
+		parseErr := fmt.Errorf("telegram %s invalid response (status %d)", method, resp.StatusCode)
+		if isPermanentHTTP {
+			return messenger.NewPermanentError(parseErr)
+		}
+		return parseErr
 	}
 	if !apiResp.OK {
-		return fmt.Errorf("telegram %s: %s", method, apiResp.Description)
+		apiErr := fmt.Errorf("telegram %s: %s", method, apiResp.Description)
+		if isPermanentHTTP {
+			return messenger.NewPermanentError(apiErr)
+		}
+		return apiErr
 	}
 	if outResult != nil && len(apiResp.Result) > 0 {
 		if err := json.Unmarshal(apiResp.Result, outResult); err != nil {

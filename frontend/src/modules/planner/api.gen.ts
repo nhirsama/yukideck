@@ -25,6 +25,31 @@ export interface RemindOffset {
   unit: 'minute' | 'hour' | 'day';
   value: number /* int */; // >=0; 0 means on-time
 }
+/**
+ * OverdueConfig controls persistent nagging after target_at has passed while the item remains pending.
+ */
+export interface OverdueConfig {
+  enabled: boolean;
+  interval_unit?: 'hour' | 'day'; // default "day"
+  interval_value?: number /* int */; // >= 1
+  max_count?: number /* int */; // default 3, clamped to 1..10
+}
+/**
+ * RetryState holds bounded backoff state for a single failed trigger awaiting automatic retry.
+ */
+export interface RetryState {
+  trigger_key: string;
+  trigger_label: string;
+  event_type: 'reminder' | 'overdue';
+  overdue_index?: number /* int */;
+  attempt: number /* int */; // failed attempts so far (1..3)
+  next_retry_at: string;
+  last_error: string;
+}
+export interface PauseItemInput {
+  until?: string;
+  indefinite?: boolean;
+}
 export interface LunarDateInput {
   year: number /* int */;
   month: number /* int */;
@@ -44,6 +69,7 @@ export interface UpsertItemInput {
   repeat_config?: RepeatConfig;
   auto_advance?: boolean;
   remind_offsets?: RemindOffset[];
+  overdue_config?: OverdueConfig;
   channel_ids?: number /* int64 */[];
 }
 export interface ItemView {
@@ -60,6 +86,10 @@ export interface ItemView {
   repeat_config: RepeatConfig;
   auto_advance: boolean;
   remind_offsets: RemindOffset[];
+  overdue_config: OverdueConfig;
+  paused: boolean;
+  paused_until?: string;
+  retry_state?: RetryState;
   channel_ids: number /* int64 */[];
   next_trigger_at?: string;
   created_at: string;
@@ -83,7 +113,11 @@ export interface LogRecord {
   item_title: string;
   trigger_key: string;
   trigger_label: string;
-  status: 'ok' | 'failed';
+  event_type: 'reminder' | 'overdue' | 'pause';
+  status: 'ok' | 'retrying' | 'failed' | 'skipped';
+  reason?: string;
+  attempt: number /* int */;
+  next_retry_at?: string;
   error?: string;
   sent_at: string;
 }

@@ -56,7 +56,7 @@ func (s *Service) ListCalendarEvents(ctx context.Context, userID int64, start, e
 				Calendar:    r.CalendarType,
 				LunarLabel:  FormatLunarDate(occ, r.Timezone),
 				RepeatType:  r.RepeatType,
-				HasReminder: len(r.RemindOffsets) > 0,
+				HasReminder: len(r.RemindOffsets) > 0 || r.OverdueConfig.Enabled,
 			})
 		}
 	}
@@ -86,14 +86,27 @@ func (s *Service) UpdateItem(ctx context.Context, userID, id int64, in UpsertIte
 		return nil, httpx.NotFound("事项不存在")
 	}
 
-	rec, err := buildItemRecord(userID, id, existing.Status, in, time.Now().UTC())
+	now := time.Now().UTC()
+	rec, err := buildItemRecord(userID, id, existing.Status, in, now)
 	if err != nil {
 		return nil, err
 	}
-	// Preserve dedup awareness against already-sent triggers if target_at did not move.
-	sentKeys, err := s.store.ListSentTriggerKeys(ctx, id)
+
+	// Preserve pause state if item still has target_at.
+	if rec.TargetAt != nil && existing.Paused {
+		rec.Paused = existing.Paused
+		rec.PausedUntil = existing.PausedUntil
+	}
+
+	// Preserve active retry state only if target_at did not move and item is not paused.
+	if existing.RetryState != nil && !rec.Paused && rec.TargetAt != nil && existing.TargetAt != nil && rec.TargetAt.Equal(*existing.TargetAt) {
+		rec.RetryState = existing.RetryState
+	}
+
+	// Preserve settled dedup awareness when target_at did not move.
+	settledKeys, err := s.store.ListSettledTriggerKeys(ctx, id)
 	if err == nil && rec.Status == StatusPending {
-		rec.NextTriggerAt = ComputeNextTrigger(*rec, sentKeys, time.Now().UTC().Truncate(time.Minute))
+		rec.NextTriggerAt = ComputeNextTrigger(*rec, settledKeys, now.Truncate(time.Minute))
 	}
 
 	updated, err := s.store.UpdateItem(ctx, *rec)
@@ -126,6 +139,10 @@ func (s *Service) CompleteItem(ctx context.Context, userID, id int64) (*ItemView
 		return nil, httpx.NotFound("事项不存在")
 	}
 
+	item.RetryState = nil
+	item.Paused = false
+	item.PausedUntil = nil
+
 	if item.TargetAt != nil && item.RepeatType != RepeatNone && item.RepeatType != "" {
 		nextTarget, ok, err := AdvanceTarget(*item.TargetAt, item.RepeatConfig, item.CalendarType, item.RepeatType, item.Timezone)
 		if err != nil {
@@ -134,8 +151,8 @@ func (s *Service) CompleteItem(ctx context.Context, userID, id int64) (*ItemView
 		if ok {
 			item.Status = StatusPending
 			item.TargetAt = &nextTarget
-			sentKeys, _ := s.store.ListSentTriggerKeys(ctx, item.ID)
-			item.NextTriggerAt = ComputeNextTrigger(*item, sentKeys, time.Now().UTC().Truncate(time.Minute))
+			settledKeys, _ := s.store.ListSettledTriggerKeys(ctx, item.ID)
+			item.NextTriggerAt = ComputeNextTrigger(*item, settledKeys, time.Now().UTC().Truncate(time.Minute))
 		} else {
 			item.Status = StatusDone
 			item.NextTriggerAt = nil
@@ -163,8 +180,11 @@ func (s *Service) ReopenItem(ctx context.Context, userID, id int64) (*ItemView, 
 		return nil, httpx.NotFound("事项不存在")
 	}
 	item.Status = StatusPending
-	sentKeys, _ := s.store.ListSentTriggerKeys(ctx, item.ID)
-	item.NextTriggerAt = ComputeNextTrigger(*item, sentKeys, time.Now().UTC().Truncate(time.Minute))
+	item.RetryState = nil
+	item.Paused = false
+	item.PausedUntil = nil
+	settledKeys, _ := s.store.ListSettledTriggerKeys(ctx, item.ID)
+	item.NextTriggerAt = ComputeNextTrigger(*item, settledKeys, time.Now().UTC().Truncate(time.Minute))
 
 	updated, err := s.store.UpdateItem(ctx, *item)
 	if err != nil {
@@ -172,6 +192,67 @@ func (s *Service) ReopenItem(ctx context.Context, userID, id int64) (*ItemView, 
 	}
 	s.wakeup()
 	v := toItemView(*updated)
+	return &v, nil
+}
+
+func (s *Service) PauseItem(ctx context.Context, userID, id int64, in PauseItemInput) (*ItemView, error) {
+	item, err := s.store.GetItem(ctx, userID, id)
+	if err != nil {
+		return nil, httpx.Internal("查询事项失败", err)
+	}
+	if item == nil {
+		return nil, httpx.NotFound("事项不存在")
+	}
+	if item.Status != StatusPending {
+		return nil, httpx.BadRequest("已完成的事项无法暂停")
+	}
+	if item.TargetAt == nil {
+		return nil, httpx.BadRequest("无目标时间的待办无需暂停通知")
+	}
+
+	now := time.Now().UTC()
+	item.Paused = true
+	item.RetryState = nil
+	if in.Indefinite {
+		item.PausedUntil = nil
+		item.NextTriggerAt = nil
+	} else {
+		if in.Until == nil || !in.Until.After(now) {
+			return nil, httpx.BadRequest("恢复时间必须晚于当前时间")
+		}
+		u := in.Until.UTC()
+		item.PausedUntil = &u
+		item.NextTriggerAt = &u
+	}
+
+	updated, err := s.store.UpdateItem(ctx, *item)
+	if err != nil {
+		return nil, httpx.Internal("暂停事项失败", err)
+	}
+	s.wakeup()
+	v := toItemView(*updated)
+	return &v, nil
+}
+
+func (s *Service) ResumeItem(ctx context.Context, userID, id int64) (*ItemView, error) {
+	item, err := s.store.GetItem(ctx, userID, id)
+	if err != nil {
+		return nil, httpx.Internal("查询事项失败", err)
+	}
+	if item == nil {
+		return nil, httpx.NotFound("事项不存在")
+	}
+	if !item.Paused {
+		v := toItemView(*item)
+		return &v, nil
+	}
+
+	resumed, err := resumePausedItem(ctx, s.store, *item, time.Now().UTC())
+	if err != nil {
+		return nil, httpx.Internal("恢复通知失败", err)
+	}
+	s.wakeup()
+	v := toItemView(resumed)
 	return &v, nil
 }
 
@@ -186,7 +267,7 @@ func (s *Service) TestItem(ctx context.Context, userID, id int64) error {
 	if s.notifier == nil {
 		return httpx.Internal("消息中枢未初始化", nil)
 	}
-	msg := BuildReminderMessage(*item, "手动测试")
+	msg := BuildReminderMessage(*item, "手动测试", EventReminder, time.Now().UTC())
 	results, err := s.notifier.Send(ctx, userID, item.ChannelIDs, msg)
 	if err != nil {
 		return httpx.BadRequest("测试推送失败: " + err.Error())
@@ -202,8 +283,17 @@ func (s *Service) TestItem(ctx context.Context, userID, id int64) error {
 	return httpx.BadRequest("测试推送失败")
 }
 
-func (s *Service) ListLogs(ctx context.Context, userID int64) ([]LogRecord, error) {
-	logs, err := s.store.ListLogs(ctx, userID, 50)
+func (s *Service) ListLogs(ctx context.Context, userID int64, status string, limit int) ([]LogRecord, error) {
+	status = strings.ToLower(strings.TrimSpace(status))
+	switch status {
+	case "", LogStatusOK, LogStatusRetrying, LogStatusFailed, LogStatusSkipped:
+	default:
+		return nil, httpx.BadRequest("无效的日志状态筛选")
+	}
+	if limit <= 0 || limit > maxLogsPerUser {
+		limit = maxLogsPerUser
+	}
+	logs, err := s.store.ListLogs(ctx, userID, status, limit)
 	if err != nil {
 		return nil, httpx.Internal("查询推送历史失败", err)
 	}
@@ -314,6 +404,11 @@ func buildItemRecord(userID, id int64, status string, in UpsertItemInput, now ti
 		offsets = []RemindOffset{}
 	}
 
+	overdueCfg, err := NormalizeOverdueConfig(in.OverdueConfig, repeatType, calType, tzName, repeatCfg, targetAt)
+	if err != nil {
+		return nil, httpx.BadRequest(err.Error())
+	}
+
 	autoAdvance := true
 	if in.AutoAdvance != nil {
 		autoAdvance = *in.AutoAdvance
@@ -337,6 +432,7 @@ func buildItemRecord(userID, id int64, status string, in UpsertItemInput, now ti
 		RepeatConfig:  repeatCfg,
 		AutoAdvance:   autoAdvance,
 		RemindOffsets: offsets,
+		OverdueConfig: overdueCfg,
 		ChannelIDs:    channelIDs,
 	}
 	rec.NextTriggerAt = ComputeNextTrigger(*rec, map[string]struct{}{}, now.Truncate(time.Minute))
@@ -377,6 +473,10 @@ func toItemView(r ItemRecord) ItemView {
 		RepeatConfig:  r.RepeatConfig,
 		AutoAdvance:   r.AutoAdvance,
 		RemindOffsets: r.RemindOffsets,
+		OverdueConfig: r.OverdueConfig,
+		Paused:        r.Paused,
+		PausedUntil:   r.PausedUntil,
+		RetryState:    r.RetryState,
 		ChannelIDs:    r.ChannelIDs,
 		NextTriggerAt: r.NextTriggerAt,
 		CreatedAt:     r.CreatedAt,

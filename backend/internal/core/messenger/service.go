@@ -34,6 +34,11 @@ type Notifier interface {
 	Send(ctx context.Context, userID int64, targetChannelIDs []int64, msg Message) ([]DeliveryResult, error)
 }
 
+var defaultSendRetryBackoffs = []time.Duration{
+	500 * time.Millisecond,
+	1500 * time.Millisecond,
+}
+
 type Service struct {
 	store         Store
 	registry      *Registry
@@ -41,6 +46,7 @@ type Service struct {
 	box           *crypto.Box
 	publicBaseURL string
 	sendTimeout   time.Duration
+	retryBackoffs []time.Duration
 	logger        *slog.Logger
 }
 
@@ -63,8 +69,14 @@ func NewService(
 		box:           box,
 		publicBaseURL: strings.TrimRight(strings.TrimSpace(publicBaseURL), "/"),
 		sendTimeout:   sendTimeout,
+		retryBackoffs: append([]time.Duration(nil), defaultSendRetryBackoffs...),
 		logger:        logger,
 	}
+}
+
+// SetRetryBackoffs overrides transport-level short retry delays (primarily for deterministic tests).
+func (s *Service) SetRetryBackoffs(backoffs []time.Duration) {
+	s.retryBackoffs = append([]time.Duration(nil), backoffs...)
 }
 
 func (s *Service) CommandBus() *CommandBus { return s.bus }
@@ -300,15 +312,46 @@ func (s *Service) TestChannel(ctx context.Context, userID, id int64) error {
 	if err != nil {
 		return httpx.Internal("解密渠道配置失败", err)
 	}
-	sendCtx, cancel := context.WithTimeout(ctx, s.sendTimeout)
-	defer cancel()
-	if err := driver.Send(sendCtx, cfg, Message{
+	if err := s.sendWithRetry(ctx, driver, cfg, Message{
 		Title:   "YukiDeck 测试推送",
 		Content: fmt.Sprintf("渠道「%s」连通性验证成功。", rec.Name),
 	}); err != nil {
 		return httpx.BadRequest("测试推送失败: " + err.Error())
 	}
 	return nil
+}
+
+func (s *Service) sendWithRetry(ctx context.Context, driver Driver, cfg map[string]any, msg Message) error {
+	var lastErr error
+	maxAttempts := len(s.retryBackoffs) + 1
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		sendCtx, cancel := context.WithTimeout(ctx, s.sendTimeout)
+		err := driver.Send(sendCtx, cfg, msg)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if IsPermanentError(err) || ctx.Err() != nil {
+			return err
+		}
+		if attempt < len(s.retryBackoffs) {
+			wait := s.retryBackoffs[attempt]
+			if wait > 0 {
+				timer := time.NewTimer(wait)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return ctx.Err()
+				case <-timer.C:
+				}
+			}
+		}
+	}
+	return lastErr
 }
 
 // Send routes an outbound message to selected outbound-capable channels, or default outbound channel(s) if targetChannelIDs is empty.
@@ -363,9 +406,7 @@ func (s *Service) Send(ctx context.Context, userID int64, targetChannelIDs []int
 				results[idx] = res
 				return
 			}
-			sendCtx, cancel := context.WithTimeout(ctx, s.sendTimeout)
-			defer cancel()
-			if err := driver.Send(sendCtx, cfg, msg); err != nil {
+			if err := s.sendWithRetry(ctx, driver, cfg, msg); err != nil {
 				res.Error = err.Error()
 			} else {
 				res.OK = true

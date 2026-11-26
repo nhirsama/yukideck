@@ -1,28 +1,25 @@
 import { useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { Bell, Plus, X } from 'lucide-react';
+import { useMutation } from '@tanstack/react-query';
+import { X } from 'lucide-react';
+import { InfoTooltip } from '@/components/InfoTooltip';
 import { Select } from '@/components/Select';
-import { coreApi } from '@/core/api';
 import {
-  formatOffsetLabel,
+  COMMON_TIMEZONES,
+  formatTimezoneOptionLabel,
   plannerApi,
   previewLunarToSolar,
   type CalendarType,
   type PlannerItem,
-  type RemindOffset,
+  type RepeatConfig,
   type RepeatType,
   type UpsertPlannerItemPayload,
 } from './api';
-
-const PRESET_OFFSETS: RemindOffset[] = [
-  { unit: 'minute', value: 0 },
-  { unit: 'minute', value: 15 },
-  { unit: 'minute', value: 30 },
-  { unit: 'hour', value: 1 },
-  { unit: 'day', value: 1 },
-  { unit: 'day', value: 3 },
-  { unit: 'day', value: 7 },
-];
+import {
+  getOverdueCycleError,
+  NotificationFields,
+  toOverdueConfigPayload,
+  type NotificationFieldsState,
+} from './NotificationModal';
 
 const WEEKDAYS = [
   { value: 1, label: '一' },
@@ -32,28 +29,6 @@ const WEEKDAYS = [
   { value: 5, label: '五' },
   { value: 6, label: '六' },
   { value: 0, label: '日' },
-];
-
-const COMMON_TIMEZONES: Array<{ value: string; label: string }> = [
-  { value: 'Asia/Shanghai', label: 'Asia/Shanghai (北京 / 上海 UTC+8)' },
-  { value: 'Asia/Hong_Kong', label: 'Asia/Hong_Kong (香港 UTC+8)' },
-  { value: 'Asia/Taipei', label: 'Asia/Taipei (台北 UTC+8)' },
-  { value: 'Asia/Singapore', label: 'Asia/Singapore (新加坡 UTC+8)' },
-  { value: 'Asia/Tokyo', label: 'Asia/Tokyo (东京 UTC+9)' },
-  { value: 'Asia/Seoul', label: 'Asia/Seoul (首尔 UTC+9)' },
-  { value: 'Asia/Bangkok', label: 'Asia/Bangkok (曼谷 UTC+7)' },
-  { value: 'Asia/Dubai', label: 'Asia/Dubai (迪拜 UTC+4)' },
-  { value: 'Europe/London', label: 'Europe/London (伦敦)' },
-  { value: 'Europe/Paris', label: 'Europe/Paris (巴黎)' },
-  { value: 'Europe/Berlin', label: 'Europe/Berlin (柏林)' },
-  { value: 'America/New_York', label: 'America/New_York (纽约)' },
-  { value: 'America/Chicago', label: 'America/Chicago (芝加哥)' },
-  { value: 'America/Denver', label: 'America/Denver (丹佛)' },
-  { value: 'America/Los_Angeles', label: 'America/Los_Angeles (洛杉矶)' },
-  { value: 'America/Vancouver', label: 'America/Vancouver (温哥华)' },
-  { value: 'Australia/Sydney', label: 'Australia/Sydney (悉尼)' },
-  { value: 'Pacific/Auckland', label: 'Pacific/Auckland (奥克兰)' },
-  { value: 'UTC', label: 'UTC (协调世界时)' },
 ];
 
 function defaultTimezone(): string {
@@ -86,11 +61,7 @@ export function ItemModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const { data: outboundData } = useQuery({
-    queryKey: ['messenger', 'channels', 'outbound'],
-    queryFn: () => coreApi.listChannels('outbound'),
-  });
-  const outboundChannels = outboundData?.channels ?? [];
+  const isEditing = Boolean(initial);
 
   const [title, setTitle] = useState(initial?.title ?? '');
   const [note, setNote] = useState(initial?.note ?? '');
@@ -122,16 +93,18 @@ export function ItemModal({
   const [cronExpr, setCronExpr] = useState(initial?.repeat_config.cron_expr ?? '0 9 * * *');
   const [autoAdvance, setAutoAdvance] = useState(initial?.auto_advance ?? true);
 
-  // Multiple notification time points
-  const [offsets, setOffsets] = useState<RemindOffset[]>(initial?.remind_offsets ?? []);
-  const [customVal, setCustomVal] = useState(10);
-  const [customUnit, setCustomUnit] = useState<'minute' | 'hour' | 'day'>('minute');
+  // Notification fields (only rendered when creating a new item; preserved on edit)
+  const [notifyState, setNotifyState] = useState<NotificationFieldsState>(() => ({
+    offsets: initial?.remind_offsets ?? [],
+    overdueEnabled: Boolean(initial?.overdue_config?.enabled),
+    overdueIntervalUnit: initial?.overdue_config?.interval_unit === 'hour' ? 'hour' : 'day',
+    overdueIntervalValue: initial?.overdue_config?.interval_value || 1,
+    overdueMaxCount: Math.min(10, Math.max(1, initial?.overdue_config?.max_count || 3)),
+    autoAdvance: initial?.auto_advance ?? true,
+    channelMode: (initial?.channel_ids?.length ?? 0) > 0 ? 'selected' : 'default',
+    selectedChannels: initial?.channel_ids ?? [],
+  }));
 
-  // Outbound channels (empty = default outbound channel)
-  const [channelMode, setChannelMode] = useState<'default' | 'selected'>(
-    (initial?.channel_ids?.length ?? 0) > 0 ? 'selected' : 'default',
-  );
-  const [selectedChannels, setSelectedChannels] = useState<number[]>(initial?.channel_ids ?? []);
   const [error, setError] = useState('');
 
   const saveMut = useMutation({
@@ -141,28 +114,34 @@ export function ItemModal({
     onError: (err: Error) => setError(err.message),
   });
 
-  const addOffset = (o: RemindOffset) => {
-    const norm: RemindOffset = o.value <= 0 ? { unit: 'minute', value: 0 } : o;
-    const key = `${norm.unit}:${norm.value}`;
-    if (offsets.some((x) => `${x.unit}:${x.value}` === key)) return;
-    setOffsets((prev) => [...prev, norm]);
-  };
-
-  const removeOffset = (idx: number) => {
-    setOffsets((prev) => prev.filter((_, i) => i !== idx));
-  };
-
   const toggleWeekday = (wd: number) => {
     setWeekdays((prev) => (prev.includes(wd) ? prev.filter((x) => x !== wd) : [...prev, wd]));
   };
 
-  const toggleChannel = (id: number) => {
-    setSelectedChannels((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-  };
+  const currentRepeatConfig: RepeatConfig =
+    repeatType === 'cron'
+      ? { cron_expr: cronExpr }
+      : {
+          weekdays: repeatType === 'weekly' ? weekdays : undefined,
+          interval: repeatType === 'interval_days' ? intervalDays : undefined,
+        };
+
+  const effectiveAutoAdvance = isEditing ? autoAdvance : notifyState.autoAdvance;
+  const overdueActive = isEditing
+    ? Boolean(initial?.overdue_config?.enabled)
+    : notifyState.overdueEnabled;
+
+  const cycleErr = hasTarget
+    ? getOverdueCycleError(notifyState, repeatType, calendarType, currentRepeatConfig)
+    : '';
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    if (cycleErr) {
+      setError(cycleErr);
+      return;
+    }
 
     const payload: UpsertPlannerItemPayload = {
       title,
@@ -173,9 +152,16 @@ export function ItemModal({
     if (hasTarget) {
       payload.calendar_type = calendarType;
       payload.repeat_type = repeatType;
-      payload.auto_advance = autoAdvance;
-      payload.remind_offsets = offsets;
-      payload.channel_ids = channelMode === 'selected' ? selectedChannels : [];
+      payload.auto_advance = effectiveAutoAdvance;
+      payload.remind_offsets = isEditing ? (initial?.remind_offsets ?? []) : notifyState.offsets;
+      payload.overdue_config = isEditing
+        ? (initial?.overdue_config ?? { enabled: false })
+        : toOverdueConfigPayload(notifyState);
+      payload.channel_ids = isEditing
+        ? (initial?.channel_ids ?? [])
+        : notifyState.channelMode === 'selected'
+          ? notifyState.selectedChannels
+          : [];
 
       if (repeatType === 'cron') {
         payload.calendar_type = 'solar';
@@ -194,14 +180,12 @@ export function ItemModal({
         } else {
           payload.target_local = targetLocal;
         }
-        payload.repeat_config = {
-          weekdays: repeatType === 'weekly' ? weekdays : undefined,
-          interval: repeatType === 'interval_days' ? intervalDays : undefined,
-        };
+        payload.repeat_config = currentRepeatConfig;
       }
     } else {
       payload.repeat_type = 'none';
       payload.remind_offsets = [];
+      payload.overdue_config = { enabled: false };
       payload.channel_ids = [];
     }
 
@@ -219,7 +203,9 @@ export function ItemModal({
         className="w-full max-w-xl max-h-[calc(100vh-2rem)] flex flex-col rounded-2xl border border-zinc-200/90 bg-white shadow-xl overflow-hidden"
       >
         <div className="px-6 py-4 border-b border-zinc-100 flex items-center justify-between shrink-0">
-          <h3 className="text-sm font-semibold text-zinc-900">{initial ? '编辑事项' : '新建事项'}</h3>
+          <h3 className="text-sm font-semibold text-zinc-900">
+            {isEditing ? '编辑事项' : '新建事项'}
+          </h3>
           <button type="button" onClick={onClose} className="yd-btn-icon">
             <X className="h-4 w-4" />
           </button>
@@ -254,7 +240,7 @@ export function ItemModal({
             </label>
           </div>
 
-          {/* Optional Target Time + Cycle + Notifications */}
+          {/* Optional Target Time + Cycle (+ Initial Notification on Create) */}
           <div className="border-t border-zinc-100 pt-4 space-y-4">
             <label className="inline-flex items-center gap-2 text-[13px] font-medium text-zinc-800 cursor-pointer">
               <input
@@ -262,7 +248,7 @@ export function ItemModal({
                 checked={hasTarget}
                 onChange={(e) => setHasTarget(e.target.checked)}
               />
-              时间与提醒
+              {isEditing ? '目标时间与周期' : '时间与提醒'}
             </label>
 
             {hasTarget && (
@@ -301,7 +287,7 @@ export function ItemModal({
                       onChange={setTimezone}
                       options={[
                         ...(!COMMON_TIMEZONES.some((z) => z.value === timezone) && timezone
-                          ? [{ value: timezone, label: timezone }]
+                          ? [{ value: timezone, label: formatTimezoneOptionLabel(timezone) }]
                           : []),
                         ...COMMON_TIMEZONES,
                       ]}
@@ -461,134 +447,47 @@ export function ItemModal({
                   )}
 
                   {repeatType !== 'none' && (
-                    <label className="inline-flex items-center gap-2 text-xs text-zinc-700 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={autoAdvance}
-                        onChange={(e) => setAutoAdvance(e.target.checked)}
-                      />
-                      通知后自动推进至下一周期
-                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <label className="inline-flex items-center gap-2 text-xs text-zinc-700 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={effectiveAutoAdvance}
+                          onChange={(e) => {
+                            setAutoAdvance(e.target.checked);
+                            setNotifyState((prev) => ({ ...prev, autoAdvance: e.target.checked }));
+                          }}
+                        />
+                        {overdueActive ? '确认后自动推进' : '通知后自动推进至下一周期'}
+                      </label>
+                      {overdueActive && (
+                        <InfoTooltip
+                          content="达到逾期通知上限后也会自动推进至下一周期"
+                          ariaLabel="确认后自动推进说明"
+                        />
+                      )}
+                    </div>
                   )}
                 </div>
 
-                {/* Multiple Notification Points */}
-                <div className="space-y-2.5 pt-3 border-t border-zinc-200/70">
-                  <div className="flex items-center gap-1.5 yd-label">
-                    <Bell className="h-3.5 w-3.5 text-zinc-400" />
-                    提醒时间（留空不推送）
-                  </div>
-
-                  {/* Selected offsets */}
-                  {offsets.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {offsets.map((o, idx) => (
-                        <span
-                          key={`${o.unit}:${o.value}`}
-                          className="inline-flex items-center gap-1 rounded-full bg-sky-50 border border-sky-200/80 px-2.5 py-0.5 text-[11px] font-medium text-sky-700"
-                        >
-                          {formatOffsetLabel(o)}
-                          <button
-                            type="button"
-                            onClick={() => removeOffset(idx)}
-                            className="text-sky-400 hover:text-sky-700 transition-colors"
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Quick preset chips */}
-                  <div className="flex flex-wrap gap-1.5">
-                    {PRESET_OFFSETS.map((p) => (
-                      <button
-                        key={`${p.unit}:${p.value}`}
-                        type="button"
-                        onClick={() => addOffset(p)}
-                        className="rounded-full border border-zinc-200 bg-white px-2.5 py-0.5 text-[11px] text-zinc-600 transition-colors hover:border-zinc-400 hover:text-zinc-900"
-                      >
-                        + {formatOffsetLabel(p)}
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* Custom offset adder */}
-                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                    <span className="text-xs text-zinc-500">自定义提前</span>
-                    <input
-                      type="number"
-                      min={0}
-                      max={3650}
-                      value={customVal}
-                      onChange={(e) => setCustomVal(Number(e.target.value))}
-                      className="yd-input-sm w-20"
+                {/* Initial Notification Config on Create; Edit mode uses the standalone Bell modal */}
+                {!isEditing && (
+                  <div className="pt-3 border-t border-zinc-200/70">
+                    <NotificationFields
+                      state={notifyState}
+                      onChange={(next) => {
+                        setNotifyState(next);
+                        setAutoAdvance(next.autoAdvance);
+                      }}
+                      repeatType={repeatType}
+                      calendarType={calendarType}
+                      repeatConfig={currentRepeatConfig}
+                      showAutoAdvanceWhenOverdue={false}
                     />
-                    <Select
-                      value={customUnit}
-                      onChange={(v) => setCustomUnit(v as 'minute' | 'hour' | 'day')}
-                      options={[
-                        { value: 'minute', label: '分钟' },
-                        { value: 'hour', label: '小时' },
-                        { value: 'day', label: '天' },
-                      ]}
-                      className="min-w-[78px]"
-                      ariaLabel="选择提前时间单位"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => addOffset({ unit: customUnit, value: customVal })}
-                      className="yd-btn-secondary"
-                    >
-                      <Plus className="h-3 w-3" />
-                      添加
-                    </button>
                   </div>
-                </div>
+                )}
 
-                {/* Outbound Channel Selection (only shown when at least 1 notification point is set) */}
-                {offsets.length > 0 && (
-                  <div className="space-y-2 pt-3 border-t border-zinc-200/70">
-                    <span className="yd-label">推送渠道</span>
-                    <div className="flex gap-4 text-xs text-zinc-700">
-                      <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                        <input
-                          type="radio"
-                          checked={channelMode === 'default'}
-                          onChange={() => setChannelMode('default')}
-                        />
-                        使用默认出站渠道
-                      </label>
-                      <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                        <input
-                          type="radio"
-                          checked={channelMode === 'selected'}
-                          onChange={() => setChannelMode('selected')}
-                        />
-                        指定渠道
-                      </label>
-                    </div>
-                    {channelMode === 'selected' && (
-                      <div className="rounded-lg border border-zinc-200/80 bg-white p-2.5 space-y-1.5">
-                        {outboundChannels.length === 0 ? (
-                          <div className="text-xs text-zinc-400">暂无可用的出站渠道，请先在消息中枢添加。</div>
-                        ) : (
-                          outboundChannels.map((ch) => (
-                            <label key={ch.id} className="flex items-center gap-2 text-xs text-zinc-700 cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={selectedChannels.includes(ch.id)}
-                                onChange={() => toggleChannel(ch.id)}
-                              />
-                              <span>{ch.name}</span>
-                              <span className="text-zinc-400">({ch.type})</span>
-                            </label>
-                          ))
-                        )}
-                      </div>
-                    )}
-                  </div>
+                {isEditing && cycleErr && (
+                  <div className="text-xs text-red-600">{cycleErr}</div>
                 )}
               </div>
             )}
@@ -599,7 +498,11 @@ export function ItemModal({
           <button type="button" onClick={onClose} className="yd-btn-secondary">
             取消
           </button>
-          <button type="submit" disabled={saveMut.isPending} className="yd-btn-primary">
+          <button
+            type="submit"
+            disabled={saveMut.isPending || Boolean(cycleErr)}
+            className="yd-btn-primary"
+          >
             {saveMut.isPending ? '保存中...' : '保存'}
           </button>
         </div>

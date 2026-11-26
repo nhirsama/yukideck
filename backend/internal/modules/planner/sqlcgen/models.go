@@ -39,6 +39,10 @@ type PlannerItem struct {
 	NextTriggerAt *time.Time
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
+	OverdueConfig []byte
+	Paused        bool
+	PausedUntil   *time.Time
+	RetryState    []byte
 }
 
 type PlannerLog struct {
@@ -51,6 +55,10 @@ type PlannerLog struct {
 	Status       string
 	Error        string
 	SentAt       time.Time
+	EventType    string
+	Reason       string
+	Attempt      int32
+	NextRetryAt  *time.Time
 }
 
 type User struct {

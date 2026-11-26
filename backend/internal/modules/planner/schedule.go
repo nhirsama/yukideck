@@ -25,6 +25,27 @@ const (
 
 	StatusPending = "pending"
 	StatusDone    = "done"
+
+	EventReminder = "reminder"
+	EventOverdue  = "overdue"
+	EventPause    = "pause"
+
+	LogStatusOK       = "ok"
+	LogStatusRetrying = "retrying"
+	LogStatusFailed   = "failed"
+	LogStatusSkipped  = "skipped"
+
+	ReasonPartialChannelFailure = "partial_channel_failure"
+	ReasonRetryScheduled        = "retry_scheduled"
+	ReasonRetryExhausted        = "retry_exhausted"
+	ReasonNoChannel             = "no_channel"
+	ReasonMissedGraceWindow     = "missed_grace_window"
+	ReasonPaused                = "paused"
+	ReasonOverdueLimitReached   = "overdue_limit_reached"
+	ReasonCycleSuperseded       = "cycle_superseded"
+
+	DefaultOverdueMaxCount = 3
+	MaxOverdueCount        = 10
 )
 
 func (o RemindOffset) Key() string {
@@ -59,6 +80,8 @@ type TriggerPoint struct {
 	TriggerAt    time.Time
 	TriggerKey   string
 	TriggerLabel string
+	EventType    string
+	OverdueIndex int
 	Offset       RemindOffset
 }
 
@@ -213,6 +236,177 @@ func NormalizeOffsets(in []RemindOffset) ([]RemindOffset, error) {
 	return out, nil
 }
 
+// MinCycleDuration returns the conservative minimum duration between two consecutive occurrences
+// of a recurring item. Returns ok=false for non-recurring items.
+func MinCycleDuration(repeatType, calType, tz string, cfg RepeatConfig, refTime time.Time) (time.Duration, bool) {
+	switch repeatType {
+	case RepeatNone, "":
+		return 0, false
+	case RepeatDaily:
+		return 24 * time.Hour, true
+	case RepeatIntervalDays:
+		step := cfg.Interval
+		if step < 1 {
+			step = 1
+		}
+		return time.Duration(step) * 24 * time.Hour, true
+	case RepeatWeekly:
+		if len(cfg.Weekdays) <= 1 {
+			return 7 * 24 * time.Hour, true
+		}
+		seen := make(map[int]struct{}, len(cfg.Weekdays))
+		days := make([]int, 0, len(cfg.Weekdays))
+		for _, wd := range cfg.Weekdays {
+			if wd >= 0 && wd <= 6 {
+				if _, dup := seen[wd]; !dup {
+					seen[wd] = struct{}{}
+					days = append(days, wd)
+				}
+			}
+		}
+		if len(days) <= 1 {
+			return 7 * 24 * time.Hour, true
+		}
+		sort.Ints(days)
+		minGap := 7
+		for i := 0; i < len(days); i++ {
+			var gap int
+			if i+1 < len(days) {
+				gap = days[i+1] - days[i]
+			} else {
+				gap = 7 - days[i] + days[0]
+			}
+			if gap > 0 && gap < minGap {
+				minGap = gap
+			}
+		}
+		return time.Duration(minGap) * 24 * time.Hour, true
+	case RepeatMonthly:
+		if calType == CalendarLunar {
+			return 29 * 24 * time.Hour, true
+		}
+		return 28 * 24 * time.Hour, true
+	case RepeatYearly:
+		if calType == CalendarLunar {
+			return 353 * 24 * time.Hour, true
+		}
+		return 365 * 24 * time.Hour, true
+	case RepeatCron:
+		sched, err := parseCronWithTZ(cfg.CronExpr, tz)
+		if err != nil {
+			return 0, false
+		}
+		loc, _, err := LoadTimezone(tz)
+		if err != nil {
+			loc = time.UTC
+		}
+		cur := refTime
+		if cur.IsZero() {
+			cur = time.Now().UTC()
+		}
+		cur = cur.In(loc)
+		var minDur time.Duration
+		prev := sched.Next(cur)
+		for i := 0; i < 10 && !prev.IsZero(); i++ {
+			next := sched.Next(prev)
+			if next.IsZero() || !next.After(prev) {
+				break
+			}
+			d := next.Sub(prev)
+			if minDur == 0 || d < minDur {
+				minDur = d
+			}
+			prev = next
+		}
+		if minDur > 0 {
+			return minDur, true
+		}
+		return 0, false
+	default:
+		return 0, false
+	}
+}
+
+func formatDurationHuman(d time.Duration) string {
+	if d <= 0 {
+		return "0 分钟"
+	}
+	if d%(24*time.Hour) == 0 {
+		return fmt.Sprintf("%d 天", int(d/(24*time.Hour)))
+	}
+	if d%time.Hour == 0 {
+		hours := int(d / time.Hour)
+		if hours >= 24 {
+			return fmt.Sprintf("%d 天 %d 小时", hours/24, hours%24)
+		}
+		return fmt.Sprintf("%d 小时", hours)
+	}
+	mins := int(d / time.Minute)
+	if mins >= 60 {
+		return fmt.Sprintf("%d 小时 %d 分钟", mins/60, mins%60)
+	}
+	return fmt.Sprintf("%d 分钟", mins)
+}
+
+// NormalizeOverdueConfig validates, defaults, clamps max_count to 1..10, and enforces
+// strictly `max_count * interval < cycle_duration` for recurring items.
+func NormalizeOverdueConfig(in *OverdueConfig, repeatType, calType, tz string, cfg RepeatConfig, targetAt *time.Time) (OverdueConfig, error) {
+	if in == nil || !in.Enabled || targetAt == nil {
+		return OverdueConfig{Enabled: false}, nil
+	}
+	unit := strings.ToLower(strings.TrimSpace(in.IntervalUnit))
+	if unit == "" {
+		unit = "day"
+	}
+	if unit != "hour" && unit != "day" {
+		return OverdueConfig{}, fmt.Errorf("不支持的逾期催办间隔单位: %s", in.IntervalUnit)
+	}
+	val := in.IntervalValue
+	if val <= 0 {
+		val = 1
+	}
+	if val > 3650 {
+		return OverdueConfig{}, errors.New("逾期催办间隔超出合理范围")
+	}
+
+	maxCount := in.MaxCount
+	if maxCount <= 0 {
+		maxCount = DefaultOverdueMaxCount
+	}
+	if maxCount > MaxOverdueCount {
+		maxCount = MaxOverdueCount
+	}
+
+	out := OverdueConfig{
+		Enabled:       true,
+		IntervalUnit:  unit,
+		IntervalValue: val,
+		MaxCount:      maxCount,
+	}
+
+	if cycleDur, ok := MinCycleDuration(repeatType, calType, tz, cfg, *targetAt); ok && cycleDur > 0 {
+		var span time.Duration
+		if unit == "hour" {
+			span = time.Duration(maxCount*val) * time.Hour
+		} else {
+			span = time.Duration(maxCount*val) * 24 * time.Hour
+		}
+		if span >= cycleDur {
+			return OverdueConfig{}, fmt.Errorf("催办总时长（%s）必须严格小于循环周期长度（%s）", formatDurationHuman(span), formatDurationHuman(cycleDur))
+		}
+	}
+
+	return out, nil
+}
+
+func OccurrenceKey(targetAt time.Time, tz string) string {
+	loc, _, err := LoadTimezone(tz)
+	if err != nil {
+		loc = time.UTC
+	}
+	return targetAt.In(loc).Truncate(time.Minute).UTC().Format("20060102T1504Z")
+}
+
 // ComputeTriggersForOccurrence calculates all sorted trigger timestamps for a single target_at occurrence.
 // Day-based offsets use calendar AddDate in user's IANA timezone to preserve wall-clock HH:MM across DST.
 // Hour/minute offsets subtract exact duration from target_at.
@@ -249,6 +443,7 @@ func ComputeTriggersForOccurrence(targetAt time.Time, tz string, offsets []Remin
 			TriggerAt:    utcAt,
 			TriggerKey:   occKey + "|" + o.Key(),
 			TriggerLabel: o.Label(),
+			EventType:    EventReminder,
 			Offset:       o,
 		})
 	}
@@ -259,6 +454,44 @@ func ComputeTriggersForOccurrence(targetAt time.Time, tz string, offsets []Remin
 		}
 		return points[i].TriggerKey < points[j].TriggerKey
 	})
+	return points
+}
+
+// ComputeOverdueTriggersForOccurrence computes all overdue nagging points for a single occurrence.
+// Day-based intervals use AddDate in user's IANA timezone to preserve wall-clock HH:MM across DST.
+func ComputeOverdueTriggersForOccurrence(targetAt time.Time, tz string, cfg OverdueConfig) []TriggerPoint {
+	if targetAt.IsZero() || !cfg.Enabled || cfg.MaxCount <= 0 || cfg.IntervalValue <= 0 {
+		return nil
+	}
+	loc, _, err := LoadTimezone(tz)
+	if err != nil {
+		loc = time.UTC
+	}
+	localTarget := targetAt.In(loc).Truncate(time.Minute)
+	occKey := localTarget.UTC().Format("20060102T1504Z")
+	maxCount := cfg.MaxCount
+	if maxCount > MaxOverdueCount {
+		maxCount = MaxOverdueCount
+	}
+
+	points := make([]TriggerPoint, 0, maxCount)
+	for i := 1; i <= maxCount; i++ {
+		var triggerAt time.Time
+		if cfg.IntervalUnit == "hour" {
+			triggerAt = localTarget.Add(time.Duration(i*cfg.IntervalValue) * time.Hour)
+		} else {
+			d := localTarget.AddDate(0, 0, i*cfg.IntervalValue)
+			triggerAt = time.Date(d.Year(), d.Month(), d.Day(), localTarget.Hour(), localTarget.Minute(), 0, 0, loc)
+		}
+		utcAt := triggerAt.UTC().Truncate(time.Minute)
+		points = append(points, TriggerPoint{
+			TriggerAt:    utcAt,
+			TriggerKey:   fmt.Sprintf("%s|overdue#%d", occKey, i),
+			TriggerLabel: fmt.Sprintf("逾期催办 %d/%d", i, maxCount),
+			EventType:    EventOverdue,
+			OverdueIndex: i,
+		})
+	}
 	return points
 }
 
@@ -404,24 +637,64 @@ func AdvanceTarget(currentTarget time.Time, cfg RepeatConfig, calType, repeatTyp
 	}
 }
 
-// ComputeNextTrigger returns the earliest unsent TriggerPoint for an item's current target_at.
-// If minTime is non-zero, triggers strictly earlier than minTime are skipped (used when saving a new/edited item).
-func ComputeNextTrigger(item ItemRecord, sentKeys map[string]struct{}, minTime time.Time) *time.Time {
-	if item.Status != StatusPending || item.TargetAt == nil || len(item.RemindOffsets) == 0 {
+// ComputeNextTrigger returns the earliest pending wakeup timestamp for an item, unifying:
+// timed pause expiration, pending retry backoff, normal reminder offsets, and overdue nags.
+// If minTime is non-zero, normal/overdue triggers strictly earlier than minTime are skipped.
+func ComputeNextTrigger(item ItemRecord, settledKeys map[string]struct{}, minTime time.Time) *time.Time {
+	if item.Status != StatusPending {
 		return nil
 	}
-	points := ComputeTriggersForOccurrence(*item.TargetAt, item.Timezone, item.RemindOffsets)
-	for _, p := range points {
-		if _, sent := sentKeys[p.TriggerKey]; sent {
+	if item.Paused {
+		if item.PausedUntil == nil {
+			return nil
+		}
+		t := item.PausedUntil.UTC()
+		return &t
+	}
+	if item.TargetAt == nil {
+		return nil
+	}
+
+	if item.RetryState != nil {
+		if _, settled := settledKeys[item.RetryState.TriggerKey]; !settled {
+			t := item.RetryState.NextRetryAt.UTC()
+			return &t
+		}
+	}
+
+	var earliest *time.Time
+	consider := func(t time.Time) {
+		utc := t.UTC()
+		if earliest == nil || utc.Before(*earliest) {
+			earliest = &utc
+		}
+	}
+
+	for _, p := range ComputeTriggersForOccurrence(*item.TargetAt, item.Timezone, item.RemindOffsets) {
+		if _, settled := settledKeys[p.TriggerKey]; settled {
 			continue
 		}
 		if !minTime.IsZero() && p.TriggerAt.Before(minTime) {
 			continue
 		}
-		t := p.TriggerAt
-		return &t
+		consider(p.TriggerAt)
+		break
 	}
-	return nil
+
+	if item.OverdueConfig.Enabled {
+		for _, p := range ComputeOverdueTriggersForOccurrence(*item.TargetAt, item.Timezone, item.OverdueConfig) {
+			if _, settled := settledKeys[p.TriggerKey]; settled {
+				continue
+			}
+			if !minTime.IsZero() && p.TriggerAt.Before(minTime) {
+				continue
+			}
+			consider(p.TriggerAt)
+			break
+		}
+	}
+
+	return earliest
 }
 
 // ProjectOccurrences expands an item's target_at across [rangeStart, rangeEnd] for Calendar view rendering.

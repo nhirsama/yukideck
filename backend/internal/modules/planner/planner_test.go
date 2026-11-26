@@ -2,10 +2,12 @@ package planner
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
+	"yukideck/internal/core/httpx"
 	"yukideck/internal/core/messenger"
 )
 
@@ -103,23 +105,24 @@ func (m *memStore) MinNextTriggerAt(_ context.Context) (*time.Time, error) {
 	return minT, nil
 }
 
-func (m *memStore) ListSentTriggerKeys(_ context.Context, itemID int64) (map[string]struct{}, error) {
+func (m *memStore) ListSettledTriggerKeys(_ context.Context, itemID int64) (map[string]struct{}, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make(map[string]struct{})
 	for _, l := range m.logs {
-		if l.ItemID != nil && *l.ItemID == itemID {
+		if l.ItemID != nil && *l.ItemID == itemID && (l.Status == LogStatusOK || l.Status == LogStatusFailed || l.Status == LogStatusSkipped) {
 			out[l.TriggerKey] = struct{}{}
 		}
 	}
 	return out, nil
 }
 
-func (m *memStore) InsertLogAndPrune(_ context.Context, rec LogRecord, _ int) (bool, error) {
+func (m *memStore) InsertSettledLogAndPrune(_ context.Context, rec LogRecord, _ int) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, l := range m.logs {
-		if rec.ItemID != nil && l.ItemID != nil && *l.ItemID == *rec.ItemID && l.TriggerKey == rec.TriggerKey {
+		if rec.ItemID != nil && l.ItemID != nil && *l.ItemID == *rec.ItemID && l.TriggerKey == rec.TriggerKey &&
+			(l.Status == LogStatusOK || l.Status == LogStatusFailed || l.Status == LogStatusSkipped) {
 			return false, nil
 		}
 	}
@@ -130,12 +133,22 @@ func (m *memStore) InsertLogAndPrune(_ context.Context, rec LogRecord, _ int) (b
 	return true, nil
 }
 
-func (m *memStore) ListLogs(_ context.Context, userID int64, _ int) ([]LogRecord, error) {
+func (m *memStore) InsertAttemptLogAndPrune(_ context.Context, rec LogRecord, _ int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.logID++
+	rec.ID = m.logID
+	rec.SentAt = time.Now()
+	m.logs = append(m.logs, rec)
+	return nil
+}
+
+func (m *memStore) ListLogs(_ context.Context, userID int64, status string, _ int) ([]LogRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []LogRecord
 	for _, l := range m.logs {
-		if l.UserID == userID {
+		if l.UserID == userID && (status == "" || l.Status == status) {
 			out = append(out, l)
 		}
 	}
@@ -143,13 +156,28 @@ func (m *memStore) ListLogs(_ context.Context, userID int64, _ int) ([]LogRecord
 }
 
 type fakeNotifier struct {
-	mu   sync.Mutex
-	sent []messenger.Message
+	mu      sync.Mutex
+	sent    []messenger.Message
+	sendFn  func(attempt int, msg messenger.Message) ([]messenger.DeliveryResult, error)
+	calls   int
 }
 
 func (f *fakeNotifier) Send(_ context.Context, _ int64, _ []int64, msg messenger.Message) ([]messenger.DeliveryResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls++
+	if f.sendFn != nil {
+		res, err := f.sendFn(f.calls, msg)
+		if err == nil {
+			for _, r := range res {
+				if r.OK {
+					f.sent = append(f.sent, msg)
+					break
+				}
+			}
+		}
+		return res, err
+	}
 	f.sent = append(f.sent, msg)
 	return []messenger.DeliveryResult{{ChannelID: 1, ChannelName: "TG", OK: true}}, nil
 }
@@ -188,7 +216,6 @@ func TestLeapYearAndMonthEndAnchorPreservation(t *testing.T) {
 func TestLunarClampingAndDSTWallClockOffsets(t *testing.T) {
 	shanghai, _ := time.LoadLocation("Asia/Shanghai")
 
-	// Lunar New Year's Eve (12-30) in 2025: lunar 2025 month 12 only has 29 days -> clamps to 12-29 without error
 	tLunar, err := LunarToSolarTime(2025, 12, 30, false, 18, 0, shanghai)
 	if err != nil {
 		t.Fatalf("LunarToSolarTime clamped: %v", err)
@@ -197,8 +224,6 @@ func TestLunarClampingAndDSTWallClockOffsets(t *testing.T) {
 		t.Fatalf("expected valid solar conversion for clamped lunar date")
 	}
 
-	// DST transition in America/New_York: 2026-03-08 clocks spring forward 02:00 -> 03:00 (23-hour day).
-	// Target = 2026-03-09 09:00 EDT; "-1 day" MUST stay 2026-03-08 09:00 EDT (wall clock), while "-30m" is 08:30 EDT.
 	ny, err := time.LoadLocation("America/New_York")
 	if err != nil {
 		t.Skipf("tzdata for America/New_York unavailable: %v", err)
@@ -227,7 +252,6 @@ func TestUnifiedTodoAndIndividualMultiOffsetDispatch(t *testing.T) {
 	svc := NewService(store, notifier, worker)
 	ctx := context.Background()
 
-	// 1. Pure Todo: title only -> target_at=nil, next_trigger_at=nil (excluded from partial B-Tree index)
 	todo, err := svc.CreateItem(ctx, 1, UpsertItemInput{Title: "买牛奶"})
 	if err != nil {
 		t.Fatalf("CreateItem pure todo: %v", err)
@@ -236,7 +260,6 @@ func TestUnifiedTodoAndIndividualMultiOffsetDispatch(t *testing.T) {
 		t.Fatalf("expected nil target & trigger for pure todo, got %+v", todo)
 	}
 
-	// 2. Repeating item with 2 offsets (-30m and 0m)
 	loc, _ := time.LoadLocation("Asia/Shanghai")
 	target := time.Date(2026, 12, 1, 9, 0, 0, 0, loc).UTC()
 	item, err := store.CreateItem(ctx, ItemRecord{
@@ -261,18 +284,15 @@ func TestUnifiedTodoAndIndividualMultiOffsetDispatch(t *testing.T) {
 	item.NextTriggerAt = ComputeNextTrigger(*item, map[string]struct{}{}, time.Time{})
 	_, _ = store.UpdateItem(ctx, *item)
 
-	// Trigger 1: 08:30 (-30m)
 	t1 := time.Date(2026, 12, 1, 8, 30, 0, 0, loc)
 	worker.nowFunc = func() time.Time { return t1 }
 	worker.ProcessDueOnce(ctx)
-	// Calling again at same minute MUST be idempotently deduplicated
 	worker.ProcessDueOnce(ctx)
 
 	if len(notifier.sent) != 1 {
 		t.Fatalf("expected exactly 1 message at 08:30 (deduped), got %d", len(notifier.sent))
 	}
 
-	// Trigger 2: 09:00 (0m) -> sends 2nd individual message & auto-advances to 2027-01-01 09:00
 	t2 := time.Date(2026, 12, 1, 9, 0, 0, 0, loc)
 	worker.nowFunc = func() time.Time { return t2 }
 	worker.ProcessDueOnce(ctx)
@@ -286,5 +306,349 @@ func TestUnifiedTodoAndIndividualMultiOffsetDispatch(t *testing.T) {
 	}
 	if updated.NextTriggerAt == nil || updated.NextTriggerAt.In(loc).Format("2006-01-02 15:04") != "2027-01-01 08:30" {
 		t.Fatalf("expected next trigger at 2027-01-01 08:30, got %v", updated.NextTriggerAt)
+	}
+}
+
+func TestRetryBackoffAndAutoAdvanceDeferral(t *testing.T) {
+	store := newMemStore()
+	notifier := &fakeNotifier{
+		sendFn: func(attempt int, msg messenger.Message) ([]messenger.DeliveryResult, error) {
+			if attempt <= 2 {
+				return nil, errors.New("temporary network timeout")
+			}
+			return []messenger.DeliveryResult{{ChannelID: 1, ChannelName: "TG", OK: true}}, nil
+		},
+	}
+	worker := NewWakeupWorker(store, notifier, nil)
+	ctx := context.Background()
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+
+	target := time.Date(2026, 12, 1, 9, 0, 0, 0, loc).UTC()
+	item, _ := store.CreateItem(ctx, ItemRecord{
+		UserID:        1,
+		Title:         "每日打卡",
+		Status:        StatusPending,
+		TargetAt:      &target,
+		Timezone:      "Asia/Shanghai",
+		CalendarType:  CalendarSolar,
+		RepeatType:    RepeatDaily,
+		RepeatConfig:  RepeatConfig{AnchorHour: 9, AnchorMinute: 0},
+		AutoAdvance:   true,
+		RemindOffsets: []RemindOffset{{Unit: "minute", Value: 0}},
+	})
+	item.NextTriggerAt = ComputeNextTrigger(*item, map[string]struct{}{}, time.Time{})
+	_, _ = store.UpdateItem(ctx, *item)
+
+	// Attempt 1 fails at 09:00 -> schedules retry #1 at 09:01, does NOT advance target_at!
+	t0 := time.Date(2026, 12, 1, 9, 0, 0, 0, loc)
+	worker.nowFunc = func() time.Time { return t0 }
+	worker.ProcessDueOnce(ctx)
+
+	cur, _ := store.GetItem(ctx, 1, item.ID)
+	if cur.RetryState == nil || cur.RetryState.Attempt != 1 {
+		t.Fatalf("expected RetryState attempt=1, got %+v", cur.RetryState)
+	}
+	if cur.TargetAt.In(loc).Format("2006-01-02") != "2026-12-01" {
+		t.Fatalf("must NOT advance cycle while retrying, got %v", cur.TargetAt.In(loc))
+	}
+	if !cur.NextTriggerAt.Equal(t0.Add(1 * time.Minute).UTC()) {
+		t.Fatalf("expected next trigger at +1m, got %v", cur.NextTriggerAt)
+	}
+
+	// Attempt 2 fails at 09:01 -> schedules retry #2 at 09:06 (+5m)
+	t1 := t0.Add(1 * time.Minute)
+	worker.nowFunc = func() time.Time { return t1 }
+	worker.ProcessDueOnce(ctx)
+
+	cur, _ = store.GetItem(ctx, 1, item.ID)
+	if cur.RetryState == nil || cur.RetryState.Attempt != 2 {
+		t.Fatalf("expected RetryState attempt=2, got %+v", cur.RetryState)
+	}
+	if !cur.NextTriggerAt.Equal(t1.Add(5 * time.Minute).UTC()) {
+		t.Fatalf("expected next trigger at +5m, got %v", cur.NextTriggerAt)
+	}
+
+	// Attempt 3 succeeds at 09:06 -> clears RetryState and auto-advances to 2026-12-02 09:00!
+	t2 := t1.Add(5 * time.Minute)
+	worker.nowFunc = func() time.Time { return t2 }
+	worker.ProcessDueOnce(ctx)
+
+	cur, _ = store.GetItem(ctx, 1, item.ID)
+	if cur.RetryState != nil {
+		t.Fatalf("expected RetryState cleared after success, got %+v", cur.RetryState)
+	}
+	if cur.TargetAt.In(loc).Format("2006-01-02 15:04") != "2026-12-02 09:00" {
+		t.Fatalf("expected advance to 2026-12-02 09:00 after retry succeeded, got %v", cur.TargetAt.In(loc))
+	}
+
+	logs, _ := store.ListLogs(ctx, 1, "", 50)
+	if len(logs) != 3 {
+		t.Fatalf("expected 3 log entries (2 retrying + 1 ok), got %d: %+v", len(logs), logs)
+	}
+	if logs[0].Status != LogStatusRetrying || logs[1].Status != LogStatusRetrying || logs[2].Status != LogStatusOK || logs[2].Attempt != 3 {
+		t.Fatalf("unexpected log sequence: %+v", logs)
+	}
+}
+
+func TestRetryExhaustedAndNoChannelAndMissedGraceLog(t *testing.T) {
+	ctx := context.Background()
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+
+	// 1. Exhausted retries (1m -> 5m -> 15m, total 4 attempts)
+	store := newMemStore()
+	notifier := &fakeNotifier{
+		sendFn: func(attempt int, msg messenger.Message) ([]messenger.DeliveryResult, error) {
+			return []messenger.DeliveryResult{{ChannelID: 1, ChannelName: "TG", OK: false, Error: "502 bad gateway"}}, nil
+		},
+	}
+	worker := NewWakeupWorker(store, notifier, nil)
+	target := time.Date(2026, 12, 1, 10, 0, 0, 0, loc).UTC()
+	item, _ := store.CreateItem(ctx, ItemRecord{
+		UserID:        1,
+		Title:         "失败测试",
+		Status:        StatusPending,
+		TargetAt:      &target,
+		Timezone:      "Asia/Shanghai",
+		CalendarType:  CalendarSolar,
+		RepeatType:    RepeatNone,
+		RemindOffsets: []RemindOffset{{Unit: "minute", Value: 0}},
+	})
+	item.NextTriggerAt = ComputeNextTrigger(*item, map[string]struct{}{}, time.Time{})
+	_, _ = store.UpdateItem(ctx, *item)
+
+	times := []time.Time{
+		time.Date(2026, 12, 1, 10, 0, 0, 0, loc),
+		time.Date(2026, 12, 1, 10, 1, 0, 0, loc),
+		time.Date(2026, 12, 1, 10, 6, 0, 0, loc),
+		time.Date(2026, 12, 1, 10, 21, 0, 0, loc),
+	}
+	for _, ts := range times {
+		worker.nowFunc = func() time.Time { return ts }
+		worker.ProcessDueOnce(ctx)
+	}
+	cur, _ := store.GetItem(ctx, 1, item.ID)
+	if cur.RetryState != nil || cur.NextTriggerAt != nil {
+		t.Fatalf("expected exhausted retry cleared, got retry=%+v next=%v", cur.RetryState, cur.NextTriggerAt)
+	}
+	failedLogs, _ := store.ListLogs(ctx, 1, LogStatusFailed, 50)
+	if len(failedLogs) != 1 || failedLogs[0].Reason != ReasonRetryExhausted || failedLogs[0].Attempt != 4 {
+		t.Fatalf("expected 1 failed/retry_exhausted attempt=4 log, got %+v", failedLogs)
+	}
+
+	// 2. Non-retryable no_channel error settles on attempt 1
+	store2 := newMemStore()
+	notifier2 := &fakeNotifier{
+		sendFn: func(attempt int, msg messenger.Message) ([]messenger.DeliveryResult, error) {
+			return nil, httpx.BadRequest("未找到可用的出站推送渠道")
+		},
+	}
+	worker2 := NewWakeupWorker(store2, notifier2, nil)
+	item2, _ := store2.CreateItem(ctx, ItemRecord{
+		UserID:        1,
+		Title:         "无渠道测试",
+		Status:        StatusPending,
+		TargetAt:      &target,
+		Timezone:      "Asia/Shanghai",
+		CalendarType:  CalendarSolar,
+		RepeatType:    RepeatNone,
+		RemindOffsets: []RemindOffset{{Unit: "minute", Value: 0}},
+	})
+	item2.NextTriggerAt = ComputeNextTrigger(*item2, map[string]struct{}{}, time.Time{})
+	_, _ = store2.UpdateItem(ctx, *item2)
+	worker2.nowFunc = func() time.Time { return times[0] }
+	worker2.ProcessDueOnce(ctx)
+
+	cur2, _ := store2.GetItem(ctx, 1, item2.ID)
+	if cur2.RetryState != nil {
+		t.Fatalf("no_channel must NOT retry, got %+v", cur2.RetryState)
+	}
+	noChanLogs, _ := store2.ListLogs(ctx, 1, LogStatusFailed, 50)
+	if len(noChanLogs) != 1 || noChanLogs[0].Reason != ReasonNoChannel {
+		t.Fatalf("expected no_channel failed log, got %+v", noChanLogs)
+	}
+
+	// 3. Missed grace window (>15m) logs skipped / missed_grace_window instead of silent drop
+	store3 := newMemStore()
+	worker3 := NewWakeupWorker(store3, &fakeNotifier{}, nil)
+	item3, _ := store3.CreateItem(ctx, ItemRecord{
+		UserID:        1,
+		Title:         "超时跳过测试",
+		Status:        StatusPending,
+		TargetAt:      &target,
+		Timezone:      "Asia/Shanghai",
+		CalendarType:  CalendarSolar,
+		RepeatType:    RepeatNone,
+		RemindOffsets: []RemindOffset{{Unit: "minute", Value: 0}},
+	})
+	item3.NextTriggerAt = ComputeNextTrigger(*item3, map[string]struct{}{}, time.Time{})
+	_, _ = store3.UpdateItem(ctx, *item3)
+	worker3.nowFunc = func() time.Time { return times[0].Add(20 * time.Minute) }
+	worker3.ProcessDueOnce(ctx)
+
+	skipLogs, _ := store3.ListLogs(ctx, 1, LogStatusSkipped, 50)
+	if len(skipLogs) != 1 || skipLogs[0].Reason != ReasonMissedGraceWindow {
+		t.Fatalf("expected missed_grace_window skip log, got %+v", skipLogs)
+	}
+}
+
+func TestOverdueValidationClampAndRecurringLifecycle(t *testing.T) {
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	target := time.Date(2026, 12, 1, 9, 0, 0, 0, loc).UTC()
+
+	// 1. Default max_count = 3 and silent clamp >10 -> 10
+	cfgDef, err := NormalizeOverdueConfig(&OverdueConfig{Enabled: true, IntervalUnit: "hour", IntervalValue: 2}, RepeatNone, CalendarSolar, "Asia/Shanghai", RepeatConfig{}, &target)
+	if err != nil || cfgDef.MaxCount != 3 {
+		t.Fatalf("expected default max_count=3, got %+v err=%v", cfgDef, err)
+	}
+	cfgClamp, err := NormalizeOverdueConfig(&OverdueConfig{Enabled: true, IntervalUnit: "day", IntervalValue: 1, MaxCount: 99}, RepeatNone, CalendarSolar, "Asia/Shanghai", RepeatConfig{}, &target)
+	if err != nil || cfgClamp.MaxCount != 10 {
+		t.Fatalf("expected clamped max_count=10, got %+v err=%v", cfgClamp, err)
+	}
+
+	// 2. Strict `<` cycle length validation
+	// daily (24h): 6h * 4 = 24h -> MUST fail (not strictly less)
+	if _, err := NormalizeOverdueConfig(&OverdueConfig{Enabled: true, IntervalUnit: "hour", IntervalValue: 6, MaxCount: 4}, RepeatDaily, CalendarSolar, "Asia/Shanghai", RepeatConfig{}, &target); err == nil {
+		t.Fatalf("expected strict < rejection for 6h * 4 == 24h on daily repeat")
+	}
+	// daily (24h): 6h * 3 = 18h < 24h -> MUST succeed
+	if _, err := NormalizeOverdueConfig(&OverdueConfig{Enabled: true, IntervalUnit: "hour", IntervalValue: 6, MaxCount: 3}, RepeatDaily, CalendarSolar, "Asia/Shanghai", RepeatConfig{}, &target); err != nil {
+		t.Fatalf("expected 6h * 3 < 24h to pass on daily repeat, got err=%v", err)
+	}
+	// weekly Mon+Wed (min gap 2d): 1d * 2 = 2d -> MUST fail
+	if _, err := NormalizeOverdueConfig(&OverdueConfig{Enabled: true, IntervalUnit: "day", IntervalValue: 1, MaxCount: 2}, RepeatWeekly, CalendarSolar, "Asia/Shanghai", RepeatConfig{Weekdays: []int{1, 3}}, &target); err == nil {
+		t.Fatalf("expected strict < rejection for 1d * 2 == 2d on Mon+Wed weekly repeat")
+	}
+
+	// 3. Recurring item with overdue enabled + auto_advance=true:
+	//    on-time reminder does NOT advance; sends overdue 1/2 and 2/2, then logs overdue_limit_reached and auto-advances!
+	store := newMemStore()
+	notifier := &fakeNotifier{}
+	worker := NewWakeupWorker(store, notifier, nil)
+	ctx := context.Background()
+
+	item, _ := store.CreateItem(ctx, ItemRecord{
+		UserID:        1,
+		Title:         "每周备份",
+		Status:        StatusPending,
+		TargetAt:      &target,
+		Timezone:      "Asia/Shanghai",
+		CalendarType:  CalendarSolar,
+		RepeatType:    RepeatWeekly,
+		RepeatConfig:  RepeatConfig{AnchorHour: 9, AnchorMinute: 0},
+		AutoAdvance:   true,
+		RemindOffsets: []RemindOffset{{Unit: "minute", Value: 0}},
+		OverdueConfig: OverdueConfig{Enabled: true, IntervalUnit: "day", IntervalValue: 1, MaxCount: 2},
+	})
+	item.NextTriggerAt = ComputeNextTrigger(*item, map[string]struct{}{}, time.Time{})
+	_, _ = store.UpdateItem(ctx, *item)
+
+	// On-time (Dec 1 09:00): sends normal reminder, stays on Dec 1 waiting for overdue #1 (Dec 2 09:00)
+	worker.nowFunc = func() time.Time { return time.Date(2026, 12, 1, 9, 0, 0, 0, loc) }
+	worker.ProcessDueOnce(ctx)
+	cur, _ := store.GetItem(ctx, 1, item.ID)
+	if cur.TargetAt.In(loc).Format("2006-01-02") != "2026-12-01" {
+		t.Fatalf("must NOT advance before overdue nags complete, got %v", cur.TargetAt.In(loc))
+	}
+	if cur.NextTriggerAt == nil || cur.NextTriggerAt.In(loc).Format("2006-01-02 15:04") != "2026-12-02 09:00" {
+		t.Fatalf("expected overdue #1 scheduled for 2026-12-02 09:00, got %v", cur.NextTriggerAt)
+	}
+
+	// Overdue #1 (Dec 2 09:00)
+	worker.nowFunc = func() time.Time { return time.Date(2026, 12, 2, 9, 0, 0, 0, loc) }
+	worker.ProcessDueOnce(ctx)
+	cur, _ = store.GetItem(ctx, 1, item.ID)
+	if cur.TargetAt.In(loc).Format("2006-01-02") != "2026-12-01" {
+		t.Fatalf("still waiting for overdue #2, got %v", cur.TargetAt.In(loc))
+	}
+
+	// Overdue #2 (Dec 3 09:00) -> limit reached -> auto-advances to Dec 8 09:00!
+	worker.nowFunc = func() time.Time { return time.Date(2026, 12, 3, 9, 0, 0, 0, loc) }
+	worker.ProcessDueOnce(ctx)
+	cur, _ = store.GetItem(ctx, 1, item.ID)
+	if len(notifier.sent) != 3 {
+		t.Fatalf("expected 3 messages (1 on-time + 2 overdue), got %d", len(notifier.sent))
+	}
+	if cur.TargetAt.In(loc).Format("2006-01-02 15:04") != "2026-12-08 09:00" {
+		t.Fatalf("expected auto-advance to 2026-12-08 09:00 after overdue limit, got %v", cur.TargetAt.In(loc))
+	}
+	skipLogs, _ := store.ListLogs(ctx, 1, LogStatusSkipped, 50)
+	if len(skipLogs) != 1 || skipLogs[0].Reason != ReasonOverdueLimitReached {
+		t.Fatalf("expected overdue_limit_reached log, got %+v", skipLogs)
+	}
+}
+
+func TestPauseTimedAutoResumeAndIndefinitePause(t *testing.T) {
+	store := newMemStore()
+	notifier := &fakeNotifier{}
+	worker := NewWakeupWorker(store, notifier, nil)
+	svc := NewService(store, notifier, worker)
+	ctx := context.Background()
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+
+	target := time.Date(2026, 12, 1, 9, 0, 0, 0, loc).UTC()
+	item, _ := store.CreateItem(ctx, ItemRecord{
+		UserID:        1,
+		Title:         "晨会提醒",
+		Status:        StatusPending,
+		TargetAt:      &target,
+		Timezone:      "Asia/Shanghai",
+		CalendarType:  CalendarSolar,
+		RepeatType:    RepeatDaily,
+		RepeatConfig:  RepeatConfig{AnchorHour: 9, AnchorMinute: 0},
+		AutoAdvance:   true,
+		RemindOffsets: []RemindOffset{{Unit: "minute", Value: 0}},
+	})
+	item.NextTriggerAt = ComputeNextTrigger(*item, map[string]struct{}{}, time.Time{})
+	_, _ = store.UpdateItem(ctx, *item)
+
+	// 1. Timed pause until Dec 2 10:00 (covers Dec 1 09:00 and Dec 2 09:00)
+	resumeAt := time.Date(2026, 12, 2, 10, 0, 0, 0, loc).UTC()
+	pausedView, err := svc.PauseItem(ctx, 1, item.ID, PauseItemInput{Until: &resumeAt})
+	if err != nil {
+		t.Fatalf("PauseItem timed: %v", err)
+	}
+	if !pausedView.Paused || pausedView.NextTriggerAt == nil || !pausedView.NextTriggerAt.Equal(resumeAt) {
+		t.Fatalf("expected paused with next_trigger_at == paused_until, got %+v", pausedView)
+	}
+
+	// At Dec 1 09:00 -> still paused, must NOT send
+	worker.nowFunc = func() time.Time { return time.Date(2026, 12, 1, 9, 0, 0, 0, loc) }
+	worker.ProcessDueOnce(ctx)
+	if len(notifier.sent) != 0 {
+		t.Fatalf("must NOT send during pause, got %d", len(notifier.sent))
+	}
+
+	// At Dec 2 10:00 -> pause expires, auto-resumes, skips missed Dec 1 & Dec 2 without backfilling, schedules Dec 3 09:00
+	worker.nowFunc = func() time.Time { return time.Date(2026, 12, 2, 10, 0, 0, 0, loc) }
+	worker.ProcessDueOnce(ctx)
+	if len(notifier.sent) != 0 {
+		t.Fatalf("must NOT backfill missed reminders on resume, got %d", len(notifier.sent))
+	}
+	cur, _ := store.GetItem(ctx, 1, item.ID)
+	if cur.Paused || cur.PausedUntil != nil {
+		t.Fatalf("expected pause cleared after expiration, got paused=%v until=%v", cur.Paused, cur.PausedUntil)
+	}
+	if cur.NextTriggerAt == nil || cur.NextTriggerAt.In(loc).Format("2006-01-02 15:04") != "2026-12-03 09:00" {
+		t.Fatalf("expected next trigger aligned to 2026-12-03 09:00, got %v", cur.NextTriggerAt)
+	}
+	skipLogs, _ := store.ListLogs(ctx, 1, LogStatusSkipped, 50)
+	if len(skipLogs) == 0 || skipLogs[0].Reason != ReasonPaused {
+		t.Fatalf("expected paused skip log, got %+v", skipLogs)
+	}
+
+	// 2. Indefinite pause sets next_trigger_at = nil until manual resume
+	indefView, err := svc.PauseItem(ctx, 1, item.ID, PauseItemInput{Indefinite: true})
+	if err != nil {
+		t.Fatalf("PauseItem indefinite: %v", err)
+	}
+	if !indefView.Paused || indefView.PausedUntil != nil || indefView.NextTriggerAt != nil {
+		t.Fatalf("expected indefinite pause with nil next_trigger_at, got %+v", indefView)
+	}
+	resumedView, err := svc.ResumeItem(ctx, 1, item.ID)
+	if err != nil {
+		t.Fatalf("ResumeItem: %v", err)
+	}
+	if resumedView.Paused || resumedView.NextTriggerAt == nil {
+		t.Fatalf("expected resumed active item with future next_trigger_at, got %+v", resumedView)
 	}
 }
