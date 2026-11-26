@@ -394,3 +394,27 @@ func TestOIDCUserClaimsResolution(t *testing.T) {
 		t.Fatalf("expected avatar fallback, got %q", got)
 	}
 }
+
+func TestSanitizeNextPath(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{"/", "/"},
+		{"/planner", "/planner"},
+		{"/settings?tab=api-keys", "/settings?tab=api-keys"},
+		{"/login", ""},
+		{"/login?foo=1", ""},
+		{"//evil.com/phish", ""},
+		{"https://evil.com", ""},
+		{"/foo\\bar", ""},
+		{"/foo\r\nbar", ""},
+		{"  /assets  ", "/assets"},
+	}
+	for _, tc := range cases {
+		if got := sanitizeNextPath(tc.in); got != tc.want {
+			t.Errorf("sanitizeNextPath(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

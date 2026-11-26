@@ -1,23 +1,32 @@
-import { Layers, LogIn } from 'lucide-react';
+import { Link, Navigate } from 'react-router-dom';
+import { ArrowLeft } from 'lucide-react';
+import { LoginCard } from '@/components/LoginModal';
 import { useAuth } from '@/core/auth';
 
 export function LoginPage() {
-  const { loginUrl } = useAuth();
+  const { isAuthenticated } = useAuth();
+
+  if (isAuthenticated) {
+    return <Navigate to="/" replace />;
+  }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#f8fafc] px-4">
-      <div className="yd-card w-full max-w-[360px] p-8 text-center space-y-6">
-        <div className="mx-auto h-11 w-11 rounded-xl bg-sky-50 border border-sky-200/70 text-sky-600 flex items-center justify-center">
-          <Layers className="h-5 w-5" />
+    <div className="relative min-h-screen flex flex-col items-center justify-center overflow-hidden bg-[#f8fafc] px-4 py-10">
+      <div className="yd-dot-grid pointer-events-none absolute inset-0 opacity-65" />
+      <div className="pointer-events-none absolute -top-24 left-1/2 h-72 w-[540px] -translate-x-1/2 rounded-full bg-sky-200/30 blur-3xl" />
+
+      <div className="relative w-full max-w-[368px] space-y-4">
+        <LoginCard />
+
+        <div className="text-center">
+          <Link
+            to="/"
+            className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-zinc-500 transition-colors hover:bg-white/80 hover:text-zinc-800"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            返回工作台
+          </Link>
         </div>
-        <div className="space-y-1">
-          <h1 className="text-lg font-semibold tracking-tight text-zinc-800">YukiDeck</h1>
-          <p className="text-[13px] text-zinc-500">个人工具工作台</p>
-        </div>
-        <a href={loginUrl} className="yd-btn-primary w-full py-2.5 text-[13px]">
-          <LogIn className="h-4 w-4" />
-          通过 OIDC 登录
-        </a>
       </div>
     </div>
   );

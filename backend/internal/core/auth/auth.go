@@ -91,7 +91,23 @@ type sessionPayload struct {
 type statePayload struct {
 	State    string `json:"s"`
 	Verifier string `json:"v"`
+	Next     string `json:"next,omitempty"`
 	Exp      int64  `json:"exp"`
+}
+
+// sanitizeNextPath allows only safe same-origin relative paths (e.g. "/planner", "/settings?tab=api-keys").
+func sanitizeNextPath(raw string) string {
+	next := strings.TrimSpace(raw)
+	if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
+		return ""
+	}
+	if strings.ContainsAny(next, "\\\r\n") {
+		return ""
+	}
+	if next == "/login" || strings.HasPrefix(next, "/login?") {
+		return ""
+	}
+	return next
 }
 
 type Service struct {
@@ -200,10 +216,12 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Internal("生成 OIDC state 失败", err)
 	}
 	verifier := oauth2.GenerateVerifier()
+	next := sanitizeNextPath(r.URL.Query().Get("next"))
 
 	cookieVal, err := s.encodeSigned(statePayload{
 		State:    state,
 		Verifier: verifier,
+		Next:     next,
 		Exp:      time.Now().Add(10 * time.Minute).Unix(),
 	})
 	if err != nil {
@@ -309,7 +327,11 @@ func (s *Service) handleCallback(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Internal("签发登录会话失败", err)
 	}
 	http.SetCookie(w, s.buildCookie(sessionCookieName, sessToken, int(sessionTTL.Seconds())))
-	http.Redirect(w, r, s.cfg.FrontendBaseURL, http.StatusFound)
+	redirectTarget := s.cfg.FrontendBaseURL
+	if next := sanitizeNextPath(sp.Next); next != "" {
+		redirectTarget = strings.TrimRight(s.cfg.FrontendBaseURL, "/") + next
+	}
+	http.Redirect(w, r, redirectTarget, http.StatusFound)
 	return nil
 }
 

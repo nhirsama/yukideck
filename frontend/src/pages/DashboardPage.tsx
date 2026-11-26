@@ -2,9 +2,11 @@ import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowRight, Bell, Link2, Puzzle } from 'lucide-react';
 import { coreApi } from '@/core/api';
+import { useAuth } from '@/core/auth';
 import { useEnabledModules } from '@/core/module';
 
 export function DashboardPage() {
+  const { isAuthenticated } = useAuth();
   const modules = useEnabledModules();
 
   const { data: channelsData } = useQuery({
@@ -33,10 +35,18 @@ export function DashboardPage() {
             <Bell className="h-3.5 w-3.5 text-zinc-400" />
           </div>
           <div className="mt-2.5 font-mono text-2xl font-semibold tracking-tight text-zinc-800 tabular-nums">
-            {outboundCount}{' '}
-            <span className="text-sm font-normal text-zinc-400">/ {inboundCount}</span>
+            {isAuthenticated ? (
+              <>
+                {outboundCount}{' '}
+                <span className="text-sm font-normal text-zinc-400">/ {inboundCount}</span>
+              </>
+            ) : (
+              <span className="text-zinc-300">—</span>
+            )}
           </div>
-          <div className="mt-1 text-xs text-zinc-400">发送 / 接收</div>
+          <div className="mt-1 text-xs text-zinc-400">
+            {isAuthenticated ? '发送 / 接收' : '登录后查看'}
+          </div>
         </Link>
 
         <Link to="/messenger" className="yd-card-interactive p-5 block">
@@ -45,9 +55,11 @@ export function DashboardPage() {
             <Link2 className="h-3.5 w-3.5 text-zinc-400" />
           </div>
           <div className="mt-2.5 font-mono text-2xl font-semibold tracking-tight text-zinc-800 tabular-nums">
-            {endpointCount}
+            {isAuthenticated ? endpointCount : <span className="text-zinc-300">—</span>}
           </div>
-          <div className="mt-1 text-xs text-zinc-400">已启用</div>
+          <div className="mt-1 text-xs text-zinc-400">
+            {isAuthenticated ? '已启用' : '登录后查看'}
+          </div>
         </Link>
 
         <div className="yd-card p-5">

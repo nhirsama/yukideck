@@ -16,14 +16,58 @@ export class ApiError extends Error {
   }
 }
 
-export async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  if (init?.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
+export function isUnauthenticatedError(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 401;
+}
+
+export interface ApiRequestInit extends RequestInit {
+  /**
+   * Skip triggering the global login modal on HTTP 401 (used only by the /api/v1/auth/me probe).
+   */
+  silentAuth?: boolean;
+  /** Force opening the login modal on HTTP 401 even for GET/HEAD requests while browsing as guest. */
+  promptLogin?: boolean;
+}
+
+export interface ApiAuthBridge {
+  isAuthenticated: () => boolean;
+  onUnauthorized: (ctx: { path: string; method: string; expired: boolean }) => void;
+}
+
+let authBridge: ApiAuthBridge | null = null;
+
+/**
+ * Registers the global auth bridge used by the unified API gateway.
+ * Called by AuthProvider so every core & module API shares one post-flight HTTP 401 pipeline,
+ * while keeping the backend router as the single source of truth for route auth rules.
+ */
+export function configureApiAuthBridge(bridge: ApiAuthBridge | null): void {
+  authBridge = bridge;
+}
+
+function sanitizeLoginNext(next?: string): string {
+  if (!next) return '';
+  const trimmed = next.trim();
+  if (!trimmed.startsWith('/') || trimmed.startsWith('//')) return '';
+  if (trimmed === '/' || trimmed === '/login' || trimmed.startsWith('/login?')) return '';
+  return trimmed;
+}
+
+/**
+ * Canonical single entry point for all YukiDeck backend API calls.
+ */
+export async function request<T>(path: string, init?: ApiRequestInit): Promise<T> {
+  const { silentAuth = false, promptLogin, ...fetchInit } = init ?? {};
+  const method = (fetchInit.method ?? 'GET').toUpperCase();
+  const isInteractive = promptLogin ?? (method !== 'GET' && method !== 'HEAD');
+
+  const headers = new Headers(fetchInit.headers);
+  if (fetchInit.body && !(fetchInit.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
 
   const res = await fetch(apiUrl(path), {
-    ...init,
+    ...fetchInit,
     headers,
     credentials: 'include',
   });
@@ -38,6 +82,14 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // keep default error text
     }
+
+    if (res.status === 401 && !silentAuth && authBridge) {
+      const wasAuthenticated = authBridge.isAuthenticated();
+      if (wasAuthenticated || isInteractive) {
+        authBridge.onUnauthorized({ path, method, expired: wasAuthenticated });
+      }
+    }
+
     throw new ApiError(res.status, code, message);
   }
 
@@ -92,9 +144,13 @@ export type Capability = 'outbound' | 'inbound';
 
 export const coreApi = {
   getMeta: () => request<AppMeta>('/api/v1/meta'),
-  getMe: () => request<{ user: User }>('/api/v1/auth/me'),
-  logout: () => request<{ ok: boolean }>('/api/v1/auth/logout', { method: 'POST' }),
-  loginUrl: () => apiUrl('/api/v1/auth/login'),
+  getMe: () => request<{ user: User }>('/api/v1/auth/me', { silentAuth: true }),
+  logout: () => request<{ ok: boolean }>('/api/v1/auth/logout', { method: 'POST', silentAuth: true }),
+  loginUrl: (next?: string) => {
+    const safeNext = sanitizeLoginNext(next);
+    const qs = safeNext ? `?next=${encodeURIComponent(safeNext)}` : '';
+    return apiUrl(`/api/v1/auth/login${qs}`);
+  },
 
   // Global Scoped API Keys
   getAPIKeySchema: () => request<{ permissions: PermissionSchemaItem[] }>('/api/v1/auth/api-keys/schema'),
