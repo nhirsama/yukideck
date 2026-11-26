@@ -643,6 +643,31 @@ func TestCrossDaySessionSubagentRollupAndTimezone(t *testing.T) {
 	}
 }
 
+func TestHeatmapLogLevel(t *testing.T) {
+	if got := heatmapLevel(0, 100_000, 200_000_000); got != 0 {
+		t.Fatalf("zero tokens should be level 0, got %d", got)
+	}
+	if got := heatmapLevel(5_000_000, 5_000_000, 5_000_000); got != 4 {
+		t.Fatalf("single active day should be level 4, got %d", got)
+	}
+	// With a 200M outlier spike and 500-token minimum, regular 5M and 30M days
+	// should remain clearly shaded (level 3 and level 4) instead of collapsing to level 1.
+	const minPos = 500
+	const maxTok = 200_000_000
+	if got := heatmapLevel(100_000, minPos, maxTok); got != 1 {
+		t.Fatalf("expected 100K -> level 1, got %d", got)
+	}
+	if got := heatmapLevel(1_000_000, minPos, maxTok); got != 2 {
+		t.Fatalf("expected 1M -> level 2, got %d", got)
+	}
+	if got := heatmapLevel(5_000_000, minPos, maxTok); got != 3 {
+		t.Fatalf("expected 5M -> level 3, got %d", got)
+	}
+	if got := heatmapLevel(30_000_000, minPos, maxTok); got != 4 {
+		t.Fatalf("expected 30M -> level 4, got %d", got)
+	}
+}
+
 func TestSessionsPaginationAndFilters(t *testing.T) {
 	store := newMemStore()
 	svc := NewService(store)

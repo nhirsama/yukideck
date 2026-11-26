@@ -3,7 +3,16 @@ import { Link } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { BarChart3, ChevronLeft, ChevronRight, Cpu, Layers, Loader2, Settings, Terminal, X } from 'lucide-react';
 import { aiUsageApi, type BreakdownItem, type HeatmapDay } from './api';
-import { detectBrowserTimezone, formatDateTime, formatPercent, formatTokens, formatUSD, localDateISO } from './format';
+import {
+  buildAxisScale,
+  detectBrowserTimezone,
+  formatDateTime,
+  formatPercent,
+  formatTokens,
+  formatUSD,
+  localDateISO,
+  type ChartScaleMode,
+} from './format';
 
 const SERIES_COLORS = [
   '#38bdf8',
@@ -39,6 +48,7 @@ export default function AIUsagePage() {
   const [granularity, setGranularity] = useState<'hour' | 'day' | 'week' | 'month'>('day');
   const [groupBy, setGroupBy] = useState<'agent' | 'model' | 'device' | 'project' | 'total'>('agent');
   const [metric, setMetric] = useState<'tokens' | 'cost'>('tokens');
+  const [scaleMode, setScaleMode] = useState<ChartScaleMode>('log');
   const [breakdownTab, setBreakdownTab] = useState<'agent' | 'model' | 'device' | 'project'>('model');
 
   const [page, setPage] = useState(1);
@@ -65,6 +75,12 @@ export default function AIUsagePage() {
     [startDate, endDate, tz, agent, model, deviceId, project],
   );
 
+  const [recent24hEndHourMs] = useState(() => {
+    const d = new Date();
+    d.setMinutes(0, 0, 0);
+    return d.getTime() + 3_600_000;
+  });
+
   const heatmapParams = useMemo(
     () => ({
       start: localDateISO(-364),
@@ -76,6 +92,21 @@ export default function AIUsagePage() {
       project: project || undefined,
     }),
     [tz, agent, model, deviceId, project],
+  );
+
+  const recent24hParams = useMemo(
+    () => ({
+      start: new Date(recent24hEndHourMs - 24 * 3_600_000).toISOString(),
+      end: new Date(recent24hEndHourMs).toISOString(),
+      tz,
+      granularity: 'hour' as const,
+      group_by: 'total' as const,
+      agent: agent || undefined,
+      model: model || undefined,
+      device_id: deviceId || undefined,
+      project: project || undefined,
+    }),
+    [recent24hEndHourMs, tz, agent, model, deviceId, project],
   );
 
   const { data: summary, isLoading: loadingSummary } = useQuery({
@@ -91,6 +122,11 @@ export default function AIUsagePage() {
   const { data: heatmap } = useQuery({
     queryKey: ['ai-usage', 'heatmap', heatmapParams],
     queryFn: () => aiUsageApi.heatmap(heatmapParams),
+  });
+
+  const { data: recent24h } = useQuery({
+    queryKey: ['ai-usage', 'recent-24h', recent24hParams],
+    queryFn: () => aiUsageApi.trends(recent24hParams),
   });
 
   const {
@@ -157,25 +193,66 @@ export default function AIUsagePage() {
     return weeks;
   }, [heatmap]);
 
+  const heatmapMonthLabels = useMemo(() => {
+    const labels = new Map<number, string>();
+    const firstDayCols: { wi: number; month: number }[] = [];
+    heatmapGrid.forEach((week, wi) => {
+      const first = week.find((cell) => cell.date.endsWith('-01'));
+      if (first) {
+        firstDayCols.push({ wi, month: Number(first.date.slice(5, 7)) });
+      }
+    });
+    if (heatmapGrid.length > 0 && (firstDayCols.length === 0 || firstDayCols[0].wi >= 3)) {
+      const m0 = Number(heatmapGrid[0][0].date.slice(5, 7));
+      labels.set(0, `${m0}月`);
+    }
+    for (const item of firstDayCols) {
+      labels.set(item.wi, `${item.month}月`);
+    }
+    return labels;
+  }, [heatmapGrid]);
+
   const trendPoints = trends?.points ?? [];
   const trendLabelStep = Math.max(1, Math.ceil(trendPoints.length / 10));
 
-  const trendMax = useMemo(() => {
-    let max = 0;
-    for (const pt of trendPoints) {
-      const val = metric === 'cost' ? pt.cost_usd : pt.total_tokens;
-      if (val > max) max = val;
-    }
-    return max;
-  }, [trendPoints, metric]);
+  const trendScale = useMemo(() => {
+    const vals = trendPoints.map((pt) => (metric === 'cost' ? pt.cost_usd : pt.total_tokens));
+    return buildAxisScale(vals, metric, scaleMode, { maxTicks: 6, minVisiblePct: 2 });
+  }, [trendPoints, metric, scaleMode]);
 
-  const hourMax = useMemo(() => {
-    let max = 0;
-    for (const h of summary?.by_hour_of_day ?? []) {
-      if (h.total_tokens > max) max = h.total_tokens;
+  const hourItems = useMemo(() => {
+    const byBucket = new Map<string, { total_tokens: number; cost_usd: number; request_count: number }>();
+    for (const pt of recent24h?.points ?? []) {
+      byBucket.set(pt.bucket, {
+        total_tokens: pt.total_tokens,
+        cost_usd: pt.cost_usd,
+        request_count: pt.request_count,
+      });
     }
-    return max;
-  }, [summary]);
+    const startMs = recent24hEndHourMs - 24 * 3_600_000;
+    return Array.from({ length: 24 }, (_, idx) => {
+      const d = new Date(startMs + idx * 3_600_000);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const hh = String(d.getHours()).padStart(2, '0');
+      const bucket = `${y}-${m}-${day} ${hh}:00`;
+      const hit = byBucket.get(bucket);
+      return {
+        bucket,
+        shortLabel: `${m}-${day} ${hh}:00`,
+        hour: d.getHours(),
+        total_tokens: hit?.total_tokens ?? 0,
+        cost_usd: hit?.cost_usd ?? 0,
+        request_count: hit?.request_count ?? 0,
+      };
+    });
+  }, [recent24h, recent24hEndHourMs]);
+
+  const hourScale = useMemo(() => {
+    const vals = hourItems.map((h) => h.total_tokens);
+    return buildAxisScale(vals, 'tokens', 'linear', { maxTicks: 4, minVisiblePct: 3 });
+  }, [hourItems]);
 
   const totalPages = Math.max(1, Math.ceil((sessionsRes?.total ?? 0) / (sessionsRes?.page_size ?? 15)));
 
@@ -421,6 +498,26 @@ export default function AIUsagePage() {
                 费用
               </button>
             </div>
+            <div className="yd-segment">
+              <button
+                type="button"
+                onClick={() => setScaleMode('log')}
+                className={`yd-segment-btn py-0.5 ${
+                  scaleMode === 'log' ? 'yd-segment-active' : 'yd-segment-idle'
+                }`}
+              >
+                对数
+              </button>
+              <button
+                type="button"
+                onClick={() => setScaleMode('linear')}
+                className={`yd-segment-btn py-0.5 ${
+                  scaleMode === 'linear' ? 'yd-segment-active' : 'yd-segment-idle'
+                }`}
+              >
+                线性
+              </button>
+            </div>
           </div>
         </div>
 
@@ -441,57 +538,97 @@ export default function AIUsagePage() {
                 </span>
               ))}
             </div>
-            <div className="overflow-x-auto">
-              <div className="min-w-[480px] pt-3">
-                <div className="flex items-end gap-1.5 h-44 border-b border-zinc-100 pb-0.5">
-                  {trendPoints.map((pt) => {
-                    const totalVal = metric === 'cost' ? pt.cost_usd : pt.total_tokens;
-                    const pct = trendMax > 0 ? Math.max(totalVal > 0 ? 2 : 0, (totalVal / trendMax) * 100) : 0;
-                    return (
-                      <div
-                        key={pt.bucket}
-                        className="flex-1 min-w-[10px] flex flex-col items-center h-full justify-end group"
-                        title={`${pt.bucket}\nTokens: ${formatTokens(pt.total_tokens)}\n费用: ${formatUSD(pt.cost_usd)}\n请求: ${pt.request_count}`}
+            <div className="flex gap-2">
+              {trendScale.ticks.length > 0 && (
+                <div className="w-11 shrink-0 pt-3 pb-[22px]">
+                  <div className="relative h-44">
+                    {trendScale.ticks.map((t) => (
+                      <span
+                        key={t.value}
+                        style={{ bottom: `${t.pct}%` }}
+                        className="absolute right-0 translate-y-1/2 text-[10px] leading-none text-zinc-400 tabular-nums whitespace-nowrap select-none"
                       >
-                        <div
-                          className="w-full max-w-[26px] rounded-t-[4px] overflow-hidden flex flex-col-reverse transition-opacity group-hover:opacity-80"
-                          style={{ height: `${pct}%` }}
-                        >
-                          {(trends?.series_keys ?? []).map((sKey, idx) => {
-                            const sv = pt.series[sKey];
-                            if (!sv) return null;
-                            const v = metric === 'cost' ? sv.cost_usd : sv.total_tokens;
-                            if (v <= 0 || totalVal <= 0) return null;
-                            return (
-                              <div
-                                key={sKey}
-                                style={{
-                                  height: `${(v / totalVal) * 100}%`,
-                                  backgroundColor: SERIES_COLORS[idx % SERIES_COLORS.length],
-                                }}
-                              />
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })}
+                        {t.label}
+                      </span>
+                    ))}
+                  </div>
                 </div>
-                <div className="flex items-center gap-1.5 pt-1.5">
-                  {trendPoints.map((pt, i) => {
-                    const showLabel =
-                      i % trendLabelStep === 0 ||
-                      (i === trendPoints.length - 1 && trendPoints.length - 1 - Math.floor((trendPoints.length - 1) / trendLabelStep) * trendLabelStep >= Math.ceil(trendLabelStep / 2));
-                    return (
-                      <div key={pt.bucket} className="flex-1 min-w-[10px] text-center">
-                        {showLabel ? (
-                          <span className="text-[10px] text-zinc-400 whitespace-nowrap tabular-nums">
-                            {pt.bucket.slice(5)}
-                          </span>
-                        ) : null}
-                      </div>
-                    );
-                  })}
+              )}
+              <div className="flex-1 min-w-0 overflow-x-auto">
+                <div className="min-w-[480px] pt-3">
+                  <div className="relative h-44 border-b border-zinc-200/80">
+                    {trendScale.ticks.map((t) =>
+                      t.pct > 0 ? (
+                        <div
+                          key={t.value}
+                          style={{ bottom: `${t.pct}%` }}
+                          className="pointer-events-none absolute inset-x-0 border-t border-dashed border-zinc-100"
+                        />
+                      ) : null,
+                    )}
+                    <div className="relative z-10 flex items-end gap-1.5 h-full">
+                      {trendPoints.map((pt) => {
+                        const totalVal = metric === 'cost' ? pt.cost_usd : pt.total_tokens;
+                        const pct = trendScale.toPct(totalVal);
+                        return (
+                          <div
+                            key={pt.bucket}
+                            className="flex-1 min-w-[10px] flex flex-col items-center h-full justify-end group"
+                            title={`${pt.bucket}\nTokens: ${formatTokens(pt.total_tokens)}\n费用: ${formatUSD(pt.cost_usd)}\n请求: ${pt.request_count}`}
+                          >
+                            <div
+                              className="w-full max-w-[26px] rounded-t-[4px] overflow-hidden flex flex-col-reverse transition-opacity group-hover:opacity-80"
+                              style={{ height: `${pct}%` }}
+                            >
+                              {(trends?.series_keys ?? []).map((sKey, idx) => {
+                                const sv = pt.series[sKey];
+                                if (!sv) return null;
+                                const v = metric === 'cost' ? sv.cost_usd : sv.total_tokens;
+                                if (v <= 0 || totalVal <= 0) return null;
+                                return (
+                                  <div
+                                    key={sKey}
+                                    style={{
+                                      height: `${(v / totalVal) * 100}%`,
+                                      backgroundColor: SERIES_COLORS[idx % SERIES_COLORS.length],
+                                    }}
+                                  />
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 h-[22px] pt-1.5">
+                    {trendPoints.map((pt, i) => {
+                      const showLabel =
+                        i % trendLabelStep === 0 ||
+                        (i === trendPoints.length - 1 &&
+                          trendPoints.length -
+                            1 -
+                            Math.floor((trendPoints.length - 1) / trendLabelStep) * trendLabelStep >=
+                            Math.ceil(trendLabelStep / 2));
+                      return (
+                        <div key={pt.bucket} className="relative flex-1 min-w-[10px] h-full">
+                          {showLabel ? (
+                            <span
+                              className={`absolute top-0 text-[10px] leading-none text-zinc-400 whitespace-nowrap tabular-nums select-none ${
+                                i === 0
+                                  ? 'left-0'
+                                  : i === trendPoints.length - 1
+                                    ? 'right-0'
+                                    : 'left-1/2 -translate-x-1/2'
+                              }`}
+                            >
+                              {pt.bucket.slice(5)}
+                            </span>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             </div>
@@ -512,55 +649,124 @@ export default function AIUsagePage() {
               <span>多</span>
             </div>
           </div>
-          <div
-            className="grid w-full gap-[2px] sm:gap-[3px]"
-            style={{ gridTemplateColumns: `repeat(${Math.max(heatmapGrid.length, 1)}, minmax(0, 1fr))` }}
-          >
-            {heatmapGrid.map((week, wi) => (
-              <div key={wi} className="grid grid-rows-7 gap-[2px] sm:gap-[3px]">
-                {week.map((cell) => {
-                  const lvl = cell.day?.level ?? 0;
-                  return (
-                    <div
-                      key={cell.date}
-                      className={`w-full aspect-square rounded-[2px] ring-1 ring-inset ring-black/[0.04] transition-opacity hover:opacity-75 ${HEATMAP_CLASSES[lvl] ?? HEATMAP_CLASSES[0]}`}
-                      title={
-                        cell.day
-                          ? `${cell.date}: ${formatTokens(cell.day.total_tokens)} · ${formatUSD(cell.day.cost_usd)} · ${cell.day.session_count} 会话`
-                          : `${cell.date}: 无记录`
-                      }
-                    />
-                  );
-                })}
-              </div>
-            ))}
+          <div className="space-y-1.5">
+            <div
+              className="grid w-full gap-[2px] sm:gap-[3px] h-3.5"
+              style={{ gridTemplateColumns: `repeat(${Math.max(heatmapGrid.length, 1)}, minmax(0, 1fr))` }}
+            >
+              {heatmapGrid.map((_, wi) => {
+                const label = heatmapMonthLabels.get(wi);
+                return (
+                  <div key={wi} className="relative min-w-0">
+                    {label ? (
+                      <span
+                        className={`absolute top-0 text-[10px] leading-none text-zinc-400 whitespace-nowrap select-none tabular-nums ${
+                          wi >= heatmapGrid.length - 2 ? 'right-0' : 'left-0'
+                        }`}
+                      >
+                        {label}
+                      </span>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+            <div
+              className="grid w-full gap-[2px] sm:gap-[3px]"
+              style={{ gridTemplateColumns: `repeat(${Math.max(heatmapGrid.length, 1)}, minmax(0, 1fr))` }}
+            >
+              {heatmapGrid.map((week, wi) => (
+                <div key={wi} className="grid grid-rows-7 gap-[2px] sm:gap-[3px]">
+                  {week.map((cell) => {
+                    const lvl = cell.day?.level ?? 0;
+                    return (
+                      <div
+                        key={cell.date}
+                        className={`w-full aspect-square rounded-[2px] ring-1 ring-inset ring-black/[0.04] transition-opacity hover:opacity-75 ${HEATMAP_CLASSES[lvl] ?? HEATMAP_CLASSES[0]}`}
+                        title={
+                          cell.day
+                            ? `${cell.date}: ${formatTokens(cell.day.total_tokens)} · ${formatUSD(cell.day.cost_usd)} · ${cell.day.session_count} 会话`
+                            : `${cell.date}: 无记录`
+                        }
+                      />
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
           </div>
         </section>
 
         <section className="yd-card p-5 flex flex-col justify-between gap-3">
-          <h2 className="text-sm font-medium text-zinc-800">时段分布</h2>
-          <div className="flex items-end gap-1 h-24">
-            {(summary?.by_hour_of_day ?? []).map((h) => {
-              const pct =
-                hourMax > 0 ? Math.max(h.total_tokens > 0 ? 5 : 0, (h.total_tokens / hourMax) * 100) : 0;
-              return (
-                <div
-                  key={h.hour}
-                  className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end group"
-                  title={`${String(h.hour).padStart(2, '0')}:00 — ${formatTokens(h.total_tokens)} · ${formatUSD(h.cost_usd)}`}
-                >
-                  <div className="w-full flex-1 flex items-end rounded-t bg-[#f1f5f9] overflow-hidden">
-                    <div
-                      className="w-full rounded-t bg-sky-400 group-hover:bg-sky-500 transition-colors"
-                      style={{ height: `${pct}%` }}
-                    />
-                  </div>
-                  <span className="h-3.5 text-[10px] leading-none text-zinc-400 tabular-nums">
-                    {h.hour % 4 === 0 ? h.hour : ''}
-                  </span>
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-sm font-medium text-zinc-800">时段分布</h2>
+            <span className="text-[10px] text-zinc-400">近 24 小时</span>
+          </div>
+          <div className="flex gap-2 items-stretch">
+            {hourScale.ticks.length > 0 && (
+              <div className="w-9 shrink-0 pt-2 pb-[18px]">
+                <div className="relative h-28">
+                  {hourScale.ticks.map((t) => (
+                    <span
+                      key={t.value}
+                      style={{ bottom: `${t.pct}%` }}
+                      className="absolute right-0 translate-y-1/2 text-[10px] leading-none text-zinc-400 tabular-nums whitespace-nowrap select-none"
+                    >
+                      {t.label}
+                    </span>
+                  ))}
                 </div>
-              );
-            })}
+              </div>
+            )}
+            <div className="flex-1 min-w-0 pt-2">
+              <div className="relative h-28 border-b border-zinc-200/80">
+                {hourScale.ticks.map((t) =>
+                  t.pct > 0 ? (
+                    <div
+                      key={t.value}
+                      style={{ bottom: `${t.pct}%` }}
+                      className="pointer-events-none absolute inset-x-0 border-t border-dashed border-zinc-100"
+                    />
+                  ) : null,
+                )}
+                <div className="relative z-10 grid grid-cols-[repeat(24,minmax(0,1fr))] gap-[3px] h-full items-end">
+                  {hourItems.map((h) => {
+                    const pct = hourScale.toPct(h.total_tokens);
+                    return (
+                      <div
+                        key={h.bucket}
+                        className="min-w-0 h-full flex items-end rounded-t hover:bg-zinc-100/70 transition-colors group"
+                        title={`${h.shortLabel} — ${formatTokens(h.total_tokens)} · ${formatUSD(h.cost_usd)}`}
+                      >
+                        <div
+                          className="w-full rounded-t-[2px] bg-sky-400 group-hover:bg-sky-500 transition-colors"
+                          style={{ height: `${pct}%` }}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="grid grid-cols-[repeat(24,minmax(0,1fr))] gap-[3px] h-[18px] pt-1.5">
+                {hourItems.map((h, idx) => (
+                  <div key={h.bucket} className="relative min-w-0 h-full">
+                    {h.hour % 4 === 0 ? (
+                      <span
+                        className={`absolute top-0 text-[10px] leading-none text-zinc-400 tabular-nums whitespace-nowrap select-none ${
+                          idx === 0
+                            ? 'left-0'
+                            : idx === hourItems.length - 1
+                              ? 'right-0'
+                              : 'left-1/2 -translate-x-1/2'
+                        }`}
+                      >
+                        {h.hour}
+                      </span>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </section>
       </div>

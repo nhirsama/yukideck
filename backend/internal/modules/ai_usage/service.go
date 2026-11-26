@@ -468,7 +468,7 @@ func (s *Service) Heatmap(ctx context.Context, userID int64, filter QueryFilter)
 		sessions map[string]struct{}
 	}
 	byDay := map[string]*dayAgg{}
-	var maxTokens int64
+	var minPosTokens, maxTokens int64
 
 	for _, item := range slices {
 		r := item.row
@@ -483,14 +483,19 @@ func (s *Service) Heatmap(ctx context.Context, userID int64, filter QueryFilter)
 		d.cost += item.costUSD
 		d.reqs += int64(r.RequestCount)
 		d.sessions[rootSessionKey(r)] = struct{}{}
-		if d.tokens > maxTokens {
-			maxTokens = d.tokens
-		}
 	}
 
 	keys := make([]string, 0, len(byDay))
-	for k := range byDay {
+	for k, d := range byDay {
 		keys = append(keys, k)
+		if d.tokens > 0 {
+			if minPosTokens == 0 || d.tokens < minPosTokens {
+				minPosTokens = d.tokens
+			}
+			if d.tokens > maxTokens {
+				maxTokens = d.tokens
+			}
+		}
 	}
 	sort.Strings(keys)
 
@@ -503,7 +508,7 @@ func (s *Service) Heatmap(ctx context.Context, userID int64, filter QueryFilter)
 			CostUSD:      d.cost,
 			RequestCount: d.reqs,
 			SessionCount: len(d.sessions),
-			Level:        heatmapLevel(d.tokens, maxTokens),
+			Level:        heatmapLevel(d.tokens, minPosTokens, maxTokens),
 		})
 	}
 	return &HeatmapResponse{Timezone: tzName, Days: days}, nil
@@ -1076,17 +1081,28 @@ func formatBucket(t time.Time, granularity string) string {
 	}
 }
 
-func heatmapLevel(tokens, maxTokens int64) int {
+func heatmapLevel(tokens, minPosTokens, maxTokens int64) int {
 	if tokens <= 0 || maxTokens <= 0 {
 		return 0
 	}
-	ratio := float64(tokens) / float64(maxTokens)
+	logMax := math.Log10(float64(maxTokens))
+	if minPosTokens <= 0 || minPosTokens >= maxTokens {
+		return 4
+	}
+	// Cap dynamic range to 4 orders of magnitude so a tiny test ping does not flatten normal days,
+	// while a single huge spike day does not wash out the rest of the year.
+	logMin := math.Max(math.Log10(float64(minPosTokens)), logMax-4.0)
+	span := logMax - logMin
+	if span < 1e-9 {
+		return 4
+	}
+	ratio := (math.Log10(float64(tokens)) - logMin) / span
 	switch {
 	case ratio >= 0.75:
 		return 4
-	case ratio >= 0.45:
+	case ratio >= 0.50:
 		return 3
-	case ratio >= 0.20:
+	case ratio >= 0.25:
 		return 2
 	default:
 		return 1
