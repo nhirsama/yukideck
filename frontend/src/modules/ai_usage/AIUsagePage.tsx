@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { BarChart3, ChevronLeft, ChevronRight, Cpu, Layers, Loader2, Settings, Terminal, X } from 'lucide-react';
+import { BarChart3, ChevronLeft, ChevronRight, Cpu, Layers, Settings, Terminal, X } from 'lucide-react';
 import { InfoTooltip } from '@/components/InfoTooltip';
 import { LoadingState } from '@/components/LoadingState';
 import { Select } from '@/components/Select';
@@ -908,16 +908,10 @@ export default function AIUsagePage() {
           <div className="flex items-center gap-2">
             <h2 className="text-[15px] font-medium text-zinc-800">会话记录</h2>
             <span className="text-[13px] text-zinc-400 tabular-nums">
-              {loadingSessions ? '加载中...' : `共 ${sessionsRes?.total ?? 0} 条`}
+              {loadingSessions ? '—' : `共 ${sessionsRes?.total ?? 0} 条`}
             </span>
           </div>
           <div className="flex items-center gap-2 text-[13px]">
-            {fetchingSessions && !loadingSessions && (
-              <span className="inline-flex items-center gap-1 text-xs text-sky-600">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                加载中
-              </span>
-            )}
             <div className="flex items-center gap-1">
               <button
                 type="button"
@@ -942,68 +936,32 @@ export default function AIUsagePage() {
           </div>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="yd-table">
-            <thead className="yd-thead">
-              <tr>
-                <th className="py-2.5 pr-4 font-medium whitespace-nowrap">项目 / 会话</th>
-                <th className="py-2.5 pr-4 font-medium whitespace-nowrap">Agent / 设备</th>
-                <th className="py-2.5 pr-4 font-medium">模型</th>
-                <th className="py-2.5 pr-4 font-medium text-right whitespace-nowrap">总 Token</th>
-                <th className="py-2.5 pr-4 font-medium text-right whitespace-nowrap">费用</th>
-                <th className="py-2.5 pr-4 font-medium text-right whitespace-nowrap">峰值上下文</th>
-                <th className="py-2.5 pr-4 font-medium text-right whitespace-nowrap">工具</th>
-                <th className="py-2.5 font-medium text-right whitespace-nowrap">最近活跃</th>
-              </tr>
-            </thead>
-            <tbody
-              className={`yd-tbody tabular-nums transition-opacity duration-150 ${
-                fetchingSessions && !loadingSessions ? 'opacity-50 pointer-events-none' : ''
-              }`}
-            >
-              {loadingSessions ? (
-                Array.from({ length: 5 }).map((_, idx) => (
-                  <tr key={`skeleton-${idx}`} className="animate-pulse">
-                    <td className="py-3 pr-4">
-                      <div className="h-4 w-28 rounded bg-zinc-100" />
-                      <div className="mt-1.5 h-3 w-20 rounded bg-zinc-100/80" />
-                    </td>
-                    <td className="py-3 pr-4">
-                      <div className="h-4 w-16 rounded bg-zinc-100" />
-                      <div className="mt-1.5 h-3 w-20 rounded bg-zinc-100/80" />
-                    </td>
-                    <td className="py-3 pr-4">
-                      <div className="h-4 w-36 rounded bg-zinc-100" />
-                    </td>
-                    <td className="py-3 pr-4">
-                      <div className="ml-auto h-4 w-14 rounded bg-zinc-100" />
-                    </td>
-                    <td className="py-3 pr-4">
-                      <div className="ml-auto h-4 w-12 rounded bg-zinc-100" />
-                    </td>
-                    <td className="py-3 pr-4">
-                      <div className="ml-auto h-4 w-12 rounded bg-zinc-100" />
-                    </td>
-                    <td className="py-3 pr-4">
-                      <div className="ml-auto h-4 w-8 rounded bg-zinc-100" />
-                    </td>
-                    <td className="py-3">
-                      <div className="ml-auto h-4 w-28 rounded bg-zinc-100" />
+        {loadingSessions || fetchingSessions ? (
+          <LoadingState label="正在加载会话记录..." variant="section" />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="yd-table">
+              <thead className="yd-thead">
+                <tr>
+                  <th className="py-2.5 pr-4 font-medium whitespace-nowrap">项目 / 会话</th>
+                  <th className="py-2.5 pr-4 font-medium whitespace-nowrap">Agent / 设备</th>
+                  <th className="py-2.5 pr-4 font-medium">模型</th>
+                  <th className="py-2.5 pr-4 font-medium text-right whitespace-nowrap">总 Token</th>
+                  <th className="py-2.5 pr-4 font-medium text-right whitespace-nowrap">费用</th>
+                  <th className="py-2.5 pr-4 font-medium text-right whitespace-nowrap">峰值上下文</th>
+                  <th className="py-2.5 pr-4 font-medium text-right whitespace-nowrap">工具</th>
+                  <th className="py-2.5 font-medium text-right whitespace-nowrap">最近活跃</th>
+                </tr>
+              </thead>
+              <tbody className="yd-tbody tabular-nums">
+                {(sessionsRes?.sessions?.length ?? 0) === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="py-8 text-center text-zinc-400">
+                      暂无会话记录
                     </td>
                   </tr>
-                ))
-              ) : (sessionsRes?.sessions?.length ?? 0) === 0 ? (
-                <tr>
-                  <td colSpan={8} className="py-4 text-center text-zinc-400">
-                    {fetchingSessions ? (
-                      <LoadingState label="正在加载模块..." variant="compact" />
-                    ) : (
-                      <div className="py-4">暂无会话记录</div>
-                    )}
-                  </td>
-                </tr>
-              ) : (
-                (sessionsRes?.sessions ?? []).map((s) => (
+                ) : (
+                  (sessionsRes?.sessions ?? []).map((s) => (
                   <tr
                     key={`${s.device_id}-${s.agent}-${s.session_id}`}
                     onClick={() => setSelectedSession({ sessionId: s.session_id, deviceId: s.device_id })}
@@ -1081,11 +1039,12 @@ export default function AIUsagePage() {
                       {formatDateTime(s.last_event_at, tz)}
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
 
       {/* Session Detail Drawer */}
