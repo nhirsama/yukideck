@@ -294,7 +294,7 @@ pub fn aggregate_messages_with_stats(
         if attached_tools.contains(&tk) {
             continue;
         }
-        if let Some(tools) = sidecar.tool_calls.get(&tk) {
+        if let Some(tools) = sidecar.lookup_tool_calls(&sl.agent, &sl.session_id, sl.hour_bucket) {
             let sum: i32 = tools.values().copied().sum();
             sl.tool_calls = tools.clone();
             sl.tool_call_count = sum;

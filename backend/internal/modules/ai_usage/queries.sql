@@ -83,6 +83,88 @@ WHERE user_id = $1
   AND ($3::text = '' OR device_id = $3)
 ORDER BY hour_bucket ASC, id ASC;
 
+-- name: ListDistinctModelsInRange :many
+SELECT DISTINCT model
+FROM ai_usage_hourly_sessions
+WHERE user_id = $1
+  AND hour_bucket >= $2
+  AND hour_bucket < $3;
+
+-- name: ListPagedSessionSlices :many
+WITH filtered AS (
+    SELECT
+        s.id, s.user_id, s.device_id, s.agent, s.session_id, s.hour_bucket, s.model, s.is_subagent,
+        s.parent_session_id, s.provider, s.project,
+        s.input_tokens, s.output_tokens, s.cache_read_tokens, s.cache_write_tokens, s.cache_write_1h_tokens,
+        s.reasoning_tokens, s.max_context_tokens, s.reported_cost_usd,
+        s.request_count, s.tool_call_count, s.tool_calls,
+        s.first_event_at, s.last_event_at, s.updated_at,
+        CASE WHEN s.is_subagent AND s.parent_session_id <> '' THEN s.parent_session_id ELSE s.session_id END AS root_session_id
+    FROM ai_usage_hourly_sessions s
+    LEFT JOIN ai_usage_devices d
+           ON d.user_id = s.user_id AND d.device_id = s.device_id
+    WHERE s.user_id = sqlc.arg(user_id)
+      AND s.hour_bucket >= sqlc.arg(start_time)
+      AND s.hour_bucket < sqlc.arg(end_time)
+      AND (sqlc.arg(agent)::text = '' OR s.agent = sqlc.arg(agent))
+      AND (sqlc.arg(device_id)::text = '' OR s.device_id = sqlc.arg(device_id))
+      AND (sqlc.arg(project)::text = '' OR s.project = sqlc.arg(project))
+      AND (sqlc.arg(include_hidden)::boolean OR sqlc.arg(device_id)::text <> '' OR NOT COALESCE(d.hidden, FALSE))
+      AND (cardinality(sqlc.arg(models)::text[]) = 0 OR s.model = ANY(sqlc.arg(models)::text[]))
+),
+grouped AS (
+    SELECT
+        device_id,
+        agent,
+        root_session_id,
+        MAX(last_event_at) AS max_last_event_at,
+        SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens + cache_write_1h_tokens + reasoning_tokens)::bigint AS sum_tokens,
+        COUNT(*) OVER ()::bigint AS total_sessions
+    FROM filtered
+    GROUP BY device_id, agent, root_session_id
+),
+paged AS (
+    SELECT device_id, agent, root_session_id, max_last_event_at, sum_tokens, total_sessions
+    FROM grouped
+    ORDER BY max_last_event_at DESC, sum_tokens DESC, root_session_id ASC
+    LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset)
+)
+SELECT
+    f.id, f.user_id, f.device_id, f.agent, f.session_id, f.hour_bucket, f.model, f.is_subagent,
+    f.parent_session_id, f.provider, f.project,
+    f.input_tokens, f.output_tokens, f.cache_read_tokens, f.cache_write_tokens, f.cache_write_1h_tokens,
+    f.reasoning_tokens, f.max_context_tokens, f.reported_cost_usd,
+    f.request_count, f.tool_call_count, f.tool_calls,
+    f.first_event_at, f.last_event_at, f.updated_at,
+    p.total_sessions
+FROM paged p
+JOIN filtered f
+  ON f.device_id = p.device_id
+ AND f.agent = p.agent
+ AND f.root_session_id = p.root_session_id
+ORDER BY p.max_last_event_at DESC, p.sum_tokens DESC, p.root_session_id ASC, f.hour_bucket ASC, f.id ASC;
+
+-- name: CountFilteredSessions :one
+SELECT COUNT(*)::bigint
+FROM (
+    SELECT 1
+    FROM ai_usage_hourly_sessions s
+    LEFT JOIN ai_usage_devices d
+           ON d.user_id = s.user_id AND d.device_id = s.device_id
+    WHERE s.user_id = sqlc.arg(user_id)
+      AND s.hour_bucket >= sqlc.arg(start_time)
+      AND s.hour_bucket < sqlc.arg(end_time)
+      AND (sqlc.arg(agent)::text = '' OR s.agent = sqlc.arg(agent))
+      AND (sqlc.arg(device_id)::text = '' OR s.device_id = sqlc.arg(device_id))
+      AND (sqlc.arg(project)::text = '' OR s.project = sqlc.arg(project))
+      AND (sqlc.arg(include_hidden)::boolean OR sqlc.arg(device_id)::text <> '' OR NOT COALESCE(d.hidden, FALSE))
+      AND (cardinality(sqlc.arg(models)::text[]) = 0 OR s.model = ANY(sqlc.arg(models)::text[]))
+    GROUP BY
+        s.device_id,
+        s.agent,
+        CASE WHEN s.is_subagent AND s.parent_session_id <> '' THEN s.parent_session_id ELSE s.session_id END
+) t;
+
 -- name: UpsertDeviceFromIngest :one
 INSERT INTO ai_usage_devices (
     user_id, device_id, name, os, arch, hostname, collector_version, last_synced_at, updated_at

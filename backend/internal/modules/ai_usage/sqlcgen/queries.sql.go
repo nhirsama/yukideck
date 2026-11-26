@@ -10,6 +10,55 @@ import (
 	"time"
 )
 
+const countFilteredSessions = `-- name: CountFilteredSessions :one
+SELECT COUNT(*)::bigint
+FROM (
+    SELECT 1
+    FROM ai_usage_hourly_sessions s
+    LEFT JOIN ai_usage_devices d
+           ON d.user_id = s.user_id AND d.device_id = s.device_id
+    WHERE s.user_id = $1
+      AND s.hour_bucket >= $2
+      AND s.hour_bucket < $3
+      AND ($4::text = '' OR s.agent = $4)
+      AND ($5::text = '' OR s.device_id = $5)
+      AND ($6::text = '' OR s.project = $6)
+      AND ($7::boolean OR $5::text <> '' OR NOT COALESCE(d.hidden, FALSE))
+      AND (cardinality($8::text[]) = 0 OR s.model = ANY($8::text[]))
+    GROUP BY
+        s.device_id,
+        s.agent,
+        CASE WHEN s.is_subagent AND s.parent_session_id <> '' THEN s.parent_session_id ELSE s.session_id END
+) t
+`
+
+type CountFilteredSessionsParams struct {
+	UserID        int64
+	StartTime     time.Time
+	EndTime       time.Time
+	Agent         string
+	DeviceID      string
+	Project       string
+	IncludeHidden bool
+	Models        []string
+}
+
+func (q *Queries) CountFilteredSessions(ctx context.Context, arg CountFilteredSessionsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countFilteredSessions,
+		arg.UserID,
+		arg.StartTime,
+		arg.EndTime,
+		arg.Agent,
+		arg.DeviceID,
+		arg.Project,
+		arg.IncludeHidden,
+		arg.Models,
+	)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const deleteDevice = `-- name: DeleteDevice :execrows
 DELETE FROM ai_usage_devices
 WHERE user_id = $1 AND device_id = $2
@@ -97,6 +146,40 @@ func (q *Queries) ListDevices(ctx context.Context, userID int64) ([]AiUsageDevic
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDistinctModelsInRange = `-- name: ListDistinctModelsInRange :many
+SELECT DISTINCT model
+FROM ai_usage_hourly_sessions
+WHERE user_id = $1
+  AND hour_bucket >= $2
+  AND hour_bucket < $3
+`
+
+type ListDistinctModelsInRangeParams struct {
+	UserID       int64
+	HourBucket   time.Time
+	HourBucket_2 time.Time
+}
+
+func (q *Queries) ListDistinctModelsInRange(ctx context.Context, arg ListDistinctModelsInRangeParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDistinctModelsInRange, arg.UserID, arg.HourBucket, arg.HourBucket_2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var model string
+		if err := rows.Scan(&model); err != nil {
+			return nil, err
+		}
+		items = append(items, model)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -300,6 +383,161 @@ func (q *Queries) ListModelPrices(ctx context.Context, userID int64) ([]AiUsageM
 			&i.CacheWrite1hPerM,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPagedSessionSlices = `-- name: ListPagedSessionSlices :many
+WITH filtered AS (
+    SELECT
+        s.id, s.user_id, s.device_id, s.agent, s.session_id, s.hour_bucket, s.model, s.is_subagent,
+        s.parent_session_id, s.provider, s.project,
+        s.input_tokens, s.output_tokens, s.cache_read_tokens, s.cache_write_tokens, s.cache_write_1h_tokens,
+        s.reasoning_tokens, s.max_context_tokens, s.reported_cost_usd,
+        s.request_count, s.tool_call_count, s.tool_calls,
+        s.first_event_at, s.last_event_at, s.updated_at,
+        CASE WHEN s.is_subagent AND s.parent_session_id <> '' THEN s.parent_session_id ELSE s.session_id END AS root_session_id
+    FROM ai_usage_hourly_sessions s
+    LEFT JOIN ai_usage_devices d
+           ON d.user_id = s.user_id AND d.device_id = s.device_id
+    WHERE s.user_id = $1
+      AND s.hour_bucket >= $2
+      AND s.hour_bucket < $3
+      AND ($4::text = '' OR s.agent = $4)
+      AND ($5::text = '' OR s.device_id = $5)
+      AND ($6::text = '' OR s.project = $6)
+      AND ($7::boolean OR $5::text <> '' OR NOT COALESCE(d.hidden, FALSE))
+      AND (cardinality($8::text[]) = 0 OR s.model = ANY($8::text[]))
+),
+grouped AS (
+    SELECT
+        device_id,
+        agent,
+        root_session_id,
+        MAX(last_event_at) AS max_last_event_at,
+        SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens + cache_write_1h_tokens + reasoning_tokens)::bigint AS sum_tokens,
+        COUNT(*) OVER ()::bigint AS total_sessions
+    FROM filtered
+    GROUP BY device_id, agent, root_session_id
+),
+paged AS (
+    SELECT device_id, agent, root_session_id, max_last_event_at, sum_tokens, total_sessions
+    FROM grouped
+    ORDER BY max_last_event_at DESC, sum_tokens DESC, root_session_id ASC
+    LIMIT $10 OFFSET $9
+)
+SELECT
+    f.id, f.user_id, f.device_id, f.agent, f.session_id, f.hour_bucket, f.model, f.is_subagent,
+    f.parent_session_id, f.provider, f.project,
+    f.input_tokens, f.output_tokens, f.cache_read_tokens, f.cache_write_tokens, f.cache_write_1h_tokens,
+    f.reasoning_tokens, f.max_context_tokens, f.reported_cost_usd,
+    f.request_count, f.tool_call_count, f.tool_calls,
+    f.first_event_at, f.last_event_at, f.updated_at,
+    p.total_sessions
+FROM paged p
+JOIN filtered f
+  ON f.device_id = p.device_id
+ AND f.agent = p.agent
+ AND f.root_session_id = p.root_session_id
+ORDER BY p.max_last_event_at DESC, p.sum_tokens DESC, p.root_session_id ASC, f.hour_bucket ASC, f.id ASC
+`
+
+type ListPagedSessionSlicesParams struct {
+	UserID        int64
+	StartTime     time.Time
+	EndTime       time.Time
+	Agent         string
+	DeviceID      string
+	Project       string
+	IncludeHidden bool
+	Models        []string
+	PageOffset    int32
+	PageLimit     int32
+}
+
+type ListPagedSessionSlicesRow struct {
+	ID                 int64
+	UserID             int64
+	DeviceID           string
+	Agent              string
+	SessionID          string
+	HourBucket         time.Time
+	Model              string
+	IsSubagent         bool
+	ParentSessionID    string
+	Provider           string
+	Project            string
+	InputTokens        int64
+	OutputTokens       int64
+	CacheReadTokens    int64
+	CacheWriteTokens   int64
+	CacheWrite1hTokens int64
+	ReasoningTokens    int64
+	MaxContextTokens   int64
+	ReportedCostUsd    float64
+	RequestCount       int32
+	ToolCallCount      int32
+	ToolCalls          []byte
+	FirstEventAt       time.Time
+	LastEventAt        time.Time
+	UpdatedAt          time.Time
+	TotalSessions      int64
+}
+
+func (q *Queries) ListPagedSessionSlices(ctx context.Context, arg ListPagedSessionSlicesParams) ([]ListPagedSessionSlicesRow, error) {
+	rows, err := q.db.Query(ctx, listPagedSessionSlices,
+		arg.UserID,
+		arg.StartTime,
+		arg.EndTime,
+		arg.Agent,
+		arg.DeviceID,
+		arg.Project,
+		arg.IncludeHidden,
+		arg.Models,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPagedSessionSlicesRow{}
+	for rows.Next() {
+		var i ListPagedSessionSlicesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.DeviceID,
+			&i.Agent,
+			&i.SessionID,
+			&i.HourBucket,
+			&i.Model,
+			&i.IsSubagent,
+			&i.ParentSessionID,
+			&i.Provider,
+			&i.Project,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.CacheReadTokens,
+			&i.CacheWriteTokens,
+			&i.CacheWrite1hTokens,
+			&i.ReasoningTokens,
+			&i.MaxContextTokens,
+			&i.ReportedCostUsd,
+			&i.RequestCount,
+			&i.ToolCallCount,
+			&i.ToolCalls,
+			&i.FirstEventAt,
+			&i.LastEventAt,
+			&i.UpdatedAt,
+			&i.TotalSessions,
 		); err != nil {
 			return nil, err
 		}

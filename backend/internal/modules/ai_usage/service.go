@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"yukideck/internal/core/httpx"
@@ -152,22 +153,67 @@ type enrichedSlice struct {
 	cacheSavingsUSD float64
 }
 
+func (s *Service) loadUserMeta(ctx context.Context, userID int64) ([]Device, []ModelAlias, []ModelPrice, error) {
+	var (
+		devices []Device
+		aliases []ModelAlias
+		prices  []ModelPrice
+		errDev  error
+		errAls  error
+		errPrc  error
+		wg      sync.WaitGroup
+	)
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		devices, errDev = s.store.ListDevices(ctx, userID)
+	}()
+	go func() {
+		defer wg.Done()
+		aliases, errAls = s.store.ListModelAliases(ctx, userID)
+	}()
+	go func() {
+		defer wg.Done()
+		prices, errPrc = s.store.ListModelPrices(ctx, userID)
+	}()
+	wg.Wait()
+	if errDev != nil {
+		return nil, nil, nil, errDev
+	}
+	if errAls != nil {
+		return nil, nil, nil, errAls
+	}
+	if errPrc != nil {
+		return nil, nil, nil, errPrc
+	}
+	return devices, aliases, prices, nil
+}
+
 func (s *Service) loadEnriched(ctx context.Context, userID int64, filter QueryFilter) ([]enrichedSlice, FilterOptions, map[string]Device, error) {
-	rows, err := s.store.ListHourlySessions(ctx, userID, filter.Start, filter.End)
-	if err != nil {
-		return nil, FilterOptions{}, nil, err
+	var (
+		rows    []HourlySessionRecord
+		devices []Device
+		aliases []ModelAlias
+		prices  []ModelPrice
+		errRows error
+		errMeta error
+		wg      sync.WaitGroup
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		rows, errRows = s.store.ListHourlySessions(ctx, userID, filter.Start, filter.End)
+	}()
+	go func() {
+		defer wg.Done()
+		devices, aliases, prices, errMeta = s.loadUserMeta(ctx, userID)
+	}()
+	wg.Wait()
+	if errRows != nil {
+		return nil, FilterOptions{}, nil, errRows
 	}
-	devices, err := s.store.ListDevices(ctx, userID)
-	if err != nil {
-		return nil, FilterOptions{}, nil, err
-	}
-	aliases, err := s.store.ListModelAliases(ctx, userID)
-	if err != nil {
-		return nil, FilterOptions{}, nil, err
-	}
-	prices, err := s.store.ListModelPrices(ctx, userID)
-	if err != nil {
-		return nil, FilterOptions{}, nil, err
+	if errMeta != nil {
+		return nil, FilterOptions{}, nil, errMeta
 	}
 
 	devMap := make(map[string]Device, len(devices))
@@ -470,21 +516,115 @@ func (s *Service) Sessions(ctx context.Context, userID int64, filter QueryFilter
 	if pageSize <= 0 || pageSize > 100 {
 		pageSize = 20
 	}
-	slices, _, _, err := s.loadEnriched(ctx, userID, filter)
-	if err != nil {
-		return nil, err
+
+	pageFilter := SessionPageFilter{
+		Start:         filter.Start,
+		End:           filter.End,
+		Agent:         strings.ToLower(strings.TrimSpace(filter.Agent)),
+		DeviceID:      strings.TrimSpace(filter.DeviceID),
+		Project:       strings.TrimSpace(filter.Project),
+		IncludeHidden: filter.IncludeHidden,
+		Page:          page,
+		PageSize:      pageSize,
+	}
+	filterModel := strings.TrimSpace(filter.Model)
+
+	var (
+		rows    []HourlySessionRecord
+		total   int
+		devices []Device
+		aliases []ModelAlias
+		prices  []ModelPrice
+		err     error
+	)
+
+	if filterModel == "" {
+		var (
+			errRows error
+			errMeta error
+			wg      sync.WaitGroup
+		)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			rows, total, errRows = s.store.ListPagedSessionSlices(ctx, userID, pageFilter)
+		}()
+		go func() {
+			defer wg.Done()
+			devices, aliases, prices, errMeta = s.loadUserMeta(ctx, userID)
+		}()
+		wg.Wait()
+		if errRows != nil {
+			return nil, errRows
+		}
+		if errMeta != nil {
+			return nil, errMeta
+		}
+	} else {
+		var (
+			distinctModels []string
+			errModels      error
+			errMeta        error
+			wg             sync.WaitGroup
+		)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			distinctModels, errModels = s.store.ListDistinctModelsInRange(ctx, userID, filter.Start, filter.End)
+		}()
+		go func() {
+			defer wg.Done()
+			devices, aliases, prices, errMeta = s.loadUserMeta(ctx, userID)
+		}()
+		wg.Wait()
+		if errModels != nil {
+			return nil, errModels
+		}
+		if errMeta != nil {
+			return nil, errMeta
+		}
+		matchedRaw := make([]string, 0, len(distinctModels))
+		for _, raw := range distinctModels {
+			canon := NormalizeModel(raw, aliases)
+			if strings.EqualFold(canon, filterModel) || strings.EqualFold(raw, filterModel) {
+				matchedRaw = append(matchedRaw, raw)
+			}
+		}
+		if len(matchedRaw) == 0 {
+			return &SessionsResponse{Total: 0, Page: page, PageSize: pageSize, Sessions: []SessionSummary{}}, nil
+		}
+		pageFilter.RawModels = matchedRaw
+		rows, total, err = s.store.ListPagedSessionSlices(ctx, userID, pageFilter)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if len(rows) == 0 {
+		return &SessionsResponse{Total: total, Page: page, PageSize: pageSize, Sessions: []SessionSummary{}}, nil
+	}
+
+	devMap := make(map[string]Device, len(devices))
+	for _, d := range devices {
+		devMap[d.DeviceID] = d
 	}
 
 	type sessAgg struct {
-		summary   SessionSummary
-		modelSet  map[string]struct{}
-		hourSet   map[time.Time]struct{}
-		subSet    map[string]struct{}
+		summary  SessionSummary
+		modelSet map[string]struct{}
+		hourSet  map[time.Time]struct{}
+		subSet   map[string]struct{}
 	}
 	bySess := map[string]*sessAgg{}
 
-	for _, item := range slices {
-		r := item.row
+	for _, r := range rows {
+		canon := NormalizeModel(r.Model, aliases)
+		costUSD, _ := ComputeCost(r, canon, prices)
+		devName := r.DeviceID
+		if dev, ok := devMap[r.DeviceID]; ok && dev.Name != "" {
+			devName = dev.Name
+		}
+
 		tot := r.TotalTokens()
 		rootID := r.SessionID
 		if r.IsSubagent && r.ParentSessionID != "" {
@@ -497,7 +637,7 @@ func (s *Service) Sessions(ctx context.Context, userID int64, filter QueryFilter
 				summary: SessionSummary{
 					SessionID:    rootID,
 					DeviceID:     r.DeviceID,
-					DeviceName:   item.deviceName,
+					DeviceName:   devName,
 					Agent:        r.Agent,
 					Project:      r.Project,
 					ToolCalls:    map[string]int32{},
@@ -521,7 +661,7 @@ func (s *Service) Sessions(ctx context.Context, userID int64, filter QueryFilter
 		sm.Tokens.CacheWrite1hTokens += r.CacheWrite1hTokens
 		sm.Tokens.ReasoningTokens += r.ReasoningTokens
 		sm.Tokens.TotalTokens += tot
-		sm.CostUSD += item.costUSD
+		sm.CostUSD += costUSD
 		if r.MaxContextTokens > sm.MaxContextTokens {
 			sm.MaxContextTokens = r.MaxContextTokens
 		}
@@ -532,10 +672,10 @@ func (s *Service) Sessions(ctx context.Context, userID int64, filter QueryFilter
 		}
 		if r.IsSubagent {
 			sm.SubagentTokens += tot
-			sm.SubagentCostUSD += item.costUSD
+			sm.SubagentCostUSD += costUSD
 			agg.subSet[r.SessionID] = struct{}{}
 		}
-		agg.modelSet[item.canonicalModel] = struct{}{}
+		agg.modelSet[canon] = struct{}{}
 		agg.hourSet[r.HourBucket] = struct{}{}
 		if r.FirstEventAt.Before(sm.FirstEventAt) {
 			sm.FirstEventAt = r.FirstEventAt
@@ -545,34 +685,28 @@ func (s *Service) Sessions(ctx context.Context, userID int64, filter QueryFilter
 		}
 	}
 
-	all := make([]SessionSummary, 0, len(bySess))
+	sessions := make([]SessionSummary, 0, len(bySess))
 	for _, agg := range bySess {
 		agg.summary.Models = sortedKeys(agg.modelSet)
 		agg.summary.HourCount = len(agg.hourSet)
 		agg.summary.SubagentCount = len(agg.subSet)
-		all = append(all, agg.summary)
+		sessions = append(sessions, agg.summary)
 	}
-	sort.Slice(all, func(i, j int) bool {
-		if !all[i].LastEventAt.Equal(all[j].LastEventAt) {
-			return all[i].LastEventAt.After(all[j].LastEventAt)
+	sort.Slice(sessions, func(i, j int) bool {
+		if !sessions[i].LastEventAt.Equal(sessions[j].LastEventAt) {
+			return sessions[i].LastEventAt.After(sessions[j].LastEventAt)
 		}
-		return all[i].Tokens.TotalTokens > all[j].Tokens.TotalTokens
+		if sessions[i].Tokens.TotalTokens != sessions[j].Tokens.TotalTokens {
+			return sessions[i].Tokens.TotalTokens > sessions[j].Tokens.TotalTokens
+		}
+		return sessions[i].SessionID < sessions[j].SessionID
 	})
 
-	total := len(all)
-	startIdx := (page - 1) * pageSize
-	if startIdx >= total {
-		return &SessionsResponse{Total: total, Page: page, PageSize: pageSize, Sessions: []SessionSummary{}}, nil
-	}
-	endIdx := startIdx + pageSize
-	if endIdx > total {
-		endIdx = total
-	}
 	return &SessionsResponse{
 		Total:    total,
 		Page:     page,
 		PageSize: pageSize,
-		Sessions: all[startIdx:endIdx],
+		Sessions: sessions,
 	}, nil
 }
 
@@ -581,24 +715,33 @@ func (s *Service) SessionDetail(ctx context.Context, userID int64, sessionID, de
 	if sessionID == "" {
 		return nil, httpx.BadRequest("session_id 不能为空")
 	}
-	rows, err := s.store.ListHourlySessionsBySession(ctx, userID, sessionID, strings.TrimSpace(deviceID))
-	if err != nil {
-		return nil, err
+	var (
+		rows    []HourlySessionRecord
+		devices []Device
+		aliases []ModelAlias
+		prices  []ModelPrice
+		errRows error
+		errMeta error
+		wg      sync.WaitGroup
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		rows, errRows = s.store.ListHourlySessionsBySession(ctx, userID, sessionID, strings.TrimSpace(deviceID))
+	}()
+	go func() {
+		defer wg.Done()
+		devices, aliases, prices, errMeta = s.loadUserMeta(ctx, userID)
+	}()
+	wg.Wait()
+	if errRows != nil {
+		return nil, errRows
 	}
 	if len(rows) == 0 {
 		return nil, httpx.NotFound("会话不存在")
 	}
-	devices, err := s.store.ListDevices(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	aliases, err := s.store.ListModelAliases(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	prices, err := s.store.ListModelPrices(ctx, userID)
-	if err != nil {
-		return nil, err
+	if errMeta != nil {
+		return nil, errMeta
 	}
 	devNames := map[string]string{}
 	for _, d := range devices {

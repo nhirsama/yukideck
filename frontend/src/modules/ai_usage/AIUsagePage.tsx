@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { BarChart3, ChevronLeft, ChevronRight, Cpu, Layers, Settings, Terminal, X } from 'lucide-react';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { BarChart3, ChevronLeft, ChevronRight, Cpu, Layers, Loader2, Settings, Terminal, X } from 'lucide-react';
 import { aiUsageApi, type BreakdownItem, type HeatmapDay } from './api';
 import { detectBrowserTimezone, formatDateTime, formatPercent, formatTokens, formatUSD, localDateISO } from './format';
 
@@ -93,9 +93,14 @@ export default function AIUsagePage() {
     queryFn: () => aiUsageApi.heatmap(heatmapParams),
   });
 
-  const { data: sessionsRes } = useQuery({
+  const {
+    data: sessionsRes,
+    isLoading: loadingSessions,
+    isFetching: fetchingSessions,
+  } = useQuery({
     queryKey: ['ai-usage', 'sessions', queryParams, page],
     queryFn: () => aiUsageApi.sessions({ ...queryParams, page, page_size: 15 }),
+    placeholderData: keepPreviousData,
   });
 
   const { data: toolsRes } = useQuery({
@@ -659,29 +664,37 @@ export default function AIUsagePage() {
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-medium text-zinc-800">会话记录</h2>
             <span className="text-xs text-zinc-400 tabular-nums">
-              共 {sessionsRes?.total ?? 0} 条
+              {loadingSessions ? '加载中...' : `共 ${sessionsRes?.total ?? 0} 条`}
             </span>
           </div>
-          <div className="flex items-center gap-1 text-xs">
-            <button
-              type="button"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              className="yd-btn-icon border border-zinc-200"
-            >
-              <ChevronLeft className="h-3.5 w-3.5" />
-            </button>
-            <span className="px-2 text-zinc-500 tabular-nums">
-              {page} / {totalPages}
-            </span>
-            <button
-              type="button"
-              disabled={page >= totalPages}
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              className="yd-btn-icon border border-zinc-200"
-            >
-              <ChevronRight className="h-3.5 w-3.5" />
-            </button>
+          <div className="flex items-center gap-2 text-xs">
+            {fetchingSessions && !loadingSessions && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-sky-600">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                加载中
+              </span>
+            )}
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                disabled={loadingSessions || page <= 1 || fetchingSessions}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                className="yd-btn-icon border border-zinc-200"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </button>
+              <span className="px-2 text-zinc-500 tabular-nums">
+                {loadingSessions ? '— / —' : `${page} / ${totalPages}`}
+              </span>
+              <button
+                type="button"
+                disabled={loadingSessions || page >= totalPages || fetchingSessions}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                className="yd-btn-icon border border-zinc-200"
+              >
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
         </div>
 
@@ -699,50 +712,93 @@ export default function AIUsagePage() {
                 <th className="py-2 font-medium text-right">最近活跃</th>
               </tr>
             </thead>
-            <tbody className="yd-tbody tabular-nums">
-              {(sessionsRes?.sessions ?? []).map((s) => (
-                <tr
-                  key={`${s.device_id}-${s.agent}-${s.session_id}`}
-                  onClick={() => setSelectedSession({ sessionId: s.session_id, deviceId: s.device_id })}
-                  className="hover:bg-zinc-50/80 cursor-pointer transition-colors"
-                >
-                  <td className="py-2.5 pr-3">
-                    <div className="font-mono text-zinc-900">{s.session_id.slice(0, 14)}</div>
-                    <div className="text-[11px] text-zinc-400">
-                      {s.project || '-'}
-                      {s.subagent_count > 0 && (
-                        <span className="ml-1.5 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-600">
-                          +{s.subagent_count} 子代理
-                        </span>
-                      )}
-                    </div>
-                  </td>
-                  <td className="py-2.5 pr-3">
-                    <div className="font-medium text-zinc-800">{s.agent}</div>
-                    <div className="text-[11px] text-zinc-400">{s.device_name}</div>
-                  </td>
-                  <td className="py-2.5 pr-3 font-mono text-zinc-600 max-w-[180px] truncate">
-                    {s.models.join(', ')}
-                  </td>
-                  <td className="py-2.5 pr-3 text-right text-zinc-700">
-                    {formatTokens(s.tokens.total_tokens)}
-                  </td>
-                  <td className="py-2.5 pr-3 text-right text-zinc-700">{formatUSD(s.cost_usd)}</td>
-                  <td className="py-2.5 pr-3 text-right text-zinc-500">
-                    {formatTokens(s.max_context_tokens)}
-                  </td>
-                  <td className="py-2.5 pr-3 text-right text-zinc-500">{s.tool_call_count}</td>
-                  <td className="py-2.5 text-right text-zinc-400 whitespace-nowrap">
-                    {formatDateTime(s.last_event_at, tz)}
-                  </td>
-                </tr>
-              ))}
-              {(sessionsRes?.sessions?.length ?? 0) === 0 && (
+            <tbody
+              className={`yd-tbody tabular-nums transition-opacity duration-150 ${
+                fetchingSessions && !loadingSessions ? 'opacity-50 pointer-events-none' : ''
+              }`}
+            >
+              {loadingSessions ? (
+                Array.from({ length: 5 }).map((_, idx) => (
+                  <tr key={`skeleton-${idx}`} className="animate-pulse">
+                    <td className="py-3 pr-3">
+                      <div className="h-3.5 w-28 rounded bg-zinc-100" />
+                      <div className="mt-1.5 h-2.5 w-16 rounded bg-zinc-100/80" />
+                    </td>
+                    <td className="py-3 pr-3">
+                      <div className="h-3.5 w-16 rounded bg-zinc-100" />
+                      <div className="mt-1.5 h-2.5 w-20 rounded bg-zinc-100/80" />
+                    </td>
+                    <td className="py-3 pr-3">
+                      <div className="h-3.5 w-28 rounded bg-zinc-100" />
+                    </td>
+                    <td className="py-3 pr-3">
+                      <div className="ml-auto h-3.5 w-14 rounded bg-zinc-100" />
+                    </td>
+                    <td className="py-3 pr-3">
+                      <div className="ml-auto h-3.5 w-12 rounded bg-zinc-100" />
+                    </td>
+                    <td className="py-3 pr-3">
+                      <div className="ml-auto h-3.5 w-12 rounded bg-zinc-100" />
+                    </td>
+                    <td className="py-3 pr-3">
+                      <div className="ml-auto h-3.5 w-8 rounded bg-zinc-100" />
+                    </td>
+                    <td className="py-3">
+                      <div className="ml-auto h-3.5 w-24 rounded bg-zinc-100" />
+                    </td>
+                  </tr>
+                ))
+              ) : (sessionsRes?.sessions?.length ?? 0) === 0 ? (
                 <tr>
                   <td colSpan={8} className="py-8 text-center text-zinc-400">
-                    暂无会话记录
+                    {fetchingSessions ? (
+                      <span className="inline-flex items-center gap-1.5">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-500" />
+                        加载会话记录中...
+                      </span>
+                    ) : (
+                      '暂无会话记录'
+                    )}
                   </td>
                 </tr>
+              ) : (
+                (sessionsRes?.sessions ?? []).map((s) => (
+                  <tr
+                    key={`${s.device_id}-${s.agent}-${s.session_id}`}
+                    onClick={() => setSelectedSession({ sessionId: s.session_id, deviceId: s.device_id })}
+                    className="hover:bg-zinc-50/80 cursor-pointer transition-colors"
+                  >
+                    <td className="py-2.5 pr-3">
+                      <div className="font-mono text-zinc-900">{s.session_id.slice(0, 14)}</div>
+                      <div className="text-[11px] text-zinc-400">
+                        {s.project || '-'}
+                        {s.subagent_count > 0 && (
+                          <span className="ml-1.5 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-600">
+                            +{s.subagent_count} 子代理
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="py-2.5 pr-3">
+                      <div className="font-medium text-zinc-800">{s.agent}</div>
+                      <div className="text-[11px] text-zinc-400">{s.device_name}</div>
+                    </td>
+                    <td className="py-2.5 pr-3 font-mono text-zinc-600 max-w-[180px] truncate">
+                      {s.models.join(', ')}
+                    </td>
+                    <td className="py-2.5 pr-3 text-right text-zinc-700">
+                      {formatTokens(s.tokens.total_tokens)}
+                    </td>
+                    <td className="py-2.5 pr-3 text-right text-zinc-700">{formatUSD(s.cost_usd)}</td>
+                    <td className="py-2.5 pr-3 text-right text-zinc-500">
+                      {formatTokens(s.max_context_tokens)}
+                    </td>
+                    <td className="py-2.5 pr-3 text-right text-zinc-500">{s.tool_call_count}</td>
+                    <td className="py-2.5 text-right text-zinc-400 whitespace-nowrap">
+                      {formatDateTime(s.last_event_at, tz)}
+                    </td>
+                  </tr>
+                ))
               )}
             </tbody>
           </table>

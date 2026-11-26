@@ -45,11 +45,25 @@ func (r HourlySessionRecord) TotalTokens() int64 {
 	return r.InputTokens + r.OutputTokens + r.CacheReadTokens + r.CacheWriteTokens + r.CacheWrite1hTokens + r.ReasoningTokens
 }
 
+type SessionPageFilter struct {
+	Start         time.Time
+	End           time.Time
+	Agent         string
+	DeviceID      string
+	Project       string
+	IncludeHidden bool
+	RawModels     []string
+	Page          int
+	PageSize      int
+}
+
 type Store interface {
 	UpsertDeviceFromIngest(ctx context.Context, userID int64, dev IngestDevice) (*Device, error)
 	UpsertHourlySessions(ctx context.Context, userID int64, rows []HourlySessionRecord, forceOverwrite bool) error
 	ListHourlySessions(ctx context.Context, userID int64, start, end time.Time) ([]HourlySessionRecord, error)
 	ListHourlySessionsBySession(ctx context.Context, userID int64, sessionID, deviceID string) ([]HourlySessionRecord, error)
+	ListDistinctModelsInRange(ctx context.Context, userID int64, start, end time.Time) ([]string, error)
+	ListPagedSessionSlices(ctx context.Context, userID int64, filter SessionPageFilter) ([]HourlySessionRecord, int, error)
 
 	ListDevices(ctx context.Context, userID int64) ([]Device, error)
 	UpdateDevice(ctx context.Context, userID int64, deviceID, name string, hidden bool) (*Device, error)
@@ -264,6 +278,96 @@ func (s *PGStore) ListHourlySessionsBySession(ctx context.Context, userID int64,
 		out = append(out, toHourlyRecord(row))
 	}
 	return out, nil
+}
+
+func (s *PGStore) ListDistinctModelsInRange(ctx context.Context, userID int64, start, end time.Time) ([]string, error) {
+	models, err := s.q.ListDistinctModelsInRange(ctx, sqlcgen.ListDistinctModelsInRangeParams{
+		UserID:       userID,
+		HourBucket:   start.UTC(),
+		HourBucket_2: end.UTC(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list distinct models in range: %w", err)
+	}
+	return models, nil
+}
+
+func (s *PGStore) ListPagedSessionSlices(ctx context.Context, userID int64, filter SessionPageFilter) ([]HourlySessionRecord, int, error) {
+	models := filter.RawModels
+	if models == nil {
+		models = []string{}
+	}
+	offset := int32((filter.Page - 1) * filter.PageSize)
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := s.q.ListPagedSessionSlices(ctx, sqlcgen.ListPagedSessionSlicesParams{
+		UserID:        userID,
+		StartTime:     filter.Start.UTC(),
+		EndTime:       filter.End.UTC(),
+		Agent:         filter.Agent,
+		DeviceID:      filter.DeviceID,
+		Project:       filter.Project,
+		IncludeHidden: filter.IncludeHidden,
+		Models:        models,
+		PageOffset:    offset,
+		PageLimit:     int32(filter.PageSize),
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("list paged session slices: %w", err)
+	}
+	if len(rows) == 0 {
+		if filter.Page <= 1 {
+			return []HourlySessionRecord{}, 0, nil
+		}
+		cnt, err := s.q.CountFilteredSessions(ctx, sqlcgen.CountFilteredSessionsParams{
+			UserID:        userID,
+			StartTime:     filter.Start.UTC(),
+			EndTime:       filter.End.UTC(),
+			Agent:         filter.Agent,
+			DeviceID:      filter.DeviceID,
+			Project:       filter.Project,
+			IncludeHidden: filter.IncludeHidden,
+			Models:        models,
+		})
+		if err != nil {
+			return nil, 0, fmt.Errorf("count filtered sessions: %w", err)
+		}
+		return []HourlySessionRecord{}, int(cnt), nil
+	}
+
+	total := int(rows[0].TotalSessions)
+	out := make([]HourlySessionRecord, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toHourlyRecord(sqlcgen.AiUsageHourlySession{
+			ID:                 row.ID,
+			UserID:             row.UserID,
+			DeviceID:           row.DeviceID,
+			Agent:              row.Agent,
+			SessionID:          row.SessionID,
+			HourBucket:         row.HourBucket,
+			Model:              row.Model,
+			IsSubagent:         row.IsSubagent,
+			ParentSessionID:    row.ParentSessionID,
+			Provider:           row.Provider,
+			Project:            row.Project,
+			InputTokens:        row.InputTokens,
+			OutputTokens:       row.OutputTokens,
+			CacheReadTokens:    row.CacheReadTokens,
+			CacheWriteTokens:   row.CacheWriteTokens,
+			CacheWrite1hTokens: row.CacheWrite1hTokens,
+			ReasoningTokens:    row.ReasoningTokens,
+			MaxContextTokens:   row.MaxContextTokens,
+			ReportedCostUsd:    row.ReportedCostUsd,
+			RequestCount:       row.RequestCount,
+			ToolCallCount:      row.ToolCallCount,
+			ToolCalls:          row.ToolCalls,
+			FirstEventAt:       row.FirstEventAt,
+			LastEventAt:        row.LastEventAt,
+			UpdatedAt:          row.UpdatedAt,
+		}))
+	}
+	return out, total, nil
 }
 
 func (s *PGStore) ListDevices(ctx context.Context, userID int64) ([]Device, error) {

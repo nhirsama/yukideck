@@ -162,6 +162,114 @@ func (m *memStore) ListHourlySessionsBySession(_ context.Context, userID int64, 
 	return out, nil
 }
 
+func (m *memStore) ListDistinctModelsInRange(_ context.Context, userID int64, start, end time.Time) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	seen := map[string]struct{}{}
+	for _, r := range m.slices {
+		if r.UserID != userID || r.HourBucket.Before(start) || !r.HourBucket.Before(end) {
+			continue
+		}
+		seen[r.Model] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func (m *memStore) ListPagedSessionSlices(_ context.Context, userID int64, filter SessionPageFilter) ([]HourlySessionRecord, int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	modelSet := map[string]struct{}{}
+	for _, mod := range filter.RawModels {
+		modelSet[mod] = struct{}{}
+	}
+
+	type group struct {
+		key      string
+		rootID   string
+		lastAt   time.Time
+		tokens   int64
+		records  []HourlySessionRecord
+	}
+	groups := map[string]*group{}
+	for _, r := range m.slices {
+		if r.UserID != userID || r.HourBucket.Before(filter.Start) || !r.HourBucket.Before(filter.End) {
+			continue
+		}
+		if filter.Agent != "" && r.Agent != filter.Agent {
+			continue
+		}
+		if filter.DeviceID != "" && r.DeviceID != filter.DeviceID {
+			continue
+		}
+		if filter.Project != "" && r.Project != filter.Project {
+			continue
+		}
+		if !filter.IncludeHidden && filter.DeviceID == "" {
+			if dev, ok := m.devices[devKey(userID, r.DeviceID)]; ok && dev.Hidden {
+				continue
+			}
+		}
+		if len(modelSet) > 0 {
+			if _, ok := modelSet[r.Model]; !ok {
+				continue
+			}
+		}
+		rootID := r.SessionID
+		if r.IsSubagent && r.ParentSessionID != "" {
+			rootID = r.ParentSessionID
+		}
+		k := r.DeviceID + "|" + r.Agent + "|" + rootID
+		g, ok := groups[k]
+		if !ok {
+			g = &group{key: k, rootID: rootID, lastAt: r.LastEventAt}
+			groups[k] = g
+		}
+		if r.LastEventAt.After(g.lastAt) {
+			g.lastAt = r.LastEventAt
+		}
+		g.tokens += r.TotalTokens()
+		g.records = append(g.records, r)
+	}
+
+	all := make([]*group, 0, len(groups))
+	for _, g := range groups {
+		all = append(all, g)
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if !all[i].lastAt.Equal(all[j].lastAt) {
+			return all[i].lastAt.After(all[j].lastAt)
+		}
+		if all[i].tokens != all[j].tokens {
+			return all[i].tokens > all[j].tokens
+		}
+		return all[i].rootID < all[j].rootID
+	})
+
+	total := len(all)
+	startIdx := (filter.Page - 1) * filter.PageSize
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	if startIdx >= total {
+		return []HourlySessionRecord{}, total, nil
+	}
+	endIdx := startIdx + filter.PageSize
+	if endIdx > total {
+		endIdx = total
+	}
+	var out []HourlySessionRecord
+	for _, g := range all[startIdx:endIdx] {
+		out = append(out, g.records...)
+	}
+	return out, total, nil
+}
+
 func (m *memStore) ListDevices(_ context.Context, userID int64) ([]Device, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -335,25 +443,40 @@ func TestNormalizeModelAndPricing(t *testing.T) {
 		wantOut   float64
 	}{
 		{"openrouter/anthropic/claude-opus-5-5-20261001:thinking", 4.00, 20.00},
+		{"claude-fable-5-2", 8.00, 40.00},
+		{"claude-mythos-5-2", 8.00, 40.00},
+		{"claude-opus-4-8", 5.00, 25.00},
 		{"claude-sonnet-5-5", 2.00, 10.00},
 		{"claude-haiku-5-5", 0.10, 0.50},
 		{"claude-opus-4.6-thinking", 5.00, 25.00},
 		{"claude-opus-4-7", 5.00, 25.00},
+		{"gpt-6.2-sol", 2.00, 10.00},
+		{"gpt-6.1-sol", 2.00, 10.00},
+		{"my-relay/gpt-6.2-sol-20261117", 2.00, 10.00},
+		{"gpt-6.2-astra", 8.00, 40.00},
+		{"gpt-6.1-terra", 1.00, 5.00},
+		{"gpt-6-luna", 0.10, 0.50},
+		{"gpt-5.6-sol", 5.00, 30.00},
 		{"gpt-5.6", 4.00, 20.00},
 		{"gpt-5.5", 5.00, 30.00},
+		{"gpt-5.3-codex-spark", 1.75, 14.00},
+		{"codex-auto-review", 0.20, 1.20},
 		{"my-private-proxy/gpt-5.4-mini-20260601", 0.75, 4.50},
 		{"gpt-5.4-nano", 0.20, 1.25},
 		{"google-antigravity/gemini-4-neon-high", 3.00, 15.00},
 		{"gemini-4-carbon", 2.00, 10.00},
 		{"gemini-4-hydrogen", 1.50, 7.50},
 		{"gemini-3.8-flash", 0.75, 3.75},
+		{"gemini-3-pro-preview", 2.00, 12.00},
 		{"deepseek/deepseek-v4-pro", 1.32, 3.96},
 		{"deepseek-v3.2", 0.26, 0.38},
 		{"zai-org/glm-5.3", 1.40, 4.40},
+		{"glm-5.1", 1.40, 4.40},
 		{"moonshotai/kimi-k3.1-pro", 2.00, 10.00},
 		{"qwen/qwen3.8-max-0902", 2.00, 6.00},
 		{"minimax/MiniMax-M3", 0.30, 1.20},
 		{"x-ai/grok-4.7", 2.00, 6.00},
+		{"grok-4.5", 2.00, 6.00},
 	}
 	for _, tc := range priceChecks {
 		canon := NormalizeModel(tc.raw, nil)
@@ -517,6 +640,83 @@ func TestCrossDaySessionSubagentRollupAndTimezone(t *testing.T) {
 	}
 	if sum2.Tokens.TotalTokens != 0 || sum2.SessionCount != 0 {
 		t.Fatalf("expected strict user isolation, got %+v", sum2)
+	}
+}
+
+func TestSessionsPaginationAndFilters(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store)
+	ctx := context.Background()
+
+	base := time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC)
+	slices := make([]IngestSlice, 0, 5)
+	for i := 1; i <= 5; i++ {
+		model := "claude-opus-5-5-20261001"
+		agent := "claude"
+		if i%2 == 0 {
+			model = "google-antigravity/gemini-4-neon"
+			agent = "antigravity"
+		}
+		slices = append(slices, IngestSlice{
+			Agent:        agent,
+			SessionID:    "sess-" + string(rune('0'+i)),
+			HourBucket:   base.Add(time.Duration(i) * time.Hour),
+			Model:        model,
+			Project:      "yukideck",
+			InputTokens:  int64(i * 10_000),
+			OutputTokens: int64(i * 2_000),
+			RequestCount: 1,
+			FirstEventAt: base.Add(time.Duration(i)*time.Hour + 5*time.Minute),
+			LastEventAt:  base.Add(time.Duration(i)*time.Hour + 10*time.Minute),
+		})
+	}
+	if _, err := svc.Ingest(ctx, 1, IngestRequest{
+		Device: IngestDevice{DeviceID: "dev-1", Name: "DevBox"},
+		Slices: slices,
+	}); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	filter := QueryFilter{
+		Start:    base.Add(-time.Hour),
+		End:      base.Add(10 * time.Hour),
+		Timezone: "UTC",
+	}
+
+	p1, err := svc.Sessions(ctx, 1, filter, 1, 2)
+	if err != nil {
+		t.Fatalf("Sessions page 1: %v", err)
+	}
+	if p1.Total != 5 || len(p1.Sessions) != 2 || p1.Sessions[0].SessionID != "sess-5" || p1.Sessions[1].SessionID != "sess-4" {
+		t.Fatalf("unexpected page 1: %+v", p1)
+	}
+
+	p3, err := svc.Sessions(ctx, 1, filter, 3, 2)
+	if err != nil {
+		t.Fatalf("Sessions page 3: %v", err)
+	}
+	if p3.Total != 5 || len(p3.Sessions) != 1 || p3.Sessions[0].SessionID != "sess-1" {
+		t.Fatalf("unexpected page 3: %+v", p3)
+	}
+
+	// Out-of-range page still reports accurate Total
+	p4, err := svc.Sessions(ctx, 1, filter, 4, 2)
+	if err != nil {
+		t.Fatalf("Sessions page 4: %v", err)
+	}
+	if p4.Total != 5 || len(p4.Sessions) != 0 {
+		t.Fatalf("unexpected page 4: %+v", p4)
+	}
+
+	// Model filter resolves canonical model name into SQL pagination
+	modelFilter := filter
+	modelFilter.Model = "claude-opus-5.5"
+	pm, err := svc.Sessions(ctx, 1, modelFilter, 1, 2)
+	if err != nil {
+		t.Fatalf("Sessions model filter: %v", err)
+	}
+	if pm.Total != 3 || len(pm.Sessions) != 2 || pm.Sessions[0].SessionID != "sess-5" || pm.Sessions[1].SessionID != "sess-3" {
+		t.Fatalf("unexpected model-filtered sessions: %+v", pm)
 	}
 }
 
