@@ -1,9 +1,9 @@
-import { Suspense } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider, useAuth } from '@/core/auth';
 import { useEnabledModules } from '@/core/module';
 import { AppShell } from '@/core/layout/AppShell';
+import { LoadingState } from '@/components/LoadingState';
 import { LoginPage } from '@/pages/LoginPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { MessengerPage } from '@/pages/MessengerPage';
@@ -22,11 +22,7 @@ function AppRoutes() {
   const modules = useEnabledModules();
 
   if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-[#f8fafc] text-xs text-zinc-400">
-        正在加载 YukiDeck...
-      </div>
-    );
+    return <LoadingState label="正在加载 YukiDeck..." variant="fullscreen" />;
   }
 
   if (!user) {
@@ -38,21 +34,19 @@ function AppRoutes() {
   }
 
   return (
-    <Suspense fallback={<div className="p-8 text-xs text-zinc-400">加载模块中...</div>}>
-      <Routes>
-        <Route element={<AppShell />}>
-          <Route index element={<DashboardPage />} />
-          <Route path="/messenger" element={<MessengerPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          {modules.flatMap((mod) =>
-            mod.routes.map((r, idx) => (
-              <Route key={`${mod.id}-${idx}`} path={r.path} element={r.element} />
-            )),
-          )}
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Route>
-      </Routes>
-    </Suspense>
+    <Routes>
+      <Route element={<AppShell />}>
+        <Route index element={<DashboardPage />} />
+        <Route path="/messenger" element={<MessengerPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
+        {modules.flatMap((mod) =>
+          mod.routes.map((r, idx) => (
+            <Route key={`${mod.id}-${idx}`} path={r.path} element={r.element} />
+          )),
+        )}
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Route>
+    </Routes>
   );
 }
 

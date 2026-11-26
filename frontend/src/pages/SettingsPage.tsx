@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { ExternalLink } from 'lucide-react';
 import { useAppMeta, useEnabledModules } from '@/core/module';
+import { LoadingState } from '@/components/LoadingState';
 import { APIKeysPanel } from './APIKeysPanel';
 
 const GITHUB_REPO = 'nhirsama/yukideck';
@@ -122,7 +123,7 @@ export function SettingsPage() {
       ) : activeTab === 'api-keys' ? (
         <APIKeysPanel />
       ) : activeModule?.settingsPanel ? (
-        <Suspense fallback={<div className="text-xs text-zinc-400">加载模块配置...</div>}>
+        <Suspense fallback={<LoadingState label="正在加载模块..." variant="section" />}>
           <activeModule.settingsPanel.component />
         </Suspense>
       ) : null}

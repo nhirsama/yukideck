@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Eye, EyeOff, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { LoadingState } from '@/components/LoadingState';
+import { Tooltip } from '@/components/Tooltip';
 import { aiUsageApi, type Device, type ModelAlias, type ModelPrice } from './api';
 import { formatDateTime } from './format';
 
@@ -215,7 +217,7 @@ export default function AIUsageSettingsPanel() {
           </p>
         </div>
         {loadingDevices ? (
-          <div className="text-sm text-zinc-400">加载中...</div>
+          <LoadingState label="正在加载模块..." variant="compact" />
         ) : devices.length === 0 ? (
           <div className="text-sm text-zinc-400">暂无已上报设备。</div>
         ) : (
@@ -259,17 +261,18 @@ export default function AIUsageSettingsPanel() {
                         ) : (
                           <div className="inline-flex items-center gap-1 max-w-[210px]">
                             <span className="font-medium text-zinc-800 truncate">{d.name}</span>
-                            <button
-                              type="button"
-                              title="重命名设备"
-                              onClick={() => {
-                                cancelEditRef.current = false;
-                                setEditingDevice({ id: d.device_id, value: d.name });
-                              }}
-                              className="yd-btn-icon p-1 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity shrink-0"
-                            >
-                              <Pencil className="h-3.5 w-3.5" />
-                            </button>
+                            <Tooltip content="重命名设备">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  cancelEditRef.current = false;
+                                  setEditingDevice({ id: d.device_id, value: d.name });
+                                }}
+                                className="yd-btn-icon p-1 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity shrink-0"
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </button>
+                            </Tooltip>
                           </div>
                         )}
                       </td>
@@ -281,23 +284,25 @@ export default function AIUsageSettingsPanel() {
                       <td className="py-2.5 pr-3 text-zinc-500">{formatDateTime(d.last_synced_at)}</td>
                       <td className="py-2.5 text-right whitespace-nowrap">
                         <div className="inline-flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => toggleDeviceHidden(d)}
-                            className="yd-btn-secondary py-1"
-                            title={d.hidden ? '取消隐藏' : '隐藏设备'}
-                          >
-                            {d.hidden ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
-                            {d.hidden ? '显示' : '隐藏'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => deleteDevMut.mutate(d.device_id)}
-                            className="yd-btn-danger-icon"
-                            title="删除设备元信息"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                          <Tooltip content={d.hidden ? '取消隐藏' : '隐藏设备'}>
+                            <button
+                              type="button"
+                              onClick={() => toggleDeviceHidden(d)}
+                              className="yd-btn-secondary py-1"
+                            >
+                              {d.hidden ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                              {d.hidden ? '显示' : '隐藏'}
+                            </button>
+                          </Tooltip>
+                          <Tooltip content="删除设备元信息">
+                            <button
+                              type="button"
+                              onClick={() => deleteDevMut.mutate(d.device_id)}
+                              className="yd-btn-danger-icon"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </Tooltip>
                         </div>
                       </td>
                     </tr>
@@ -330,7 +335,7 @@ export default function AIUsageSettingsPanel() {
         </div>
 
         {loadingAliases ? (
-          <div className="text-sm text-zinc-400">加载中...</div>
+          <LoadingState label="正在加载模块..." variant="compact" />
         ) : aliases.length === 0 ? (
           <div className="text-sm text-zinc-400">
             暂无自定义别名规则（当前使用内置渠道前缀与日期后缀清洗）。
@@ -354,22 +359,24 @@ export default function AIUsageSettingsPanel() {
                     <td className="py-2.5 pr-3 text-zinc-600">{a.priority}</td>
                     <td className="py-2.5 text-right whitespace-nowrap">
                       <div className="inline-flex items-center gap-1">
-                        <button
-                          type="button"
-                          title="编辑"
-                          onClick={() => openAliasModal(a)}
-                          className="yd-btn-icon"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          title="删除"
-                          onClick={() => deleteAliasMut.mutate(a.id)}
-                          className="yd-btn-danger-icon"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+                        <Tooltip content="编辑">
+                          <button
+                            type="button"
+                            onClick={() => openAliasModal(a)}
+                            className="yd-btn-icon"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                        </Tooltip>
+                        <Tooltip content="删除">
+                          <button
+                            type="button"
+                            onClick={() => deleteAliasMut.mutate(a.id)}
+                            className="yd-btn-danger-icon"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </Tooltip>
                       </div>
                     </td>
                   </tr>
@@ -409,7 +416,7 @@ export default function AIUsageSettingsPanel() {
         </div>
 
         {loadingPrices ? (
-          <div className="text-sm text-zinc-400">加载中...</div>
+          <LoadingState label="正在加载模块..." variant="compact" />
         ) : (
           <div className="overflow-x-auto">
             <table className="yd-table">
@@ -435,22 +442,24 @@ export default function AIUsageSettingsPanel() {
                     <td className="py-2.5 pr-3 text-zinc-700">${p.cache_write_1h_per_m}</td>
                     <td className="py-2.5 text-right whitespace-nowrap">
                       <div className="inline-flex items-center gap-1">
-                        <button
-                          type="button"
-                          title="编辑"
-                          onClick={() => openPriceModal(p, true)}
-                          className="yd-btn-icon"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          title="删除"
-                          onClick={() => p.id && deletePriceMut.mutate(p.id)}
-                          className="yd-btn-danger-icon"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+                        <Tooltip content="编辑">
+                          <button
+                            type="button"
+                            onClick={() => openPriceModal(p, true)}
+                            className="yd-btn-icon"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                        </Tooltip>
+                        <Tooltip content="删除">
+                          <button
+                            type="button"
+                            onClick={() => p.id && deletePriceMut.mutate(p.id)}
+                            className="yd-btn-danger-icon"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </Tooltip>
                       </div>
                     </td>
                   </tr>

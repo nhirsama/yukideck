@@ -8,6 +8,7 @@ import {
   Plus,
   Star,
 } from 'lucide-react';
+import { Tooltip } from '@/components/Tooltip';
 import {
   RETIRE_REASON_LABELS,
   formatMoney,
@@ -164,34 +165,36 @@ export function ItemCardView({
                 </div>
               )}
               {draggable && (
-                <div
-                  className="cursor-grab pt-2.5 text-zinc-300 hover:text-zinc-500 active:cursor-grabbing"
-                  title="拖拽调整顺序"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <GripVertical className="h-4 w-4" />
-                </div>
+                <Tooltip content="拖拽调整顺序">
+                  <div
+                    className="cursor-grab pt-2.5 text-zinc-300 hover:text-zinc-500 active:cursor-grabbing"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <GripVertical className="h-4 w-4" />
+                  </div>
+                </Tooltip>
               )}
               <AssetVisual icon={item.icon} imageUrl={item.image_url} name={item.name} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-start justify-between gap-2">
                   <h3 className="truncate text-[15px] font-semibold text-zinc-800">{item.name}</h3>
                   {!batchMode && item.status !== 'retired' && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onToggleFavorite(item);
-                      }}
-                      title={item.status === 'favorite' ? '取消收藏' : '设为收藏'}
-                      className="shrink-0 rounded p-0.5 text-zinc-300 transition-colors hover:text-amber-500"
-                    >
-                      <Star
-                        className={`h-4 w-4 ${
-                          item.status === 'favorite' ? 'fill-amber-400 text-amber-400' : ''
-                        }`}
-                      />
-                    </button>
+                    <Tooltip content={item.status === 'favorite' ? '取消收藏' : '设为收藏'}>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onToggleFavorite(item);
+                        }}
+                        className="shrink-0 rounded p-0.5 text-zinc-300 transition-colors hover:text-amber-500"
+                      >
+                        <Star
+                          className={`h-4 w-4 ${
+                            item.status === 'favorite' ? 'fill-amber-400 text-amber-400' : ''
+                          }`}
+                        />
+                      </button>
+                    </Tooltip>
                   )}
                 </div>
 
@@ -256,18 +259,19 @@ export function ItemCardView({
               </div>
 
               {!batchMode && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onUseItem(item.id);
-                  }}
-                  title="记录使用次数 +1"
-                  className="inline-flex items-center gap-1 rounded-md border border-zinc-200/80 bg-white px-2 py-0.5 font-mono text-xs text-zinc-600 transition-colors hover:border-sky-300 hover:bg-sky-50 hover:text-sky-700"
-                >
-                  <Plus className="h-3 w-3" />
-                  {item.usage_count}次
-                </button>
+                <Tooltip content="记录使用次数 +1">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onUseItem(item.id);
+                    }}
+                    className="inline-flex items-center gap-1 rounded-md border border-zinc-200/80 bg-white px-2 py-0.5 font-mono text-xs text-zinc-600 transition-colors hover:border-sky-300 hover:bg-sky-50 hover:text-sky-700"
+                  >
+                    <Plus className="h-3 w-3" />
+                    {item.usage_count}次
+                  </button>
+                </Tooltip>
               )}
             </div>
           </div>

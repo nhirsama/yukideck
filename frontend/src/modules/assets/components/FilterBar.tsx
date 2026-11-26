@@ -13,6 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import { Select } from '@/components/Select';
+import { Tooltip } from '@/components/Tooltip';
 import {
   RETIRE_REASON_LABELS,
   SORT_OPTIONS,
@@ -258,20 +259,27 @@ export function FilterBar({
             className="min-w-[148px]"
             ariaLabel="排序维度"
           />
-          <button
-            type="button"
-            onClick={() =>
-              onChangeQuery({ sort_dir: (query.sort_dir ?? 'asc') === 'asc' ? 'desc' : 'asc' })
+          <Tooltip
+            content={
+              (query.sort_dir ?? 'asc') === 'asc'
+                ? '当前升序，点击切换降序'
+                : '当前降序，点击切换升序'
             }
-            title={(query.sort_dir ?? 'asc') === 'asc' ? '当前升序，点击切换降序' : '当前降序，点击切换升序'}
-            className="yd-btn-secondary px-2"
           >
-            {(query.sort_dir ?? 'asc') === 'asc' ? (
-              <ArrowUpNarrowWide className="h-4 w-4" />
-            ) : (
-              <ArrowDownWideNarrow className="h-4 w-4" />
-            )}
-          </button>
+            <button
+              type="button"
+              onClick={() =>
+                onChangeQuery({ sort_dir: (query.sort_dir ?? 'asc') === 'asc' ? 'desc' : 'asc' })
+              }
+              className="yd-btn-secondary px-2"
+            >
+              {(query.sort_dir ?? 'asc') === 'asc' ? (
+                <ArrowUpNarrowWide className="h-4 w-4" />
+              ) : (
+                <ArrowDownWideNarrow className="h-4 w-4" />
+              )}
+            </button>
+          </Tooltip>
         </div>
 
         {/* View switcher */}

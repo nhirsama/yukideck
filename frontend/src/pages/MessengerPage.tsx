@@ -11,7 +11,9 @@ import {
   Send,
   Trash2,
 } from 'lucide-react';
+import { LoadingState } from '@/components/LoadingState';
 import { Select } from '@/components/Select';
+import { Tooltip } from '@/components/Tooltip';
 import {
   coreApi,
   type Capability,
@@ -135,7 +137,7 @@ function ChannelsSection() {
       )}
 
       {isLoading ? (
-        <div className="text-xs text-zinc-400">加载中...</div>
+        <LoadingState label="正在加载模块..." variant="section" />
       ) : channels.length === 0 ? (
         <div className="yd-empty p-10 text-xs">暂无消息渠道。</div>
       ) : (
@@ -190,18 +192,19 @@ function ChannelsSection() {
                 >
                   编辑
                 </button>
-                <button
-                  type="button"
-                  title="删除"
-                  onClick={() => {
-                    if (window.confirm(`确定删除渠道「${ch.name}」吗？`)) {
-                      deleteMut.mutate(ch.id);
-                    }
-                  }}
-                  className="yd-btn-danger-icon"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
+                <Tooltip content="删除">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm(`确定删除渠道「${ch.name}」吗？`)) {
+                        deleteMut.mutate(ch.id);
+                      }
+                    }}
+                    className="yd-btn-danger-icon"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </Tooltip>
               </div>
             </div>
           ))}
@@ -444,7 +447,7 @@ function PushEndpointsSection() {
       )}
 
       {isLoading ? (
-        <div className="text-xs text-zinc-400">加载中...</div>
+        <LoadingState label="正在加载模块..." variant="section" />
       ) : endpoints.length === 0 ? (
         <div className="yd-empty p-10 text-xs">
           暂无推送终结点。创建后可配合 <code className="yd-code">messenger:push</code> 权限密钥调用。
@@ -475,18 +478,19 @@ function PushEndpointsSection() {
                     >
                       编辑
                     </button>
-                    <button
-                      type="button"
-                      title="删除"
-                      onClick={() => {
-                        if (window.confirm(`确定删除推送终结点「${ep.name}」吗？`)) {
-                          deleteMut.mutate(ep.id);
-                        }
-                      }}
-                      className="yd-btn-danger-icon"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    <Tooltip content="删除">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(`确定删除推送终结点「${ep.name}」吗？`)) {
+                            deleteMut.mutate(ep.id);
+                          }
+                        }}
+                        className="yd-btn-danger-icon"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </Tooltip>
                   </div>
                 </div>
 

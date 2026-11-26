@@ -3,7 +3,9 @@ import { Link } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { BarChart3, ChevronLeft, ChevronRight, Cpu, Layers, Loader2, Settings, Terminal, X } from 'lucide-react';
 import { InfoTooltip } from '@/components/InfoTooltip';
+import { LoadingState } from '@/components/LoadingState';
 import { Select } from '@/components/Select';
+import { Tooltip } from '@/components/Tooltip';
 import { aiUsageApi, type BreakdownItem, type HeatmapDay } from './api';
 import {
   buildAxisScale,
@@ -572,32 +574,34 @@ export default function AIUsagePage() {
                         const totalVal = metric === 'cost' ? pt.cost_usd : pt.total_tokens;
                         const pct = trendScale.toPct(totalVal);
                         return (
-                          <div
+                          <Tooltip
                             key={pt.bucket}
-                            className="flex-1 min-w-[10px] flex flex-col items-center h-full justify-end group"
-                            title={`${pt.bucket}\nTokens: ${formatTokens(pt.total_tokens)}\n费用: ${formatUSD(pt.cost_usd)}\n请求: ${pt.request_count}`}
+                            delay={80}
+                            content={`${pt.bucket}\nTokens: ${formatTokens(pt.total_tokens)}\n费用: ${formatUSD(pt.cost_usd)}\n请求: ${pt.request_count}`}
                           >
-                            <div
-                              className="w-full max-w-[26px] rounded-t-[4px] overflow-hidden flex flex-col-reverse transition-opacity group-hover:opacity-80"
-                              style={{ height: `${pct}%` }}
-                            >
-                              {(trends?.series_keys ?? []).map((sKey, idx) => {
-                                const sv = pt.series[sKey];
-                                if (!sv) return null;
-                                const v = metric === 'cost' ? sv.cost_usd : sv.total_tokens;
-                                if (v <= 0 || totalVal <= 0) return null;
-                                return (
-                                  <div
-                                    key={sKey}
-                                    style={{
-                                      height: `${(v / totalVal) * 100}%`,
-                                      backgroundColor: SERIES_COLORS[idx % SERIES_COLORS.length],
-                                    }}
-                                  />
-                                );
-                              })}
+                            <div className="flex-1 min-w-[10px] flex flex-col items-center h-full justify-end group">
+                              <div
+                                className="w-full max-w-[26px] rounded-t-[4px] overflow-hidden flex flex-col-reverse transition-opacity group-hover:opacity-80"
+                                style={{ height: `${pct}%` }}
+                              >
+                                {(trends?.series_keys ?? []).map((sKey, idx) => {
+                                  const sv = pt.series[sKey];
+                                  if (!sv) return null;
+                                  const v = metric === 'cost' ? sv.cost_usd : sv.total_tokens;
+                                  if (v <= 0 || totalVal <= 0) return null;
+                                  return (
+                                    <div
+                                      key={sKey}
+                                      style={{
+                                        height: `${(v / totalVal) * 100}%`,
+                                        backgroundColor: SERIES_COLORS[idx % SERIES_COLORS.length],
+                                      }}
+                                    />
+                                  );
+                                })}
+                              </div>
                             </div>
-                          </div>
+                          </Tooltip>
                         );
                       })}
                     </div>
@@ -681,15 +685,19 @@ export default function AIUsagePage() {
                   {week.map((cell) => {
                     const lvl = cell.day?.level ?? 0;
                     return (
-                      <div
+                      <Tooltip
                         key={cell.date}
-                        className={`w-full aspect-square rounded-[2px] ring-1 ring-inset ring-black/[0.04] transition-opacity hover:opacity-75 ${HEATMAP_CLASSES[lvl] ?? HEATMAP_CLASSES[0]}`}
-                        title={
+                        delay={80}
+                        content={
                           cell.day
                             ? `${cell.date}: ${formatTokens(cell.day.total_tokens)} · ${formatUSD(cell.day.cost_usd)} · ${cell.day.session_count} 会话`
                             : `${cell.date}: 无记录`
                         }
-                      />
+                      >
+                        <div
+                          className={`w-full aspect-square rounded-[2px] ring-1 ring-inset ring-black/[0.04] transition-opacity hover:opacity-75 ${HEATMAP_CLASSES[lvl] ?? HEATMAP_CLASSES[0]}`}
+                        />
+                      </Tooltip>
                     );
                   })}
                 </div>
@@ -734,16 +742,18 @@ export default function AIUsagePage() {
                   {hourItems.map((h) => {
                     const pct = hourScale.toPct(h.total_tokens);
                     return (
-                      <div
+                      <Tooltip
                         key={h.bucket}
-                        className="min-w-0 h-full flex items-end rounded-t hover:bg-zinc-100/70 transition-colors group"
-                        title={`${h.shortLabel} — ${formatTokens(h.total_tokens)} · ${formatUSD(h.cost_usd)}`}
+                        delay={80}
+                        content={`${h.shortLabel} — ${formatTokens(h.total_tokens)} · ${formatUSD(h.cost_usd)}`}
                       >
-                        <div
-                          className="w-full rounded-t-[2px] bg-sky-400 group-hover:bg-sky-500 transition-colors"
-                          style={{ height: `${pct}%` }}
-                        />
-                      </div>
+                        <div className="min-w-0 h-full flex items-end rounded-t hover:bg-zinc-100/70 transition-colors group">
+                          <div
+                            className="w-full rounded-t-[2px] bg-sky-400 group-hover:bg-sky-500 transition-colors"
+                            style={{ height: `${pct}%` }}
+                          />
+                        </div>
+                      </Tooltip>
                     );
                   })}
                 </div>
@@ -984,14 +994,11 @@ export default function AIUsagePage() {
                 ))
               ) : (sessionsRes?.sessions?.length ?? 0) === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-8 text-center text-zinc-400">
+                  <td colSpan={8} className="py-4 text-center text-zinc-400">
                     {fetchingSessions ? (
-                      <span className="inline-flex items-center gap-1.5">
-                        <Loader2 className="h-4 w-4 animate-spin text-sky-500" />
-                        加载会话记录中...
-                      </span>
+                      <LoadingState label="正在加载模块..." variant="compact" />
                     ) : (
-                      '暂无会话记录'
+                      <div className="py-4">暂无会话记录</div>
                     )}
                   </td>
                 </tr>
@@ -1007,9 +1014,11 @@ export default function AIUsagePage() {
                         {s.project || '未标记项目'}
                       </div>
                       <div className="mt-0.5 flex items-center gap-1.5 text-xs text-zinc-400">
-                        <span className="font-mono" title={s.session_id}>
-                          {s.session_id.slice(0, 14)}
-                        </span>
+                        <Tooltip content={s.session_id}>
+                          <span className="font-mono">
+                            {s.session_id.slice(0, 14)}
+                          </span>
+                        </Tooltip>
                         {s.subagent_count > 0 && (
                           <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] text-zinc-600">
                             +{s.subagent_count} 子代理
@@ -1106,7 +1115,7 @@ export default function AIUsagePage() {
             </div>
 
             {loadingDetail || !sessionDetail ? (
-              <div className="text-sm text-zinc-400">加载会话明细中...</div>
+              <LoadingState label="正在加载模块..." variant="section" />
             ) : (
               <>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-[13px] tabular-nums">

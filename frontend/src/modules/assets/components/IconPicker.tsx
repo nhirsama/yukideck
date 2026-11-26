@@ -1,4 +1,5 @@
 import { useState, type ComponentType } from 'react';
+import { Tooltip } from '@/components/Tooltip';
 import {
   Armchair,
   Backpack,
@@ -154,19 +155,19 @@ export function IconPicker({
         {ICON_CATALOG.map(({ key, label, icon: Icon }) => {
           const active = value === key;
           return (
-            <button
-              key={key}
-              type="button"
-              title={label}
-              onClick={() => onChange(key)}
-              className={`flex h-8 w-8 items-center justify-center rounded-md transition-colors ${
-                active
-                  ? 'bg-sky-500 text-white shadow-xs'
-                  : 'text-zinc-500 hover:bg-white hover:text-zinc-800'
-              }`}
-            >
-              <Icon className="h-4 w-4" />
-            </button>
+            <Tooltip key={key} content={label} delay={120}>
+              <button
+                type="button"
+                onClick={() => onChange(key)}
+                className={`flex h-8 w-8 items-center justify-center rounded-md transition-colors ${
+                  active
+                    ? 'bg-sky-500 text-white shadow-xs'
+                    : 'text-zinc-500 hover:bg-white hover:text-zinc-800'
+                }`}
+              >
+                <Icon className="h-4 w-4" />
+              </button>
+            </Tooltip>
           );
         })}
       </div>

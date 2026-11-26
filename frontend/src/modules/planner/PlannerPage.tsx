@@ -23,6 +23,8 @@ import {
   Send,
   Trash2,
 } from 'lucide-react';
+import { LoadingState } from '@/components/LoadingState';
+import { Tooltip } from '@/components/Tooltip';
 import {
   formatLogReason,
   formatOffsetLabel,
@@ -317,7 +319,7 @@ export default function PlannerPage() {
           </div>
 
           {itemsLoading ? (
-            <div className="text-xs text-zinc-400">加载中...</div>
+            <LoadingState label="正在加载模块..." variant="section" />
           ) : filteredItems.length === 0 ? (
             <div className="yd-empty p-10 text-xs">当前筛选下暂无事项。</div>
           ) : (
@@ -422,76 +424,83 @@ export default function PlannerPage() {
                     {/* Right action bar: [Check?] [Bell?] [Pause/Resume?] [Edit?] [More...] */}
                     <div className="flex items-center gap-0.5 shrink-0">
                       {!isDone && canConfirm && (
-                        <button
-                          type="button"
-                          title={
+                        <Tooltip
+                          content={
                             it.repeat_type !== 'none'
                               ? '确认本期并推进至下一周期'
                               : '确认完成'
                           }
-                          onClick={() => completeMut.mutate(it.id)}
-                          className="yd-btn-icon text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700"
                         >
-                          <Check className="h-3.5 w-3.5" />
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() => completeMut.mutate(it.id)}
+                            className="yd-btn-icon text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700"
+                          >
+                            <Check className="h-3.5 w-3.5" />
+                          </button>
+                        </Tooltip>
                       )}
 
                       {!isDone && it.target_at && (
-                        <button
-                          type="button"
-                          title="通知配置"
-                          onClick={() => setNotifyModalItem(it)}
-                          className={`yd-btn-icon ${
-                            hasPushConfig ? 'text-sky-600 hover:text-sky-700' : ''
-                          }`}
-                        >
-                          <Bell className="h-3.5 w-3.5" />
-                        </button>
+                        <Tooltip content="通知配置">
+                          <button
+                            type="button"
+                            onClick={() => setNotifyModalItem(it)}
+                            className={`yd-btn-icon ${
+                              hasPushConfig ? 'text-sky-600 hover:text-sky-700' : ''
+                            }`}
+                          >
+                            <Bell className="h-3.5 w-3.5" />
+                          </button>
+                        </Tooltip>
                       )}
 
                       {!isDone && it.target_at && (
-                        <button
-                          type="button"
-                          title={it.paused ? '恢复通知' : '暂停通知'}
-                          onClick={() => {
-                            if (it.paused) {
-                              resumeMut.mutate(it.id);
-                            } else {
-                              setPauseModalItem(it);
-                            }
-                          }}
-                          className={`yd-btn-icon ${
-                            it.paused ? 'text-amber-600 hover:text-amber-700 hover:bg-amber-50' : ''
-                          }`}
-                        >
-                          {it.paused ? (
-                            <Play className="h-3.5 w-3.5" />
-                          ) : (
-                            <Pause className="h-3.5 w-3.5" />
-                          )}
-                        </button>
+                        <Tooltip content={it.paused ? '恢复通知' : '暂停通知'}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (it.paused) {
+                                resumeMut.mutate(it.id);
+                              } else {
+                                setPauseModalItem(it);
+                              }
+                            }}
+                            className={`yd-btn-icon ${
+                              it.paused ? 'text-amber-600 hover:text-amber-700 hover:bg-amber-50' : ''
+                            }`}
+                          >
+                            {it.paused ? (
+                              <Play className="h-3.5 w-3.5" />
+                            ) : (
+                              <Pause className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                        </Tooltip>
                       )}
 
                       {!isDone && (
-                        <button
-                          type="button"
-                          title="修改"
-                          onClick={() => setModalState({ open: true, item: it })}
-                          className="yd-btn-icon"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
+                        <Tooltip content="修改">
+                          <button
+                            type="button"
+                            onClick={() => setModalState({ open: true, item: it })}
+                            className="yd-btn-icon"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                        </Tooltip>
                       )}
 
                       <div className="relative" ref={menuOpen ? menuRef : undefined}>
-                        <button
-                          type="button"
-                          title="更多操作"
-                          onClick={() => setOpenMenuId(menuOpen ? null : it.id)}
-                          className="yd-btn-icon"
-                        >
-                          <MoreHorizontal className="h-3.5 w-3.5" />
-                        </button>
+                        <Tooltip content="更多操作" disabled={menuOpen}>
+                          <button
+                            type="button"
+                            onClick={() => setOpenMenuId(menuOpen ? null : it.id)}
+                            className="yd-btn-icon"
+                          >
+                            <MoreHorizontal className="h-3.5 w-3.5" />
+                          </button>
+                        </Tooltip>
 
                         {menuOpen && (
                           <div className="absolute right-0 mt-1.5 w-32 rounded-xl border border-zinc-200/90 bg-white py-1 shadow-lg z-30">
@@ -633,7 +642,7 @@ export default function PlannerPage() {
 
           <div className="yd-card overflow-hidden">
             {logsLoading ? (
-              <div className="p-6 text-xs text-zinc-400">加载推送与诊断记录...</div>
+              <LoadingState label="正在加载模块..." variant="section" />
             ) : (logsData?.logs ?? []).length === 0 ? (
               <div className="p-10 text-center text-xs text-zinc-500">
                 当前筛选下暂无推送或诊断记录。

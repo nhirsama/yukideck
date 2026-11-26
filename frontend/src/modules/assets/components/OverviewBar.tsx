@@ -1,5 +1,6 @@
 import { AlertTriangle, Eye, EyeOff, Plus, RefreshCw, ShieldAlert } from 'lucide-react';
 import { InfoTooltip } from '@/components/InfoTooltip';
+import { Tooltip } from '@/components/Tooltip';
 import {
   formatMoney,
   formatMoneyExact,
@@ -155,23 +156,25 @@ export function OverviewBar({
                     </div>
                   }
                 />
-                <button
-                  type="button"
-                  onClick={onRefreshRates}
-                  disabled={refreshingRates}
-                  title="刷新汇率"
-                  className="yd-btn-icon"
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 ${refreshingRates ? 'animate-spin' : ''}`} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onUpdateSettings({ hide_amounts: !hidden })}
-                  title={hidden ? '显示金额' : '隐藏金额'}
-                  className="yd-btn-icon"
-                >
-                  {hidden ? <EyeOff className="h-4 w-4 text-sky-600" /> : <Eye className="h-4 w-4" />}
-                </button>
+                <Tooltip content="刷新汇率">
+                  <button
+                    type="button"
+                    onClick={onRefreshRates}
+                    disabled={refreshingRates}
+                    className="yd-btn-icon"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${refreshingRates ? 'animate-spin' : ''}`} />
+                  </button>
+                </Tooltip>
+                <Tooltip content={hidden ? '显示金额' : '隐藏金额'}>
+                  <button
+                    type="button"
+                    onClick={() => onUpdateSettings({ hide_amounts: !hidden })}
+                    className="yd-btn-icon"
+                  >
+                    {hidden ? <EyeOff className="h-4 w-4 text-sky-600" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </Tooltip>
               </div>
             </div>
 
@@ -187,26 +190,28 @@ export function OverviewBar({
 
               <div className="flex items-center gap-1.5">
                 {(summary?.warranty_expiring_count ?? 0) > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => onFilterWarranty('expiring_soon')}
-                    className="yd-badge yd-badge-amber hover:opacity-85"
-                    title="点击筛选 30 天内过保/到期物品"
-                  >
-                    <AlertTriangle className="h-3 w-3" />
-                    临近到期 {summary?.warranty_expiring_count}
-                  </button>
+                  <Tooltip content="点击筛选 30 天内过保/到期物品">
+                    <button
+                      type="button"
+                      onClick={() => onFilterWarranty('expiring_soon')}
+                      className="yd-badge yd-badge-amber hover:opacity-85"
+                    >
+                      <AlertTriangle className="h-3 w-3" />
+                      临近到期 {summary?.warranty_expiring_count}
+                    </button>
+                  </Tooltip>
                 )}
                 {(summary?.warranty_expired_count ?? 0) > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => onFilterWarranty('expired')}
-                    className="yd-badge yd-badge-red hover:opacity-85"
-                    title="点击筛选已过期物品"
-                  >
-                    <ShieldAlert className="h-3 w-3" />
-                    已过保 {summary?.warranty_expired_count}
-                  </button>
+                  <Tooltip content="点击筛选已过期物品">
+                    <button
+                      type="button"
+                      onClick={() => onFilterWarranty('expired')}
+                      className="yd-badge yd-badge-red hover:opacity-85"
+                    >
+                      <ShieldAlert className="h-3 w-3" />
+                      已过保 {summary?.warranty_expired_count}
+                    </button>
+                  </Tooltip>
                 )}
                 {(summary?.warranty_expiring_count ?? 0) === 0 &&
                   (summary?.warranty_expired_count ?? 0) === 0 && (

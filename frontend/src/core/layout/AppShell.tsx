@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { Bell, LayoutGrid, LogOut, Settings, Layers } from 'lucide-react';
 import { useAuth } from '@/core/auth';
 import { useEnabledModules } from '@/core/module';
+import { LoadingState } from '@/components/LoadingState';
+import { Tooltip } from '@/components/Tooltip';
 
 export function AppShell() {
   const { user, logout } = useAuth();
@@ -87,21 +89,24 @@ export function AppShell() {
                 {user?.email && <div className="text-xs text-zinc-400 truncate">{user.email}</div>}
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => void logout()}
-              title="退出登录"
-              className="yd-btn-icon shrink-0"
-            >
-              <LogOut className="h-4 w-4" />
-            </button>
+            <Tooltip content="退出登录">
+              <button
+                type="button"
+                onClick={() => void logout()}
+                className="yd-btn-icon shrink-0"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
+            </Tooltip>
           </div>
         </div>
       </aside>
 
       <main className="flex-1 min-w-0">
         <div className="max-w-7xl mx-auto px-6 sm:px-8 py-7">
-          <Outlet />
+          <Suspense fallback={<LoadingState label="正在加载模块..." variant="module" />}>
+            <Outlet />
+          </Suspense>
         </div>
       </main>
     </div>

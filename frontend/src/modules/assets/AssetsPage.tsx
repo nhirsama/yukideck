@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Archive, FolderInput, PackageOpen, Plus, Trash2 } from 'lucide-react';
+import { LoadingState } from '@/components/LoadingState';
 import { Select } from '@/components/Select';
 import {
   assetsApi,
@@ -271,7 +272,9 @@ export default function AssetsPage() {
 
       {/* Main Content */}
       {metaLoading || itemsLoading ? (
-        <div className="yd-card py-14 text-center text-sm text-zinc-400">正在加载物品资产...</div>
+        <div className="yd-card">
+          <LoadingState label="正在加载模块..." variant="section" />
+        </div>
       ) : items.length === 0 && viewMode !== 'folder' ? (
         <div className="yd-empty space-y-3 py-14">
           <PackageOpen className="mx-auto h-10 w-10 text-zinc-300" />

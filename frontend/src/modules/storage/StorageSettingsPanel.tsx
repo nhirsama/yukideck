@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, Copy, PlugZap } from 'lucide-react';
+import { LoadingState } from '@/components/LoadingState';
 import { storageApi, type SaveStorageConfigPayload, type UploadMode } from './api';
 
 const CORS_SNIPPET = JSON.stringify(
@@ -82,7 +83,7 @@ export default function StorageSettingsPanel() {
   };
 
   if (isLoading) {
-    return <div className="text-xs text-zinc-400">加载配置中...</div>;
+    return <LoadingState label="正在加载模块..." variant="section" />;
   }
 
   return (

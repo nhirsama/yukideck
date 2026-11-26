@@ -13,7 +13,9 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
+import { LoadingState } from '@/components/LoadingState';
 import { Select } from '@/components/Select';
+import { Tooltip } from '@/components/Tooltip';
 import {
   CURRENCY_OPTIONS,
   PRICING_MODE_LABELS,
@@ -552,18 +554,19 @@ export function ItemModal({
                       退役/卖出
                     </button>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (window.confirm('确认删除该物品吗？关联子物品会自动转为独立物品。')) {
-                        deleteMut.mutate();
-                      }
-                    }}
-                    className="yd-btn-danger-icon"
-                    title="删除物品"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
+                  <Tooltip content="删除物品">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm('确认删除该物品吗？关联子物品会自动转为独立物品。')) {
+                          deleteMut.mutate();
+                        }
+                      }}
+                      className="yd-btn-danger-icon"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </Tooltip>
                 </>
               )}
               <button type="button" onClick={onClose} className="yd-btn-icon">
@@ -575,7 +578,7 @@ export function ItemModal({
           {/* Body */}
           <div className="flex-1 space-y-5 overflow-y-auto p-6">
             {isEdit && isLoading ? (
-              <div className="py-10 text-center text-xs text-zinc-400">加载物品详情中...</div>
+              <LoadingState label="正在加载模块..." variant="compact" />
             ) : (
               <>
                 {errMsg && <div className="yd-notice-error">{errMsg}</div>}

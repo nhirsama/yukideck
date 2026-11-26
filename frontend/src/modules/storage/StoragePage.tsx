@@ -19,6 +19,8 @@ import {
   Upload,
   X,
 } from 'lucide-react';
+import { LoadingState } from '@/components/LoadingState';
+import { Tooltip } from '@/components/Tooltip';
 import {
   storageApi,
   type FileEntry,
@@ -336,26 +338,33 @@ export default function StoragePage() {
     return items;
   }, [prefix]);
 
-  if (cfgLoading) {
-    return <div className="text-xs text-zinc-400">加载图床配置...</div>;
+  const isInitialLoad = cfgLoading || (Boolean(cfg?.configured) && listLoading && prefix === '' && !listing);
+
+  if (isInitialLoad) {
+    return <LoadingState label="正在加载模块..." variant="module" />;
   }
 
   if (!cfg?.configured) {
     return (
-      <div className="yd-empty p-14 space-y-4">
-        <div className="mx-auto h-11 w-11 rounded-xl bg-zinc-100 text-zinc-500 flex items-center justify-center">
-          <ImageIcon className="h-5 w-5" />
+      <div className="space-y-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h1 className="yd-page-title">图床管理</h1>
         </div>
-        <div className="space-y-1">
-          <h2 className="text-sm font-semibold text-zinc-900">尚未配置对象存储桶</h2>
-          <p className="text-xs text-zinc-500">
-            请先前往「系统设置」填写你自己的 Cloudflare R2 / S3 存储桶与公开直链域名。
-          </p>
+        <div className="yd-empty p-14 space-y-4">
+          <div className="mx-auto h-11 w-11 rounded-xl bg-zinc-100 text-zinc-500 flex items-center justify-center">
+            <ImageIcon className="h-5 w-5" />
+          </div>
+          <div className="space-y-1">
+            <h2 className="text-sm font-semibold text-zinc-900">尚未配置对象存储桶</h2>
+            <p className="text-xs text-zinc-500">
+              请先前往「系统设置」填写你自己的 Cloudflare R2 / S3 存储桶与公开直链域名。
+            </p>
+          </div>
+          <Link to="/settings?tab=storage" className="yd-btn-primary">
+            <Settings className="h-3.5 w-3.5" />
+            前往配置存储桶
+          </Link>
         </div>
-        <Link to="/settings?tab=storage" className="yd-btn-primary">
-          <Settings className="h-3.5 w-3.5" />
-          前往配置存储桶
-        </Link>
       </div>
     );
   }
@@ -364,7 +373,7 @@ export default function StoragePage() {
 
   return (
     <div
-      className="space-y-5 relative min-h-[70vh]"
+      className="space-y-6 relative min-h-[70vh]"
       onDragOver={(e) => {
         e.preventDefault();
         setDragging(true);
@@ -400,13 +409,14 @@ export default function StoragePage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2.5">
           <h1 className="yd-page-title">图床管理</h1>
-          <Link
-            to="/settings?tab=storage"
-            className="yd-badge yd-badge-neutral hover:bg-sky-50 hover:text-sky-700 transition-colors"
-            title="修改上传模式或存储桶配置"
-          >
-            {cfg.upload_mode === 'direct' ? '直传' : `中转 ≤${cfg.proxy_max_mb}MB`}
-          </Link>
+          <Tooltip content="修改上传模式或存储桶配置">
+            <Link
+              to="/settings?tab=storage"
+              className="yd-badge yd-badge-neutral hover:bg-sky-50 hover:text-sky-700 transition-colors"
+            >
+              {cfg.upload_mode === 'direct' ? '直传' : `中转 ≤${cfg.proxy_max_mb}MB`}
+            </Link>
+          </Tooltip>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -503,7 +513,7 @@ export default function StoragePage() {
       )}
 
       {listLoading ? (
-        <div className="py-12 text-center text-xs text-zinc-400">正在读取存储桶...</div>
+        <LoadingState label="正在加载目录..." variant="section" />
       ) : (
         <>
           {/* Folders Grid */}
@@ -525,53 +535,56 @@ export default function StoragePage() {
                     }`}
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleSelect({ type: 'folder', path: folder.prefix });
-                        }}
-                        className="relative h-4 w-4 shrink-0 flex items-center justify-center"
-                        title={isSel ? '取消选择' : '选择文件夹'}
-                      >
-                        {isSel ? (
-                          <span className="h-4 w-4 rounded bg-sky-500 text-white flex items-center justify-center">
-                            <Check className="h-3 w-3" />
-                          </span>
-                        ) : (
-                          <>
-                            <Folder className="h-4 w-4 text-sky-400 group-hover:opacity-0 transition-opacity" />
-                            <span className="absolute inset-0 rounded border border-zinc-300 bg-white opacity-0 group-hover:opacity-100 transition-opacity" />
-                          </>
-                        )}
-                      </button>
+                      <Tooltip content={isSel ? '取消选择' : '选择文件夹'}>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleSelect({ type: 'folder', path: folder.prefix });
+                          }}
+                          className="relative h-4 w-4 shrink-0 flex items-center justify-center"
+                        >
+                          {isSel ? (
+                            <span className="h-4 w-4 rounded bg-sky-500 text-white flex items-center justify-center">
+                              <Check className="h-3 w-3" />
+                            </span>
+                          ) : (
+                            <>
+                              <Folder className="h-4 w-4 text-sky-400 group-hover:opacity-0 transition-opacity" />
+                              <span className="absolute inset-0 rounded border border-zinc-300 bg-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                            </>
+                          )}
+                        </button>
+                      </Tooltip>
                       <span className="text-[13px] text-zinc-800 truncate">{folder.name}</span>
                     </div>
                     <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                      <button
-                        type="button"
-                        title="重命名文件夹"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleRename('folder', folder.prefix, folder.name);
-                        }}
-                        className="yd-btn-icon p-1"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        title="删除文件夹"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (window.confirm(`确定递归删除文件夹「${folder.name}」及其下所有文件？`)) {
-                            deleteMut.mutate([{ type: 'folder', path: folder.prefix }]);
-                          }
-                        }}
-                        className="yd-btn-danger-icon p-1"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      <Tooltip content="重命名文件夹">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRename('folder', folder.prefix, folder.name);
+                          }}
+                          className="yd-btn-icon p-1"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                      </Tooltip>
+                      <Tooltip content="删除文件夹">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (window.confirm(`确定递归删除文件夹「${folder.name}」及其下所有文件？`)) {
+                              deleteMut.mutate([{ type: 'folder', path: folder.prefix }]);
+                            }
+                          }}
+                          className="yd-btn-danger-icon p-1"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </Tooltip>
                     </div>
                   </div>
                 );
@@ -665,40 +678,43 @@ export default function StoragePage() {
                           onClick={(e) => e.stopPropagation()}
                           className="absolute top-2.5 right-2.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
                         >
-                          <button
-                            type="button"
-                            title="复制直链"
-                            onClick={() => void copyLink(file.url)}
-                            className={`h-7 w-7 rounded-lg bg-white/90 backdrop-blur-xs hover:bg-white shadow-xs flex items-center justify-center transition-colors ${
-                              copiedUrl === file.url ? 'text-emerald-600' : 'text-zinc-700'
-                            }`}
-                          >
-                            {copiedUrl === file.url ? (
-                              <Check className="h-3.5 w-3.5" />
-                            ) : (
-                              <Link2 className="h-3.5 w-3.5" />
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            title="重命名"
-                            onClick={() => handleRename('file', file.key, file.name)}
-                            className="h-7 w-7 rounded-lg bg-white/90 backdrop-blur-xs hover:bg-white text-zinc-700 shadow-xs flex items-center justify-center transition-colors"
-                          >
-                            <Pencil className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            title="删除"
-                            onClick={() => {
-                              if (window.confirm(`确定删除文件「${file.name}」吗？`)) {
-                                deleteMut.mutate([{ type: 'file', path: file.key }]);
-                              }
-                            }}
-                            className="h-7 w-7 rounded-lg bg-white/90 backdrop-blur-xs hover:bg-red-50 text-zinc-700 hover:text-red-600 shadow-xs flex items-center justify-center transition-colors"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                          <Tooltip content="复制直链">
+                            <button
+                              type="button"
+                              onClick={() => void copyLink(file.url)}
+                              className={`h-7 w-7 rounded-lg bg-white/90 backdrop-blur-xs hover:bg-white shadow-xs flex items-center justify-center transition-colors ${
+                                copiedUrl === file.url ? 'text-emerald-600' : 'text-zinc-700'
+                              }`}
+                            >
+                              {copiedUrl === file.url ? (
+                                <Check className="h-3.5 w-3.5" />
+                              ) : (
+                                <Link2 className="h-3.5 w-3.5" />
+                              )}
+                            </button>
+                          </Tooltip>
+                          <Tooltip content="重命名">
+                            <button
+                              type="button"
+                              onClick={() => handleRename('file', file.key, file.name)}
+                              className="h-7 w-7 rounded-lg bg-white/90 backdrop-blur-xs hover:bg-white text-zinc-700 shadow-xs flex items-center justify-center transition-colors"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                          </Tooltip>
+                          <Tooltip content="删除">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (window.confirm(`确定删除文件「${file.name}」吗？`)) {
+                                  deleteMut.mutate([{ type: 'file', path: file.key }]);
+                                }
+                              }}
+                              className="h-7 w-7 rounded-lg bg-white/90 backdrop-blur-xs hover:bg-red-50 text-zinc-700 hover:text-red-600 shadow-xs flex items-center justify-center transition-colors"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </Tooltip>
                         </div>
 
                         {/* Bottom overlay metadata */}
@@ -912,7 +928,7 @@ function MoveFolderModal({
             </button>
           )}
           {isLoading ? (
-            <div className="p-4 text-xs text-zinc-400 text-center">加载目录中...</div>
+            <LoadingState label="正在加载模块..." variant="compact" />
           ) : (data?.folders ?? []).length === 0 ? (
             <div className="p-4 text-xs text-zinc-400 text-center">无更深层子文件夹</div>
           ) : (

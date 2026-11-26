@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, Copy, KeyRound, Plus, RefreshCw, Shield, Trash2, X } from 'lucide-react';
+import { LoadingState } from '@/components/LoadingState';
+import { Tooltip } from '@/components/Tooltip';
 import {
   coreApi,
   type APIKey,
@@ -141,7 +143,7 @@ export function APIKeysPanel() {
       )}
 
       {isLoading ? (
-        <div className="text-xs text-zinc-400">加载中...</div>
+        <LoadingState label="正在加载模块..." variant="section" />
       ) : apiKeys.length === 0 ? (
         <div className="yd-empty p-10 text-xs">暂无 API Key</div>
       ) : (
@@ -174,19 +176,20 @@ export function APIKeysPanel() {
                   </div>
 
                   <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      type="button"
-                      title="轮换密钥"
-                      disabled={rotateMut.isPending}
-                      onClick={() => {
-                        if (window.confirm(`轮换后「${item.name}」的旧密钥将立即失效，确定继续？`)) {
-                          rotateMut.mutate(item.id);
-                        }
-                      }}
-                      className="yd-btn-icon"
-                    >
-                      <RefreshCw className="h-3.5 w-3.5" />
-                    </button>
+                    <Tooltip content="轮换密钥">
+                      <button
+                        type="button"
+                        disabled={rotateMut.isPending}
+                        onClick={() => {
+                          if (window.confirm(`轮换后「${item.name}」的旧密钥将立即失效，确定继续？`)) {
+                            rotateMut.mutate(item.id);
+                          }
+                        }}
+                        className="yd-btn-icon"
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      </button>
+                    </Tooltip>
                     <button
                       type="button"
                       onClick={() => setEditing(item)}
@@ -194,18 +197,19 @@ export function APIKeysPanel() {
                     >
                       编辑
                     </button>
-                    <button
-                      type="button"
-                      title="删除"
-                      onClick={() => {
-                        if (window.confirm(`确定删除 API Key「${item.name}」吗？`)) {
-                          deleteMut.mutate(item.id);
-                        }
-                      }}
-                      className="yd-btn-danger-icon"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    <Tooltip content="删除">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(`确定删除 API Key「${item.name}」吗？`)) {
+                            deleteMut.mutate(item.id);
+                          }
+                        }}
+                        className="yd-btn-danger-icon"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </Tooltip>
                   </div>
                 </div>
 
@@ -644,14 +648,15 @@ function APIKeyForm({
                             : ' · 待选资源'
                         : ''}
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => togglePermission(def.key)}
-                      title="移除该权限"
-                      className="text-sky-500 hover:text-sky-800 transition-colors"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
+                    <Tooltip content="移除该权限">
+                      <button
+                        type="button"
+                        onClick={() => togglePermission(def.key)}
+                        className="text-sky-500 hover:text-sky-800 transition-colors"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Tooltip>
                   </span>
                 ))}
               </div>
