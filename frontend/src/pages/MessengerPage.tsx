@@ -166,11 +166,6 @@ function ChannelsSection() {
                   {ch.is_default_outbound && <span className="yd-badge yd-badge-dark">默认出站</span>}
                   {!ch.enabled && <span className="yd-badge yd-badge-amber">已停用</span>}
                 </div>
-                {ch.webhook_url && ch.enable_inbound && (
-                  <div className="text-[11px] font-mono text-zinc-400 truncate">
-                    Webhook: {ch.webhook_url}
-                  </div>
-                )}
               </div>
 
               <div className="flex items-center gap-1.5 shrink-0">
@@ -462,7 +457,6 @@ function PushEndpointsSection() {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span className="text-[13px] font-medium text-zinc-800 mr-0.5">{ep.name}</span>
-                    <code className="yd-code">{ep.slug}</code>
                     <span className="yd-badge yd-badge-neutral">
                       {ep.target_mode === 'default'
                         ? '默认出站'

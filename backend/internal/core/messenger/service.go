@@ -104,7 +104,7 @@ func (s *Service) RegisterPermissions(reg *auth.PermissionRegistry) {
 		for _, ep := range endpoints {
 			out = append(out, auth.ResourceOption{
 				ID:   ep.Slug,
-				Name: fmt.Sprintf("%s (%s)", ep.Name, ep.Slug),
+				Name: ep.Name,
 			})
 		}
 		return out, nil
