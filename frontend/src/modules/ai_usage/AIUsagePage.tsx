@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { BarChart3, ChevronLeft, ChevronRight, Cpu, Layers, Loader2, Settings, Terminal, X } from 'lucide-react';
+import { InfoTooltip } from '@/components/InfoTooltip';
+import { Select } from '@/components/Select';
 import { aiUsageApi, type BreakdownItem, type HeatmapDay } from './api';
 import {
   buildAxisScale,
@@ -310,66 +312,61 @@ export default function AIUsagePage() {
 
         <div className="flex flex-wrap items-center gap-2">
           <div className="grid flex-1 grid-cols-2 sm:grid-cols-4 gap-2">
-            <select
+            <Select
               value={agent}
-              onChange={(e) => {
-                setAgent(e.target.value);
+              onChange={(v) => {
+                setAgent(v);
                 setPage(1);
               }}
-              className="yd-input-sm w-full"
-            >
-              <option value="">全部 Agent</option>
-              {(filters?.agents ?? []).map((a) => (
-                <option key={a} value={a}>
-                  {a}
-                </option>
-              ))}
-            </select>
-            <select
+              options={[
+                { value: '', label: '全部 Agent' },
+                ...(filters?.agents ?? []).map((a) => ({ value: a, label: a })),
+              ]}
+              className="w-full"
+              ariaLabel="筛选 Agent"
+            />
+            <Select
               value={model}
-              onChange={(e) => {
-                setModel(e.target.value);
+              onChange={(v) => {
+                setModel(v);
                 setPage(1);
               }}
-              className="yd-input-sm w-full"
-            >
-              <option value="">全部模型</option>
-              {(filters?.models ?? []).map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-            <select
+              options={[
+                { value: '', label: '全部模型' },
+                ...(filters?.models ?? []).map((m) => ({ value: m, label: m })),
+              ]}
+              className="w-full"
+              ariaLabel="筛选模型"
+            />
+            <Select
               value={deviceId}
-              onChange={(e) => {
-                setDeviceId(e.target.value);
+              onChange={(v) => {
+                setDeviceId(v);
                 setPage(1);
               }}
-              className="yd-input-sm w-full"
-            >
-              <option value="">全部设备</option>
-              {(filters?.devices ?? []).map((d) => (
-                <option key={d.device_id} value={d.device_id}>
-                  {d.name || d.device_id}
-                </option>
-              ))}
-            </select>
-            <select
+              options={[
+                { value: '', label: '全部设备' },
+                ...(filters?.devices ?? []).map((d) => ({
+                  value: d.device_id,
+                  label: d.name || d.device_id,
+                })),
+              ]}
+              className="w-full"
+              ariaLabel="筛选设备"
+            />
+            <Select
               value={project}
-              onChange={(e) => {
-                setProject(e.target.value);
+              onChange={(v) => {
+                setProject(v);
                 setPage(1);
               }}
-              className="yd-input-sm w-full"
-            >
-              <option value="">全部项目</option>
-              {(filters?.projects ?? []).map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
+              options={[
+                { value: '', label: '全部项目' },
+                ...(filters?.projects ?? []).map((p) => ({ value: p, label: p })),
+              ]}
+              className="w-full"
+              ariaLabel="筛选项目"
+            />
           </div>
           {hasActiveFilters && (
             <button
@@ -392,14 +389,14 @@ export default function AIUsagePage() {
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="yd-card p-4">
-          <div className="flex items-center justify-between text-xs text-zinc-500">
+          <div className="flex items-center justify-between text-[13px] text-zinc-500">
             <span>总 Token 消耗</span>
-            <Layers className="h-3.5 w-3.5 text-zinc-400" />
+            <Layers className="h-4 w-4 text-zinc-400" />
           </div>
-          <div className="mt-2.5 font-mono text-2xl font-semibold tracking-tight text-zinc-900 tabular-nums">
+          <div className="mt-2.5 font-mono text-[26px] leading-tight font-semibold tracking-tight text-zinc-900 tabular-nums">
             {loadingSummary ? '—' : formatTokens(summary?.tokens.total_tokens ?? 0)}
           </div>
-          <div className="mt-1.5 text-[11px] text-zinc-400 tabular-nums">
+          <div className="mt-1.5 text-xs text-zinc-400 tabular-nums">
             输入 {formatTokens(summary?.tokens.input_tokens ?? 0)} · 输出{' '}
             {formatTokens(summary?.tokens.output_tokens ?? 0)} · 缓存读{' '}
             {formatTokens(summary?.tokens.cache_read_tokens ?? 0)}
@@ -407,44 +404,44 @@ export default function AIUsagePage() {
         </div>
 
         <div className="yd-card p-4">
-          <div className="flex items-center justify-between text-xs text-zinc-500">
+          <div className="flex items-center justify-between text-[13px] text-zinc-500">
             <span>等效 API 费用</span>
-            <BarChart3 className="h-3.5 w-3.5 text-zinc-400" />
+            <BarChart3 className="h-4 w-4 text-zinc-400" />
           </div>
-          <div className="mt-2.5 font-mono text-2xl font-semibold tracking-tight text-zinc-900 tabular-nums">
+          <div className="mt-2.5 font-mono text-[26px] leading-tight font-semibold tracking-tight text-zinc-900 tabular-nums">
             {loadingSummary ? '—' : formatUSD(summary?.cost_usd ?? 0)}
           </div>
-          <div className="mt-1.5 text-[11px] text-emerald-700 tabular-nums">
+          <div className="mt-1.5 text-xs text-emerald-700 tabular-nums">
             缓存命中率 {formatPercent(summary?.cache_hit_rate ?? 0)} · 节省{' '}
             {formatUSD(summary?.cache_savings_usd ?? 0)}
           </div>
         </div>
 
         <div className="yd-card p-4">
-          <div className="flex items-center justify-between text-xs text-zinc-500">
+          <div className="flex items-center justify-between text-[13px] text-zinc-500">
             <span>会话 / 请求轮次</span>
-            <Cpu className="h-3.5 w-3.5 text-zinc-400" />
+            <Cpu className="h-4 w-4 text-zinc-400" />
           </div>
-          <div className="mt-2.5 font-mono text-2xl font-semibold tracking-tight text-zinc-900 tabular-nums">
+          <div className="mt-2.5 font-mono text-[26px] leading-tight font-semibold tracking-tight text-zinc-900 tabular-nums">
             {summary?.session_count ?? 0}
-            <span className="text-xs font-normal text-zinc-400 ml-1.5">
+            <span className="text-[13px] font-normal text-zinc-400 ml-1.5">
               / {summary?.request_count ?? 0} 轮
             </span>
           </div>
-          <div className="mt-1.5 text-[11px] text-zinc-400 tabular-nums">
+          <div className="mt-1.5 text-xs text-zinc-400 tabular-nums">
             活跃 {summary?.active_days ?? 0} 天 · 子代理 {formatTokens(summary?.subagent_tokens ?? 0)}
           </div>
         </div>
 
         <div className="yd-card p-4">
-          <div className="flex items-center justify-between text-xs text-zinc-500">
+          <div className="flex items-center justify-between text-[13px] text-zinc-500">
             <span>工具调用 / 峰值上下文</span>
-            <Terminal className="h-3.5 w-3.5 text-zinc-400" />
+            <Terminal className="h-4 w-4 text-zinc-400" />
           </div>
-          <div className="mt-2.5 font-mono text-2xl font-semibold tracking-tight text-zinc-900 tabular-nums">
+          <div className="mt-2.5 font-mono text-[26px] leading-tight font-semibold tracking-tight text-zinc-900 tabular-nums">
             {summary?.tool_call_count ?? 0}
           </div>
-          <div className="mt-1.5 text-[11px] text-zinc-400 tabular-nums">
+          <div className="mt-1.5 text-xs text-zinc-400 tabular-nums">
             单轮最大上下文 {formatTokens(summary?.max_context_tokens ?? 0)}
           </div>
         </div>
@@ -453,31 +450,35 @@ export default function AIUsagePage() {
       {/* Trends Chart */}
       <section className="yd-card p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-medium text-zinc-900">用量趋势</h2>
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <select
+          <h2 className="text-[15px] font-medium text-zinc-900">用量趋势</h2>
+          <div className="flex flex-wrap items-center gap-2 text-[13px]">
+            <Select
               value={granularity}
-              onChange={(e) => setGranularity(e.target.value as 'hour' | 'day' | 'week' | 'month')}
-              className="yd-input-sm py-1"
-            >
-              <option value="hour">按小时</option>
-              <option value="day">按天</option>
-              <option value="week">按周</option>
-              <option value="month">按月</option>
-            </select>
-            <select
+              onChange={(v) => setGranularity(v as 'hour' | 'day' | 'week' | 'month')}
+              options={[
+                { value: 'hour', label: '按小时' },
+                { value: 'day', label: '按天' },
+                { value: 'week', label: '按周' },
+                { value: 'month', label: '按月' },
+              ]}
+              className="py-1"
+              ariaLabel="时间粒度"
+            />
+            <Select
               value={groupBy}
-              onChange={(e) =>
-                setGroupBy(e.target.value as 'agent' | 'model' | 'device' | 'project' | 'total')
+              onChange={(v) =>
+                setGroupBy(v as 'agent' | 'model' | 'device' | 'project' | 'total')
               }
-              className="yd-input-sm py-1"
-            >
-              <option value="agent">按 Agent 堆叠</option>
-              <option value="model">按模型堆叠</option>
-              <option value="device">按设备堆叠</option>
-              <option value="project">按项目堆叠</option>
-              <option value="total">总计</option>
-            </select>
+              options={[
+                { value: 'agent', label: '按 Agent 堆叠' },
+                { value: 'model', label: '按模型堆叠' },
+                { value: 'device', label: '按设备堆叠' },
+                { value: 'project', label: '按项目堆叠' },
+                { value: 'total', label: '总计' },
+              ]}
+              className="py-1"
+              ariaLabel="堆叠维度"
+            />
             <div className="yd-segment">
               <button
                 type="button"
@@ -522,12 +523,12 @@ export default function AIUsagePage() {
         </div>
 
         {trendPoints.length === 0 ? (
-          <div className="h-44 flex items-center justify-center text-xs text-zinc-400">
+          <div className="h-44 flex items-center justify-center text-sm text-zinc-400">
             选定时间范围内暂无数据
           </div>
         ) : (
           <>
-            <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-[11px] text-zinc-500">
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-zinc-500">
               {(trends?.series_keys ?? []).map((key, idx) => (
                 <span key={key} className="inline-flex items-center gap-1.5">
                   <span
@@ -540,13 +541,13 @@ export default function AIUsagePage() {
             </div>
             <div className="flex gap-2">
               {trendScale.ticks.length > 0 && (
-                <div className="w-11 shrink-0 pt-3 pb-[22px]">
+                <div className="w-12 shrink-0 pt-3 pb-[22px]">
                   <div className="relative h-44">
                     {trendScale.ticks.map((t) => (
                       <span
                         key={t.value}
                         style={{ bottom: `${t.pct}%` }}
-                        className="absolute right-0 translate-y-1/2 text-[10px] leading-none text-zinc-400 tabular-nums whitespace-nowrap select-none"
+                        className="absolute right-0 translate-y-1/2 text-[11px] leading-none text-zinc-400 tabular-nums whitespace-nowrap select-none"
                       >
                         {t.label}
                       </span>
@@ -614,7 +615,7 @@ export default function AIUsagePage() {
                         <div key={pt.bucket} className="relative flex-1 min-w-[10px] h-full">
                           {showLabel ? (
                             <span
-                              className={`absolute top-0 text-[10px] leading-none text-zinc-400 whitespace-nowrap tabular-nums select-none ${
+                              className={`absolute top-0 text-[11px] leading-none text-zinc-400 whitespace-nowrap tabular-nums select-none ${
                                 i === 0
                                   ? 'left-0'
                                   : i === trendPoints.length - 1
@@ -640,8 +641,8 @@ export default function AIUsagePage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <section className="lg:col-span-2 yd-card p-5 flex flex-col justify-between gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-sm font-medium text-zinc-800">年度活跃</h2>
-            <div className="flex items-center gap-1 text-[10px] text-zinc-400">
+            <h2 className="text-[15px] font-medium text-zinc-800">年度活跃</h2>
+            <div className="flex items-center gap-1 text-xs text-zinc-400">
               <span>少</span>
               {HEATMAP_CLASSES.map((cls, idx) => (
                 <span key={idx} className={`h-2.5 w-2.5 rounded-[2px] ${cls}`} />
@@ -651,7 +652,7 @@ export default function AIUsagePage() {
           </div>
           <div className="space-y-1.5">
             <div
-              className="grid w-full gap-[2px] sm:gap-[3px] h-3.5"
+              className="grid w-full gap-[2px] sm:gap-[3px] h-4"
               style={{ gridTemplateColumns: `repeat(${Math.max(heatmapGrid.length, 1)}, minmax(0, 1fr))` }}
             >
               {heatmapGrid.map((_, wi) => {
@@ -660,7 +661,7 @@ export default function AIUsagePage() {
                   <div key={wi} className="relative min-w-0">
                     {label ? (
                       <span
-                        className={`absolute top-0 text-[10px] leading-none text-zinc-400 whitespace-nowrap select-none tabular-nums ${
+                        className={`absolute top-0 text-[11px] leading-none text-zinc-400 whitespace-nowrap select-none tabular-nums ${
                           wi >= heatmapGrid.length - 2 ? 'right-0' : 'left-0'
                         }`}
                       >
@@ -699,18 +700,18 @@ export default function AIUsagePage() {
 
         <section className="yd-card p-5 flex flex-col justify-between gap-3">
           <div className="flex items-center justify-between gap-2">
-            <h2 className="text-sm font-medium text-zinc-800">时段分布</h2>
-            <span className="text-[10px] text-zinc-400">近 24 小时</span>
+            <h2 className="text-[15px] font-medium text-zinc-800">时段分布</h2>
+            <span className="text-xs text-zinc-400">近 24 小时</span>
           </div>
           <div className="flex gap-2 items-stretch">
             {hourScale.ticks.length > 0 && (
-              <div className="w-9 shrink-0 pt-2 pb-[18px]">
+              <div className="w-10 shrink-0 pt-2 pb-[20px]">
                 <div className="relative h-28">
                   {hourScale.ticks.map((t) => (
                     <span
                       key={t.value}
                       style={{ bottom: `${t.pct}%` }}
-                      className="absolute right-0 translate-y-1/2 text-[10px] leading-none text-zinc-400 tabular-nums whitespace-nowrap select-none"
+                      className="absolute right-0 translate-y-1/2 text-[11px] leading-none text-zinc-400 tabular-nums whitespace-nowrap select-none"
                     >
                       {t.label}
                     </span>
@@ -747,12 +748,12 @@ export default function AIUsagePage() {
                   })}
                 </div>
               </div>
-              <div className="grid grid-cols-[repeat(24,minmax(0,1fr))] gap-[3px] h-[18px] pt-1.5">
+              <div className="grid grid-cols-[repeat(24,minmax(0,1fr))] gap-[3px] h-[20px] pt-1.5">
                 {hourItems.map((h, idx) => (
                   <div key={h.bucket} className="relative min-w-0 h-full">
                     {h.hour % 4 === 0 ? (
                       <span
-                        className={`absolute top-0 text-[10px] leading-none text-zinc-400 tabular-nums whitespace-nowrap select-none ${
+                        className={`absolute top-0 text-[11px] leading-none text-zinc-400 tabular-nums whitespace-nowrap select-none ${
                           idx === 0
                             ? 'left-0'
                             : idx === hourItems.length - 1
@@ -775,7 +776,7 @@ export default function AIUsagePage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <section className="lg:col-span-2 yd-card p-5 space-y-3.5">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-sm font-medium text-zinc-900">多维分布</h2>
+            <h2 className="text-[15px] font-medium text-zinc-900">多维分布</h2>
             <div className="yd-segment">
               {(
                 [
@@ -810,17 +811,44 @@ export default function AIUsagePage() {
                 </tr>
               </thead>
               <tbody className="yd-tbody tabular-nums">
-                {breakdownItems.slice(0, 12).map((item) => (
-                  <tr key={item.key} className="hover:bg-zinc-50/70 transition-colors">
-                    <td className="py-2.5 pr-3 font-mono text-zinc-800">{item.label}</td>
-                    <td className="py-2.5 pr-3 text-right text-zinc-700">
-                      {formatTokens(item.total_tokens)}
-                    </td>
-                    <td className="py-2.5 pr-3 text-right text-zinc-700">{formatUSD(item.cost_usd)}</td>
-                    <td className="py-2.5 pr-3 text-right text-zinc-500">{item.request_count}</td>
-                    <td className="py-2.5 text-right text-zinc-500">{item.session_count}</td>
-                  </tr>
-                ))}
+                {breakdownItems.slice(0, 12).map((item) => {
+                  const merged =
+                    breakdownTab === 'model' && item.merged_raw_models && item.merged_raw_models.length > 0
+                      ? item.merged_raw_models
+                      : null;
+                  return (
+                    <tr key={item.key} className="hover:bg-zinc-50/70 transition-colors">
+                      <td className="py-2.5 pr-3 font-mono text-zinc-800">
+                        <div className="inline-flex items-center gap-1.5 min-w-0 max-w-full">
+                          <span className="truncate">{item.label}</span>
+                          {merged && (
+                            <InfoTooltip
+                              ariaLabel={`查看合并到 ${item.label} 的原始模型`}
+                              content={
+                                <div className="space-y-1">
+                                  <div className="font-medium text-zinc-500">已合并以下原始模型：</div>
+                                  <ul className="space-y-0.5 font-mono text-zinc-800">
+                                    {merged.map((raw) => (
+                                      <li key={raw} className="break-all">
+                                        {raw}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              }
+                            />
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-2.5 pr-3 text-right text-zinc-700">
+                        {formatTokens(item.total_tokens)}
+                      </td>
+                      <td className="py-2.5 pr-3 text-right text-zinc-700">{formatUSD(item.cost_usd)}</td>
+                      <td className="py-2.5 pr-3 text-right text-zinc-500">{item.request_count}</td>
+                      <td className="py-2.5 text-right text-zinc-500">{item.session_count}</td>
+                    </tr>
+                  );
+                })}
                 {breakdownItems.length === 0 && (
                   <tr>
                     <td colSpan={5} className="py-6 text-center text-zinc-400">
@@ -835,15 +863,15 @@ export default function AIUsagePage() {
 
         <section className="yd-card p-5 space-y-3.5">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-medium text-zinc-900">工具调用排行</h2>
-            <span className="text-[11px] text-zinc-400 tabular-nums">
+            <h2 className="text-[15px] font-medium text-zinc-900">工具调用排行</h2>
+            <span className="text-xs text-zinc-400 tabular-nums">
               共 {toolsRes?.total_calls ?? 0} 次
             </span>
           </div>
           <div className="space-y-3">
             {(toolsRes?.tools ?? []).slice(0, 10).map((t) => (
               <div key={t.name} className="space-y-1.5">
-                <div className="flex justify-between text-xs">
+                <div className="flex justify-between text-[13px]">
                   <span className="font-mono text-zinc-800 truncate">{t.name}</span>
                   <span className="text-zinc-500 shrink-0 ml-2 tabular-nums">
                     {t.count} <span className="text-zinc-400">({formatPercent(t.share)})</span>
@@ -858,7 +886,7 @@ export default function AIUsagePage() {
               </div>
             ))}
             {(toolsRes?.tools?.length ?? 0) === 0 && (
-              <div className="py-6 text-center text-xs text-zinc-400">暂无工具调用记录</div>
+              <div className="py-6 text-center text-sm text-zinc-400">暂无工具调用记录</div>
             )}
           </div>
         </section>
@@ -868,15 +896,15 @@ export default function AIUsagePage() {
       <section className="yd-card p-5 space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <h2 className="text-sm font-medium text-zinc-800">会话记录</h2>
-            <span className="text-xs text-zinc-400 tabular-nums">
+            <h2 className="text-[15px] font-medium text-zinc-800">会话记录</h2>
+            <span className="text-[13px] text-zinc-400 tabular-nums">
               {loadingSessions ? '加载中...' : `共 ${sessionsRes?.total ?? 0} 条`}
             </span>
           </div>
-          <div className="flex items-center gap-2 text-xs">
+          <div className="flex items-center gap-2 text-[13px]">
             {fetchingSessions && !loadingSessions && (
-              <span className="inline-flex items-center gap-1 text-[11px] text-sky-600">
-                <Loader2 className="h-3 w-3 animate-spin" />
+              <span className="inline-flex items-center gap-1 text-xs text-sky-600">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 加载中
               </span>
             )}
@@ -887,7 +915,7 @@ export default function AIUsagePage() {
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
                 className="yd-btn-icon border border-zinc-200"
               >
-                <ChevronLeft className="h-3.5 w-3.5" />
+                <ChevronLeft className="h-4 w-4" />
               </button>
               <span className="px-2 text-zinc-500 tabular-nums">
                 {loadingSessions ? '— / —' : `${page} / ${totalPages}`}
@@ -898,7 +926,7 @@ export default function AIUsagePage() {
                 onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                 className="yd-btn-icon border border-zinc-200"
               >
-                <ChevronRight className="h-3.5 w-3.5" />
+                <ChevronRight className="h-4 w-4" />
               </button>
             </div>
           </div>
@@ -908,14 +936,14 @@ export default function AIUsagePage() {
           <table className="yd-table">
             <thead className="yd-thead">
               <tr>
-                <th className="py-2 pr-3 font-medium">会话 / 项目</th>
-                <th className="py-2 pr-3 font-medium">Agent / 设备</th>
-                <th className="py-2 pr-3 font-medium">模型</th>
-                <th className="py-2 pr-3 font-medium text-right">总 Token</th>
-                <th className="py-2 pr-3 font-medium text-right">费用</th>
-                <th className="py-2 pr-3 font-medium text-right">峰值上下文</th>
-                <th className="py-2 pr-3 font-medium text-right">工具</th>
-                <th className="py-2 font-medium text-right">最近活跃</th>
+                <th className="py-2.5 pr-4 font-medium whitespace-nowrap">项目 / 会话</th>
+                <th className="py-2.5 pr-4 font-medium whitespace-nowrap">Agent / 设备</th>
+                <th className="py-2.5 pr-4 font-medium">模型</th>
+                <th className="py-2.5 pr-4 font-medium text-right whitespace-nowrap">总 Token</th>
+                <th className="py-2.5 pr-4 font-medium text-right whitespace-nowrap">费用</th>
+                <th className="py-2.5 pr-4 font-medium text-right whitespace-nowrap">峰值上下文</th>
+                <th className="py-2.5 pr-4 font-medium text-right whitespace-nowrap">工具</th>
+                <th className="py-2.5 font-medium text-right whitespace-nowrap">最近活跃</th>
               </tr>
             </thead>
             <tbody
@@ -926,31 +954,31 @@ export default function AIUsagePage() {
               {loadingSessions ? (
                 Array.from({ length: 5 }).map((_, idx) => (
                   <tr key={`skeleton-${idx}`} className="animate-pulse">
-                    <td className="py-3 pr-3">
-                      <div className="h-3.5 w-28 rounded bg-zinc-100" />
-                      <div className="mt-1.5 h-2.5 w-16 rounded bg-zinc-100/80" />
+                    <td className="py-3 pr-4">
+                      <div className="h-4 w-28 rounded bg-zinc-100" />
+                      <div className="mt-1.5 h-3 w-20 rounded bg-zinc-100/80" />
                     </td>
-                    <td className="py-3 pr-3">
-                      <div className="h-3.5 w-16 rounded bg-zinc-100" />
-                      <div className="mt-1.5 h-2.5 w-20 rounded bg-zinc-100/80" />
+                    <td className="py-3 pr-4">
+                      <div className="h-4 w-16 rounded bg-zinc-100" />
+                      <div className="mt-1.5 h-3 w-20 rounded bg-zinc-100/80" />
                     </td>
-                    <td className="py-3 pr-3">
-                      <div className="h-3.5 w-28 rounded bg-zinc-100" />
+                    <td className="py-3 pr-4">
+                      <div className="h-4 w-36 rounded bg-zinc-100" />
                     </td>
-                    <td className="py-3 pr-3">
-                      <div className="ml-auto h-3.5 w-14 rounded bg-zinc-100" />
+                    <td className="py-3 pr-4">
+                      <div className="ml-auto h-4 w-14 rounded bg-zinc-100" />
                     </td>
-                    <td className="py-3 pr-3">
-                      <div className="ml-auto h-3.5 w-12 rounded bg-zinc-100" />
+                    <td className="py-3 pr-4">
+                      <div className="ml-auto h-4 w-12 rounded bg-zinc-100" />
                     </td>
-                    <td className="py-3 pr-3">
-                      <div className="ml-auto h-3.5 w-12 rounded bg-zinc-100" />
+                    <td className="py-3 pr-4">
+                      <div className="ml-auto h-4 w-12 rounded bg-zinc-100" />
                     </td>
-                    <td className="py-3 pr-3">
-                      <div className="ml-auto h-3.5 w-8 rounded bg-zinc-100" />
+                    <td className="py-3 pr-4">
+                      <div className="ml-auto h-4 w-8 rounded bg-zinc-100" />
                     </td>
                     <td className="py-3">
-                      <div className="ml-auto h-3.5 w-24 rounded bg-zinc-100" />
+                      <div className="ml-auto h-4 w-28 rounded bg-zinc-100" />
                     </td>
                   </tr>
                 ))
@@ -959,7 +987,7 @@ export default function AIUsagePage() {
                   <td colSpan={8} className="py-8 text-center text-zinc-400">
                     {fetchingSessions ? (
                       <span className="inline-flex items-center gap-1.5">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-500" />
+                        <Loader2 className="h-4 w-4 animate-spin text-sky-500" />
                         加载会话记录中...
                       </span>
                     ) : (
@@ -974,33 +1002,73 @@ export default function AIUsagePage() {
                     onClick={() => setSelectedSession({ sessionId: s.session_id, deviceId: s.device_id })}
                     className="hover:bg-zinc-50/80 cursor-pointer transition-colors"
                   >
-                    <td className="py-2.5 pr-3">
-                      <div className="font-mono text-zinc-900">{s.session_id.slice(0, 14)}</div>
-                      <div className="text-[11px] text-zinc-400">
-                        {s.project || '-'}
+                    <td className="py-3 pr-4 whitespace-nowrap">
+                      <div className={s.project ? 'font-medium text-zinc-900' : 'text-zinc-400'}>
+                        {s.project || '未标记项目'}
+                      </div>
+                      <div className="mt-0.5 flex items-center gap-1.5 text-xs text-zinc-400">
+                        <span className="font-mono" title={s.session_id}>
+                          {s.session_id.slice(0, 14)}
+                        </span>
                         {s.subagent_count > 0 && (
-                          <span className="ml-1.5 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-600">
+                          <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] text-zinc-600">
                             +{s.subagent_count} 子代理
                           </span>
                         )}
                       </div>
                     </td>
-                    <td className="py-2.5 pr-3">
+                    <td className="py-3 pr-4 whitespace-nowrap">
                       <div className="font-medium text-zinc-800">{s.agent}</div>
-                      <div className="text-[11px] text-zinc-400">{s.device_name}</div>
+                      <div className="mt-0.5 text-xs text-zinc-400">{s.device_name}</div>
                     </td>
-                    <td className="py-2.5 pr-3 font-mono text-zinc-600 max-w-[180px] truncate">
-                      {s.models.join(', ')}
+                    <td className="py-3 pr-4">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        {s.models.map((m, idx) => {
+                          const raws = s.model_aliases?.[m];
+                          return (
+                            <span
+                              key={m}
+                              className="inline-flex items-center gap-1 font-mono text-[13px] text-zinc-700"
+                            >
+                              <span className="break-all">{m}</span>
+                              {raws && raws.length > 0 && (
+                                <InfoTooltip
+                                  ariaLabel={`查看 ${m} 的原始模型名`}
+                                  content={
+                                    <div className="space-y-1">
+                                      <div className="font-medium text-zinc-500">实际使用的原始模型：</div>
+                                      <ul className="space-y-0.5 font-mono text-zinc-800">
+                                        {raws.map((raw) => (
+                                          <li key={raw} className="break-all">
+                                            {raw}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  }
+                                />
+                              )}
+                              {idx < s.models.length - 1 && (
+                                <span className="text-zinc-300 select-none">,</span>
+                              )}
+                            </span>
+                          );
+                        })}
+                      </div>
                     </td>
-                    <td className="py-2.5 pr-3 text-right text-zinc-700">
+                    <td className="py-3 pr-4 text-right text-zinc-700 whitespace-nowrap">
                       {formatTokens(s.tokens.total_tokens)}
                     </td>
-                    <td className="py-2.5 pr-3 text-right text-zinc-700">{formatUSD(s.cost_usd)}</td>
-                    <td className="py-2.5 pr-3 text-right text-zinc-500">
+                    <td className="py-3 pr-4 text-right text-zinc-700 whitespace-nowrap">
+                      {formatUSD(s.cost_usd)}
+                    </td>
+                    <td className="py-3 pr-4 text-right text-zinc-500 whitespace-nowrap">
                       {formatTokens(s.max_context_tokens)}
                     </td>
-                    <td className="py-2.5 pr-3 text-right text-zinc-500">{s.tool_call_count}</td>
-                    <td className="py-2.5 text-right text-zinc-400 whitespace-nowrap">
+                    <td className="py-3 pr-4 text-right text-zinc-500 whitespace-nowrap">
+                      {s.tool_call_count}
+                    </td>
+                    <td className="py-3 text-right text-zinc-400 whitespace-nowrap">
                       {formatDateTime(s.last_event_at, tz)}
                     </td>
                   </tr>
@@ -1023,7 +1091,7 @@ export default function AIUsagePage() {
           >
             <div className="flex items-start justify-between gap-2 pb-4 border-b border-zinc-100">
               <div>
-                <h3 className="text-sm font-semibold text-zinc-900">会话逐小时明细</h3>
+                <h3 className="text-base font-semibold text-zinc-900">会话逐小时明细</h3>
                 <div className="text-xs font-mono text-zinc-400 mt-0.5 break-all">
                   {selectedSession.sessionId}
                 </div>
@@ -1038,31 +1106,31 @@ export default function AIUsagePage() {
             </div>
 
             {loadingDetail || !sessionDetail ? (
-              <div className="text-xs text-zinc-400">加载会话明细中...</div>
+              <div className="text-sm text-zinc-400">加载会话明细中...</div>
             ) : (
               <>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs tabular-nums">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-[13px] tabular-nums">
                   <div className="yd-panel-subtle p-3">
-                    <div className="text-zinc-500">总 Token</div>
-                    <div className="font-semibold text-zinc-900 mt-1 text-sm">
+                    <div className="text-xs text-zinc-500">总 Token</div>
+                    <div className="font-semibold text-zinc-900 mt-1 text-base">
                       {formatTokens(sessionDetail.session.tokens.total_tokens)}
                     </div>
                   </div>
                   <div className="yd-panel-subtle p-3">
-                    <div className="text-zinc-500">等效费用</div>
-                    <div className="font-semibold text-zinc-900 mt-1 text-sm">
+                    <div className="text-xs text-zinc-500">等效费用</div>
+                    <div className="font-semibold text-zinc-900 mt-1 text-base">
                       {formatUSD(sessionDetail.session.cost_usd)}
                     </div>
                   </div>
                   <div className="yd-panel-subtle p-3">
-                    <div className="text-zinc-500">峰值上下文</div>
-                    <div className="font-semibold text-zinc-900 mt-1 text-sm">
+                    <div className="text-xs text-zinc-500">峰值上下文</div>
+                    <div className="font-semibold text-zinc-900 mt-1 text-base">
                       {formatTokens(sessionDetail.session.max_context_tokens)}
                     </div>
                   </div>
                   <div className="yd-panel-subtle p-3">
-                    <div className="text-zinc-500">跨度小时 / 子代理</div>
-                    <div className="font-semibold text-zinc-900 mt-1 text-sm">
+                    <div className="text-xs text-zinc-500">跨度小时 / 子代理</div>
+                    <div className="font-semibold text-zinc-900 mt-1 text-base">
                       {sessionDetail.session.hour_count}h / {sessionDetail.session.subagent_count}
                     </div>
                   </div>
@@ -1072,7 +1140,7 @@ export default function AIUsagePage() {
                   {sessionDetail.slices.map((sl, idx) => (
                     <div
                       key={`${sl.hour_bucket}-${sl.session_id}-${sl.raw_model}-${idx}`}
-                      className="yd-card p-3.5 text-xs space-y-1.5"
+                      className="yd-card p-3.5 text-[13px] space-y-1.5"
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex flex-wrap items-center gap-1.5">
@@ -1080,6 +1148,17 @@ export default function AIUsagePage() {
                             {formatDateTime(sl.hour_bucket, tz)}
                           </span>
                           <span className="yd-code">{sl.model}</span>
+                          {sl.raw_model && sl.raw_model.toLowerCase() !== sl.model.toLowerCase() && (
+                            <InfoTooltip
+                              ariaLabel="查看原始模型名"
+                              content={
+                                <div className="space-y-0.5">
+                                  <div className="font-medium text-zinc-500">原始模型名：</div>
+                                  <div className="font-mono text-zinc-800 break-all">{sl.raw_model}</div>
+                                </div>
+                              }
+                            />
+                          )}
                           {sl.is_subagent && (
                             <span className="yd-badge yd-badge-amber">
                               子代理 {sl.session_id.slice(0, 8)}
@@ -1090,7 +1169,7 @@ export default function AIUsagePage() {
                           {formatTokens(sl.tokens.total_tokens)} · {formatUSD(sl.cost_usd)}
                         </span>
                       </div>
-                      <div className="text-[11px] text-zinc-500 flex flex-wrap gap-x-3 gap-y-0.5 tabular-nums">
+                      <div className="text-xs text-zinc-500 flex flex-wrap gap-x-3 gap-y-0.5 tabular-nums">
                         <span>输入 {formatTokens(sl.tokens.input_tokens)}</span>
                         <span>输出 {formatTokens(sl.tokens.output_tokens)}</span>
                         <span>缓存读 {formatTokens(sl.tokens.cache_read_tokens)}</span>
@@ -1110,7 +1189,7 @@ export default function AIUsagePage() {
                             .map(([name, cnt]) => (
                               <span
                                 key={name}
-                                className="rounded bg-zinc-50 border border-zinc-200/80 px-1.5 py-0.5 font-mono text-[10px] text-zinc-600 tabular-nums"
+                                className="rounded bg-zinc-50 border border-zinc-200/80 px-2 py-0.5 font-mono text-xs text-zinc-600 tabular-nums"
                               >
                                 {name} ×{cnt}
                               </span>

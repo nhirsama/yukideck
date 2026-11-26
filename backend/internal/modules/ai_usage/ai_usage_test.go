@@ -867,3 +867,133 @@ func TestHTTPPermissionsAndGzipIngest(t *testing.T) {
 		t.Fatalf("expected 200 for OIDC session on PUT /aliases, got %d %s", recAlias.Code, recAlias.Body.String())
 	}
 }
+
+func TestExactBeforeWildcardAndMultiLevelChannelStrip(t *testing.T) {
+	// 1. Multi-level slash channel prefixes should all be stripped.
+	if got := NormalizeModel("relay-a/v1/openai/gpt-6.1-sol-fast", nil); got != "gpt-6.1-sol-fast" {
+		t.Fatalf("expected multi-level prefix stripped, got %q", got)
+	}
+	if got := NormalizeModel("corp/openrouter/anthropic/claude-opus-5-5-20261001", nil); got != "claude-opus-5.5" {
+		t.Fatalf("expected multi-level claude prefix stripped, got %q", got)
+	}
+
+	// 2. Alias matching: exact always beats wildcard regardless of priority.
+	aliases := []ModelAlias{
+		{ID: 1, MatchPattern: "gpt-6.1-sol*", CanonicalModel: "gpt-6.1-sol", Priority: 1},
+		{ID: 2, MatchPattern: "gpt-6.1-sol-turbo", CanonicalModel: "gpt-6.1-sol-turbo", Priority: 200},
+	}
+	if got := NormalizeModel("relay/openai/gpt-6.1-sol-turbo", aliases); got != "gpt-6.1-sol-turbo" {
+		t.Fatalf("expected exact alias to beat lower-priority wildcard, got %q", got)
+	}
+	if got := NormalizeModel("relay/openai/gpt-6.1-sol-fast", aliases); got != "gpt-6.1-sol" {
+		t.Fatalf("expected wildcard alias to group fast variant, got %q", got)
+	}
+
+	// 3. Pricing matching (Plan B): user exact > built-in exact > user wildcard > built-in wildcard,
+	//    and raw exact beats canonical exact when raw was grouped under a wildcard alias.
+	userPrices := []ModelPrice{
+		{ModelPattern: "gpt-6.1-sol*", InputPerM: 1.0, OutputPerM: 5.0},
+		{ModelPattern: "gpt-6.1-sol-fast", InputPerM: 4.5, OutputPerM: 22.5},
+	}
+	// Raw exact user override beats user wildcard and canonical model price.
+	p, ok := ResolvePrice("relay/v1/gpt-6.1-sol-fast", "gpt-6.1-sol", userPrices)
+	if !ok || p.InputPerM != 4.5 {
+		t.Fatalf("expected raw exact user price 4.5, got %+v ok=%v", p, ok)
+	}
+
+	// Built-in exact price beats user wildcard price (Plan B).
+	userWildcardOnly := []ModelPrice{
+		{ModelPattern: "gpt-6.1*", InputPerM: 99.0, OutputPerM: 99.0},
+	}
+	pBuiltinExact, ok := ResolvePrice("proxy/v2/gpt-6.1-sol", "gpt-6.1-sol", userWildcardOnly)
+	if !ok || pBuiltinExact.InputPerM == 99.0 {
+		t.Fatalf("expected built-in exact price to beat user wildcard, got %+v ok=%v", pBuiltinExact, ok)
+	}
+
+	// Summary.ByModel.MergedRawModels & Sessions.ModelAliases record original raw model names.
+	store := newMemStore()
+	svc := NewService(store)
+	ctx := context.Background()
+	if _, err := svc.UpsertModelAlias(ctx, 1, UpsertModelAliasInput{
+		MatchPattern:   "gpt-6.1-sol*",
+		CanonicalModel: "gpt-6.1-sol",
+		Priority:       10,
+	}); err != nil {
+		t.Fatalf("UpsertModelAlias: %v", err)
+	}
+	if _, err := svc.UpsertModelPrice(ctx, 1, UpsertModelPriceInput{
+		ModelPattern: "gpt-6.1-sol-fast",
+		InputPerM:    6.0,
+		OutputPerM:   30.0,
+	}); err != nil {
+		t.Fatalf("UpsertModelPrice: %v", err)
+	}
+	h := time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC)
+	if _, err := svc.Ingest(ctx, 1, IngestRequest{
+		Device: IngestDevice{DeviceID: "d1", Name: "Dev"},
+		Slices: []IngestSlice{
+			{
+				Agent:        "codex",
+				SessionID:    "sess-fast",
+				HourBucket:   h,
+				Model:        "proxy/openai/gpt-6.1-sol-fast",
+				Project:      "yukideck",
+				InputTokens:  1_000_000,
+				OutputTokens: 0,
+				RequestCount: 1,
+				FirstEventAt: h,
+				LastEventAt:  h.Add(time.Minute),
+			},
+			{
+				Agent:        "codex",
+				SessionID:    "sess-std",
+				HourBucket:   h,
+				Model:        "gpt-6.1-sol",
+				Project:      "yukideck",
+				InputTokens:  1_000_000,
+				OutputTokens: 0,
+				RequestCount: 1,
+				FirstEventAt: h,
+				LastEventAt:  h.Add(time.Minute),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	filter := QueryFilter{Start: h.Add(-time.Hour), End: h.Add(2 * time.Hour), Timezone: "UTC"}
+	sum, err := svc.Summary(ctx, 1, filter)
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if len(sum.ByModel) != 1 || sum.ByModel[0].Label != "gpt-6.1-sol" {
+		t.Fatalf("expected merged single canonical model, got %+v", sum.ByModel)
+	}
+	if len(sum.ByModel[0].MergedRawModels) != 1 || sum.ByModel[0].MergedRawModels[0] != "proxy/openai/gpt-6.1-sol-fast" {
+		t.Fatalf("expected MergedRawModels=[proxy/openai/gpt-6.1-sol-fast], got %+v", sum.ByModel[0].MergedRawModels)
+	}
+	// sess-fast billed at $6.0 + sess-std billed at built-in $2.0 = $8.0
+	if math.Abs(sum.CostUSD-8.0) > 1e-6 {
+		t.Fatalf("expected total cost $8.0 ($6 exact fast + $2 exact std), got %.6f", sum.CostUSD)
+	}
+
+	sessRes, err := svc.Sessions(ctx, 1, filter, 1, 10)
+	if err != nil {
+		t.Fatalf("Sessions: %v", err)
+	}
+	var fastSess, stdSess *SessionSummary
+	for i := range sessRes.Sessions {
+		if sessRes.Sessions[i].SessionID == "sess-fast" {
+			fastSess = &sessRes.Sessions[i]
+		}
+		if sessRes.Sessions[i].SessionID == "sess-std" {
+			stdSess = &sessRes.Sessions[i]
+		}
+	}
+	if fastSess == nil || len(fastSess.ModelAliases["gpt-6.1-sol"]) != 1 || fastSess.ModelAliases["gpt-6.1-sol"][0] != "proxy/openai/gpt-6.1-sol-fast" {
+		t.Fatalf("expected fastSess ModelAliases to carry original raw model, got %+v", fastSess)
+	}
+	if stdSess == nil || len(stdSess.ModelAliases) != 0 {
+		t.Fatalf("expected stdSess to have empty ModelAliases, got %+v", stdSess)
+	}
+}

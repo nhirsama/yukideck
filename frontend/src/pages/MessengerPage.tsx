@@ -11,6 +11,7 @@ import {
   Send,
   Trash2,
 } from 'lucide-react';
+import { Select } from '@/components/Select';
 import {
   coreApi,
   type Capability,
@@ -279,21 +280,21 @@ function ChannelForm({
       {error && <div className="yd-notice-error">{error}</div>}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <label className="block space-y-1.5">
+        <div className="block space-y-1.5">
           <span className="yd-label">渠道类型</span>
-          <select
+          <Select
             value={type}
             disabled={Boolean(initial)}
-            onChange={(e) => setType(e.target.value)}
-            className="yd-input"
-          >
-            {drivers.map((d) => (
-              <option key={d.type} value={d.type}>
-                {d.display_name} ({d.capabilities.join(' / ')})
-              </option>
-            ))}
-          </select>
-        </label>
+            onChange={setType}
+            options={drivers.map((d) => ({
+              value: d.type,
+              label: `${d.display_name} (${d.capabilities.join(' / ')})`,
+            }))}
+            size="md"
+            className="w-full"
+            ariaLabel="选择渠道类型"
+          />
+        </div>
 
         <label className="block space-y-1.5">
           <span className="yd-label">名称</span>

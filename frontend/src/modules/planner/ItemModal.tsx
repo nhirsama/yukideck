@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Bell, Plus, X } from 'lucide-react';
+import { Select } from '@/components/Select';
 import { coreApi } from '@/core/api';
 import {
   formatOffsetLabel,
@@ -293,23 +294,21 @@ export function ItemModal({
                     </div>
                   </div>
 
-                  <label className="block space-y-1.5">
+                  <div className="block space-y-1.5">
                     <span className="yd-label">时区</span>
-                    <select
+                    <Select
                       value={timezone}
-                      onChange={(e) => setTimezone(e.target.value)}
-                      className="yd-input-sm w-full"
-                    >
-                      {!COMMON_TIMEZONES.some((z) => z.value === timezone) && timezone && (
-                        <option value={timezone}>{timezone}</option>
-                      )}
-                      {COMMON_TIMEZONES.map((z) => (
-                        <option key={z.value} value={z.value}>
-                          {z.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                      onChange={setTimezone}
+                      options={[
+                        ...(!COMMON_TIMEZONES.some((z) => z.value === timezone) && timezone
+                          ? [{ value: timezone, label: timezone }]
+                          : []),
+                        ...COMMON_TIMEZONES,
+                      ]}
+                      className="w-full"
+                      ariaLabel="选择时区"
+                    />
+                  </div>
                 </div>
 
                 {/* Target DateTime (exact to minute) */}
@@ -338,28 +337,28 @@ export function ItemModal({
                           placeholder="年"
                           className="yd-input-sm w-full"
                         />
-                        <select
-                          value={lunarMonth}
-                          onChange={(e) => setLunarMonth(Number(e.target.value))}
-                          className="yd-input-sm w-full"
-                        >
-                          {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-                            <option key={m} value={m}>
-                              {m}月
-                            </option>
-                          ))}
-                        </select>
-                        <select
-                          value={lunarDay}
-                          onChange={(e) => setLunarDay(Number(e.target.value))}
-                          className="yd-input-sm w-full"
-                        >
-                          {Array.from({ length: 30 }, (_, i) => i + 1).map((d) => (
-                            <option key={d} value={d}>
-                              {d}日
-                            </option>
-                          ))}
-                        </select>
+                        <Select
+                          value={String(lunarMonth)}
+                          onChange={(v) => setLunarMonth(Number(v))}
+                          options={Array.from({ length: 12 }, (_, i) => ({
+                            value: String(i + 1),
+                            label: `${i + 1}月`,
+                          }))}
+                          searchable={false}
+                          className="w-full"
+                          ariaLabel="选择农历月份"
+                        />
+                        <Select
+                          value={String(lunarDay)}
+                          onChange={(v) => setLunarDay(Number(v))}
+                          options={Array.from({ length: 30 }, (_, i) => ({
+                            value: String(i + 1),
+                            label: `${i + 1}日`,
+                          }))}
+                          searchable={false}
+                          className="w-full"
+                          ariaLabel="选择农历日期"
+                        />
                         <input
                           type="time"
                           value={lunarTime}
@@ -385,26 +384,29 @@ export function ItemModal({
 
                 {/* Unified Cycle / Repeat Config */}
                 <div className="space-y-2.5">
-                  <label className="block space-y-1.5">
+                  <div className="block space-y-1.5">
                     <span className="yd-label">循环周期</span>
-                    <select
+                    <Select
                       value={repeatType}
-                      onChange={(e) => {
-                        const next = e.target.value as RepeatType;
+                      onChange={(v) => {
+                        const next = v as RepeatType;
                         setRepeatType(next);
                         if (next === 'cron') setCalendarType('solar');
                       }}
-                      className="yd-input"
-                    >
-                      <option value="none">不重复</option>
-                      <option value="daily">每天</option>
-                      <option value="weekly">每周</option>
-                      <option value="monthly">每月</option>
-                      <option value="yearly">每年</option>
-                      <option value="interval_days">每隔 N 天</option>
-                      <option value="cron">Cron 表达式</option>
-                    </select>
-                  </label>
+                      options={[
+                        { value: 'none', label: '不重复' },
+                        { value: 'daily', label: '每天' },
+                        { value: 'weekly', label: '每周' },
+                        { value: 'monthly', label: '每月' },
+                        { value: 'yearly', label: '每年' },
+                        { value: 'interval_days', label: '每隔 N 天' },
+                        { value: 'cron', label: 'Cron 表达式' },
+                      ]}
+                      size="md"
+                      className="w-full"
+                      ariaLabel="选择循环周期"
+                    />
+                  </div>
 
                   {repeatType === 'weekly' && (
                     <div className="flex flex-wrap gap-1.5">
@@ -523,15 +525,17 @@ export function ItemModal({
                       onChange={(e) => setCustomVal(Number(e.target.value))}
                       className="yd-input-sm w-20"
                     />
-                    <select
+                    <Select
                       value={customUnit}
-                      onChange={(e) => setCustomUnit(e.target.value as 'minute' | 'hour' | 'day')}
-                      className="yd-input-sm"
-                    >
-                      <option value="minute">分钟</option>
-                      <option value="hour">小时</option>
-                      <option value="day">天</option>
-                    </select>
+                      onChange={(v) => setCustomUnit(v as 'minute' | 'hour' | 'day')}
+                      options={[
+                        { value: 'minute', label: '分钟' },
+                        { value: 'hour', label: '小时' },
+                        { value: 'day', label: '天' },
+                      ]}
+                      className="min-w-[78px]"
+                      ariaLabel="选择提前时间单位"
+                    />
                     <button
                       type="button"
                       onClick={() => addOffset({ unit: customUnit, value: customVal })}

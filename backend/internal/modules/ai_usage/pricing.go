@@ -22,10 +22,30 @@ type litellmPriceEntry struct {
 
 // embeddedCatalogPrices stores O(1) exact model pricing loaded from the embedded
 // sub2api / LiteLLM-compatible model_prices_and_context_window.json catalog.
-var embeddedCatalogPrices map[string]ModelPrice
+var (
+	embeddedCatalogPrices map[string]ModelPrice
+	builtinExactPrices    map[string]ModelPrice
+	builtinWildcardPrices []ModelPrice
+)
 
 func init() {
 	embeddedCatalogPrices = loadEmbeddedCatalogPrices(embeddedModelPricesJSON)
+	builtinExactPrices = make(map[string]ModelPrice, len(builtinModelPrices))
+	builtinWildcardPrices = make([]ModelPrice, 0, len(builtinModelPrices))
+	for _, p := range builtinModelPrices {
+		key := strings.ToLower(strings.TrimSpace(p.ModelPattern))
+		if key == "" {
+			continue
+		}
+		if strings.Contains(key, "*") {
+			builtinWildcardPrices = append(builtinWildcardPrices, p)
+		} else {
+			builtinExactPrices[key] = p
+		}
+	}
+	sort.SliceStable(builtinWildcardPrices, func(i, j int) bool {
+		return patternSpecificity(builtinWildcardPrices[i].ModelPattern) > patternSpecificity(builtinWildcardPrices[j].ModelPattern)
+	})
 }
 
 func round6(v float64) float64 {
@@ -69,43 +89,49 @@ func loadEmbeddedCatalogPrices(raw []byte) map[string]ModelPrice {
 var (
 	reTagSuffix  = regexp.MustCompile(`:(?:free|beta|extended|thinking|exacto|floor|nitro)$`)
 	reDateSuffix = regexp.MustCompile(`(?:[-@](?:20\d{6}|20\d{2}-\d{2}-\d{2})|-v\d+:\d+)$`)
-	providerPrefixes = []string{
+	dotChannelPrefixes = []string{
 		"us.anthropic.",
 		"eu.anthropic.",
 		"apac.anthropic.",
 		"global.anthropic.",
 		"anthropic.",
-		"anthropic/",
-		"openai/",
-		"google-antigravity/",
-		"google-vertex/",
-		"google-gemini-cli/",
-		"google/",
-		"antigravity/",
-		"vertex_ai/",
-		"vertex/",
-		"bedrock/",
-		"openrouter/",
-		"github-copilot/",
-		"opencode/",
-		"azure/",
-		"deepseek/",
-		"x-ai/",
-		"xai/",
-		"zai-org/",
-		"zai/",
-		"z-ai/",
-		"zhipu/",
-		"moonshotai/",
-		"moonshot/",
-		"kimi/",
-		"qwen/",
-		"alibaba/",
-		"dashscope/",
-		"minimax/",
-		"models/",
 	}
 )
+
+// stripChannelPrefixes removes multi-level slash channel prefixes (e.g. a/b/c/model -> model)
+// as well as Bedrock-style dot channel prefixes (e.g. us.anthropic.claude-* -> claude-*).
+func stripChannelPrefixes(raw string) string {
+	cleaned := strings.ToLower(strings.TrimSpace(raw))
+	cleaned = strings.TrimRight(cleaned, "/")
+	if idx := strings.LastIndex(cleaned, "/"); idx >= 0 && idx < len(cleaned)-1 {
+		cleaned = cleaned[idx+1:]
+	}
+	for {
+		stripped := false
+		for _, pfx := range dotChannelPrefixes {
+			if strings.HasPrefix(cleaned, pfx) {
+				cleaned = strings.TrimPrefix(cleaned, pfx)
+				stripped = true
+				break
+			}
+		}
+		if !stripped {
+			break
+		}
+	}
+	return cleaned
+}
+
+func stripModelTagsAndDate(s string) string {
+	s = reTagSuffix.ReplaceAllString(s, "")
+	s = reDateSuffix.ReplaceAllString(s, "")
+	return s
+}
+
+func patternSpecificity(pattern string) int {
+	p := strings.ToLower(strings.TrimSpace(pattern))
+	return len(strings.ReplaceAll(p, "*", ""))
+}
 
 type builtinAliasRule struct {
 	pattern   string
@@ -411,112 +437,196 @@ func MatchPattern(pattern, target string) bool {
 	return true
 }
 
-// NormalizeModel resolves a raw model name via user aliases first, then built-in normalization rules.
+func appendUniqueLower(dst []string, s string) []string {
+	k := strings.ToLower(strings.TrimSpace(s))
+	if k == "" {
+		return dst
+	}
+	for _, existing := range dst {
+		if existing == k {
+			return dst
+		}
+	}
+	return append(dst, k)
+}
+
+// NormalizeModel resolves a raw model name via user aliases first (exact before wildcard),
+// then strips multi-level channel prefixes / tags / dates and applies built-in family rules.
 func NormalizeModel(raw string, userAliases []ModelAlias) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return "unknown"
 	}
 
-	// 1. User custom aliases take top priority (already ordered by priority ASC, id ASC).
-	for _, a := range userAliases {
-		if MatchPattern(a.MatchPattern, trimmed) {
-			if canon := strings.TrimSpace(a.CanonicalModel); canon != "" {
-				return canon
+	stripped := stripChannelPrefixes(trimmed)
+	cleaned := stripModelTagsAndDate(stripped)
+
+	candidates := make([]string, 0, 3)
+	candidates = appendUniqueLower(candidates, trimmed)
+	candidates = appendUniqueLower(candidates, stripped)
+	candidates = appendUniqueLower(candidates, cleaned)
+
+	if len(userAliases) > 0 {
+		exactAliases := make([]ModelAlias, 0, len(userAliases))
+		wildcardAliases := make([]ModelAlias, 0, len(userAliases))
+		for _, a := range userAliases {
+			if strings.TrimSpace(a.MatchPattern) == "" || strings.TrimSpace(a.CanonicalModel) == "" {
+				continue
+			}
+			if strings.Contains(a.MatchPattern, "*") {
+				wildcardAliases = append(wildcardAliases, a)
+			} else {
+				exactAliases = append(exactAliases, a)
+			}
+		}
+		sort.SliceStable(exactAliases, func(i, j int) bool {
+			if exactAliases[i].Priority != exactAliases[j].Priority {
+				return exactAliases[i].Priority < exactAliases[j].Priority
+			}
+			return exactAliases[i].ID < exactAliases[j].ID
+		})
+		sort.SliceStable(wildcardAliases, func(i, j int) bool {
+			if wildcardAliases[i].Priority != wildcardAliases[j].Priority {
+				return wildcardAliases[i].Priority < wildcardAliases[j].Priority
+			}
+			si := patternSpecificity(wildcardAliases[i].MatchPattern)
+			sj := patternSpecificity(wildcardAliases[j].MatchPattern)
+			if si != sj {
+				return si > sj
+			}
+			return wildcardAliases[i].ID < wildcardAliases[j].ID
+		})
+
+		// 1a. User exact aliases always take priority over any wildcard alias.
+		for _, c := range candidates {
+			for _, a := range exactAliases {
+				if strings.EqualFold(strings.TrimSpace(a.MatchPattern), c) {
+					return strings.TrimSpace(a.CanonicalModel)
+				}
+			}
+		}
+		// 1b. User wildcard aliases.
+		for _, c := range candidates {
+			for _, a := range wildcardAliases {
+				if MatchPattern(a.MatchPattern, c) {
+					return strings.TrimSpace(a.CanonicalModel)
+				}
 			}
 		}
 	}
 
-	// 2. Strip common provider prefixes (recursively for multi-layer routes like openrouter/anthropic/...)
-	// and trailing routing/date/version tags.
-	cleaned := strings.ToLower(trimmed)
-	for {
-		stripped := false
-		for _, pfx := range providerPrefixes {
-			if strings.HasPrefix(cleaned, pfx) {
-				cleaned = strings.TrimPrefix(cleaned, pfx)
-				stripped = true
-				break
-			}
-		}
-		if !stripped {
-			break
-		}
-	}
-	cleaned = reTagSuffix.ReplaceAllString(cleaned, "")
-	cleaned = reDateSuffix.ReplaceAllString(cleaned, "")
-
-	// Re-check user aliases against stripped name as well.
-	for _, a := range userAliases {
-		if MatchPattern(a.MatchPattern, cleaned) {
-			if canon := strings.TrimSpace(a.CanonicalModel); canon != "" {
-				return canon
-			}
-		}
-	}
-
-	// 3. Built-in family canonicalization.
+	// 2. Built-in family canonicalization (exact before wildcard).
 	for _, rule := range builtinAliasRules {
-		if MatchPattern(rule.pattern, cleaned) {
+		if !strings.Contains(rule.pattern, "*") && strings.EqualFold(rule.pattern, cleaned) {
+			return rule.canonical
+		}
+	}
+	for _, rule := range builtinAliasRules {
+		if strings.Contains(rule.pattern, "*") && MatchPattern(rule.pattern, cleaned) {
 			return rule.canonical
 		}
 	}
 	return cleaned
 }
 
-// ResolvePrice finds the best matching price entry: user custom prices first, then built-in table.
+// ResolvePrice resolves model pricing with global exact-before-wildcard precedence:
+//  1. User exact prices (raw candidates first, then canonical candidates)
+//  2. Built-in exact prices (embedded catalog + exact built-in entries; raw first, then canonical)
+//  3. User wildcard prices (more specific first; raw first, then canonical)
+//  4. Built-in wildcard prices (more specific first; raw first, then canonical)
+//
+// Matching raw candidates before canonical candidates ensures a model grouped under a broader
+// alias (e.g. gpt-6.1-sol-fast -> gpt-6.1-sol) still bills at its own exact price when defined.
 func ResolvePrice(rawModel, canonicalModel string, userPrices []ModelPrice) (ModelPrice, bool) {
-	// Check exact user overrides first, then wildcard user overrides (longer pattern first).
-	ordered := make([]ModelPrice, len(userPrices))
-	copy(ordered, userPrices)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		wi := strings.Contains(ordered[i].ModelPattern, "*")
-		wj := strings.Contains(ordered[j].ModelPattern, "*")
-		if wi != wj {
-			return !wi
+	rawStripped := stripChannelPrefixes(rawModel)
+	rawCleaned := stripModelTagsAndDate(rawStripped)
+	rawCandidates := make([]string, 0, 3)
+	rawCandidates = appendUniqueLower(rawCandidates, rawModel)
+	rawCandidates = appendUniqueLower(rawCandidates, rawStripped)
+	rawCandidates = appendUniqueLower(rawCandidates, rawCleaned)
+
+	canonStripped := stripChannelPrefixes(canonicalModel)
+	canonCleaned := stripModelTagsAndDate(canonStripped)
+	canonCandidates := make([]string, 0, 3)
+	canonCandidates = appendUniqueLower(canonCandidates, canonicalModel)
+	canonCandidates = appendUniqueLower(canonCandidates, canonStripped)
+	canonCandidates = appendUniqueLower(canonCandidates, canonCleaned)
+
+	orderedCandidates := make([]string, 0, len(rawCandidates)+len(canonCandidates))
+	for _, c := range rawCandidates {
+		orderedCandidates = appendUniqueLower(orderedCandidates, c)
+	}
+	for _, c := range canonCandidates {
+		orderedCandidates = appendUniqueLower(orderedCandidates, c)
+	}
+
+	userExact := make(map[string]ModelPrice, len(userPrices))
+	userWildcard := make([]ModelPrice, 0, len(userPrices))
+	for _, p := range userPrices {
+		key := strings.ToLower(strings.TrimSpace(p.ModelPattern))
+		if key == "" {
+			continue
 		}
-		return len(ordered[i].ModelPattern) > len(ordered[j].ModelPattern)
+		if strings.Contains(key, "*") {
+			userWildcard = append(userWildcard, p)
+		} else {
+			if _, exists := userExact[key]; !exists {
+				userExact[key] = p
+			}
+		}
+	}
+	sort.SliceStable(userWildcard, func(i, j int) bool {
+		si := patternSpecificity(userWildcard[i].ModelPattern)
+		sj := patternSpecificity(userWildcard[j].ModelPattern)
+		if si != sj {
+			return si > sj
+		}
+		return len(userWildcard[i].ModelPattern) > len(userWildcard[j].ModelPattern)
 	})
-	for _, p := range ordered {
-		if MatchPattern(p.ModelPattern, canonicalModel) || MatchPattern(p.ModelPattern, rawModel) {
+
+	// 1. User exact price (raw -> canonical).
+	for _, c := range orderedCandidates {
+		if p, ok := userExact[c]; ok {
 			return p, true
 		}
 	}
 
-	// Build candidate list for built-in catalog & wildcard matching, including a slash-stripped
-	// fallback so arbitrary custom relay prefixes (e.g. my-proxy/gpt-6.2-sol) still resolve a price.
-	candidates := make([]string, 0, 4)
-	addCandidate := func(s string) {
-		k := strings.ToLower(strings.TrimSpace(s))
-		if k == "" {
-			return
-		}
-		for _, existing := range candidates {
-			if existing == k {
-				return
-			}
-		}
-		candidates = append(candidates, k)
-	}
-	addCandidate(canonicalModel)
-	addCandidate(rawModel)
-	if idx := strings.LastIndex(canonicalModel, "/"); idx >= 0 && idx < len(canonicalModel)-1 {
-		addCandidate(NormalizeModel(canonicalModel[idx+1:], nil))
-	}
-	if idx := strings.LastIndex(rawModel, "/"); idx >= 0 && idx < len(rawModel)-1 {
-		addCandidate(rawModel[idx+1:])
-	}
-
-	// 1. Exact O(1) match against embedded sub2api / LiteLLM catalog.
-	for _, c := range candidates {
+	// 2. Built-in exact price (raw -> canonical).
+	for _, c := range orderedCandidates {
 		if p, ok := embeddedCatalogPrices[c]; ok {
 			return p, true
 		}
+		if p, ok := builtinExactPrices[c]; ok {
+			return p, true
+		}
 	}
 
-	// 2. Curated wildcard fallback table (handles date-stripped / variant suffixes).
-	for _, p := range builtinModelPrices {
-		for _, c := range candidates {
+	// 3. User wildcard price (raw -> canonical, most specific pattern first).
+	for _, p := range userWildcard {
+		for _, c := range rawCandidates {
+			if MatchPattern(p.ModelPattern, c) {
+				return p, true
+			}
+		}
+	}
+	for _, p := range userWildcard {
+		for _, c := range canonCandidates {
+			if MatchPattern(p.ModelPattern, c) {
+				return p, true
+			}
+		}
+	}
+
+	// 4. Built-in wildcard price (raw -> canonical, most specific pattern first).
+	for _, p := range builtinWildcardPrices {
+		for _, c := range rawCandidates {
+			if MatchPattern(p.ModelPattern, c) {
+				return p, true
+			}
+		}
+	}
+	for _, p := range builtinWildcardPrices {
+		for _, c := range canonCandidates {
 			if MatchPattern(p.ModelPattern, c) {
 				return p, true
 			}

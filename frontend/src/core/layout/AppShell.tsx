@@ -14,7 +14,7 @@ export function AppShell() {
   }, [user?.avatar_url]);
 
   const navClass = ({ isActive }: { isActive: boolean }) =>
-    `group flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] transition-colors ${
+    `group flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors ${
       isActive
         ? 'bg-sky-50/90 text-sky-700 font-medium'
         : 'text-zinc-600 hover:bg-zinc-100/75 hover:text-zinc-800'
@@ -25,13 +25,13 @@ export function AppShell() {
   const showAvatar = Boolean(user?.avatar_url && !avatarFailed);
 
   return (
-    <div className="min-h-screen flex bg-[#f8fafc] text-zinc-800">
+    <div className="min-h-screen flex bg-[#f8fafc] text-zinc-800 text-sm">
       <aside className="sticky top-0 h-screen w-56 shrink-0 border-r border-zinc-200/70 bg-white flex flex-col">
         <div className="h-14 px-4 flex items-center gap-2.5">
           <div className="h-7 w-7 rounded-lg bg-sky-50 border border-sky-200/70 text-sky-600 flex items-center justify-center">
-            <Layers className="h-3.5 w-3.5" />
+            <Layers className="h-4 w-4" />
           </div>
-          <span className="text-[14px] font-semibold tracking-tight text-zinc-800">YukiDeck</span>
+          <span className="text-[15px] font-semibold tracking-tight text-zinc-800">YukiDeck</span>
         </div>
 
         <nav className="flex-1 px-2.5 py-2 space-y-6 overflow-y-auto">
@@ -52,7 +52,7 @@ export function AppShell() {
 
           {modules.length > 0 && (
             <div className="space-y-0.5">
-              <div className="px-2.5 pb-1 text-[11px] font-medium text-zinc-400">模块</div>
+              <div className="px-2.5 pb-1 text-xs font-medium text-zinc-400">模块</div>
               {modules.map((mod) => {
                 const Icon = mod.icon;
                 return (
@@ -83,8 +83,8 @@ export function AppShell() {
                 </div>
               )}
               <div className="min-w-0">
-                <div className="text-xs font-medium text-zinc-800 truncate">{displayName}</div>
-                {user?.email && <div className="text-[11px] text-zinc-400 truncate">{user.email}</div>}
+                <div className="text-[13px] font-medium text-zinc-800 truncate">{displayName}</div>
+                {user?.email && <div className="text-xs text-zinc-400 truncate">{user.email}</div>}
               </div>
             </div>
             <button
@@ -93,14 +93,14 @@ export function AppShell() {
               title="退出登录"
               className="yd-btn-icon shrink-0"
             >
-              <LogOut className="h-3.5 w-3.5" />
+              <LogOut className="h-4 w-4" />
             </button>
           </div>
         </div>
       </aside>
 
       <main className="flex-1 min-w-0">
-        <div className="max-w-6xl mx-auto px-6 sm:px-8 py-7">
+        <div className="max-w-7xl mx-auto px-6 sm:px-8 py-7">
           <Outlet />
         </div>
       </main>

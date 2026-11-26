@@ -59,16 +59,17 @@ type TokenTotals struct {
 }
 
 type BreakdownItem struct {
-	Key             string  `json:"key"`
-	Label           string  `json:"label"`
-	TotalTokens     int64   `json:"total_tokens"`
-	InputTokens     int64   `json:"input_tokens"`
-	OutputTokens    int64   `json:"output_tokens"`
-	CacheReadTokens int64   `json:"cache_read_tokens"`
-	CostUSD         float64 `json:"cost_usd"`
-	RequestCount    int64   `json:"request_count"`
-	ToolCallCount   int64   `json:"tool_call_count"`
-	SessionCount    int     `json:"session_count"`
+	Key             string   `json:"key"`
+	Label           string   `json:"label"`
+	TotalTokens     int64    `json:"total_tokens"`
+	InputTokens     int64    `json:"input_tokens"`
+	OutputTokens    int64    `json:"output_tokens"`
+	CacheReadTokens int64    `json:"cache_read_tokens"`
+	CostUSD         float64  `json:"cost_usd"`
+	RequestCount    int64    `json:"request_count"`
+	ToolCallCount   int64    `json:"tool_call_count"`
+	SessionCount    int      `json:"session_count"`
+	MergedRawModels []string `json:"merged_raw_models,omitempty"`
 }
 
 type HourOfDayItem struct {
@@ -140,13 +141,14 @@ type HeatmapResponse struct {
 }
 
 type SessionSummary struct {
-	SessionID        string           `json:"session_id"`
-	DeviceID         string           `json:"device_id"`
-	DeviceName       string           `json:"device_name"`
-	Agent            string           `json:"agent"`
-	Project          string           `json:"project"`
-	Models           []string         `json:"models"`
-	Tokens           TokenTotals      `json:"tokens"`
+	SessionID        string              `json:"session_id"`
+	DeviceID         string              `json:"device_id"`
+	DeviceName       string              `json:"device_name"`
+	Agent            string              `json:"agent"`
+	Project          string              `json:"project"`
+	Models           []string            `json:"models"`
+	ModelAliases     map[string][]string `json:"model_aliases,omitempty"`
+	Tokens           TokenTotals         `json:"tokens"`
 	CostUSD          float64          `json:"cost_usd"`
 	MaxContextTokens int64            `json:"max_context_tokens"`
 	RequestCount     int64            `json:"request_count"`

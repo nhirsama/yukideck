@@ -342,7 +342,7 @@ func (s *Service) Summary(ctx context.Context, userID int64, filter QueryFilter)
 		sessionKeys[rootSess] = struct{}{}
 
 		byAgent.add(r.Agent, r.Agent, r, item.costUSD, rootSess)
-		byModel.add(item.canonicalModel, item.canonicalModel, r, item.costUSD, rootSess)
+		byModel.addWithRaw(item.canonicalModel, item.canonicalModel, r, item.costUSD, rootSess, r.Model)
 		byDevice.add(r.DeviceID, item.deviceName, r, item.costUSD, rootSess)
 		projKey := r.Project
 		if projKey == "" {
@@ -615,10 +615,11 @@ func (s *Service) Sessions(ctx context.Context, userID int64, filter QueryFilter
 	}
 
 	type sessAgg struct {
-		summary  SessionSummary
-		modelSet map[string]struct{}
-		hourSet  map[time.Time]struct{}
-		subSet   map[string]struct{}
+		summary      SessionSummary
+		modelSet     map[string]struct{}
+		modelAliases map[string]map[string]struct{}
+		hourSet      map[time.Time]struct{}
+		subSet       map[string]struct{}
 	}
 	bySess := map[string]*sessAgg{}
 
@@ -649,9 +650,10 @@ func (s *Service) Sessions(ctx context.Context, userID int64, filter QueryFilter
 					FirstEventAt: r.FirstEventAt,
 					LastEventAt:  r.LastEventAt,
 				},
-				modelSet: map[string]struct{}{},
-				hourSet:  map[time.Time]struct{}{},
-				subSet:   map[string]struct{}{},
+				modelSet:     map[string]struct{}{},
+				modelAliases: map[string]map[string]struct{}{},
+				hourSet:      map[time.Time]struct{}{},
+				subSet:       map[string]struct{}{},
 			}
 			bySess[key] = agg
 		}
@@ -681,6 +683,12 @@ func (s *Service) Sessions(ctx context.Context, userID int64, filter QueryFilter
 			agg.subSet[r.SessionID] = struct{}{}
 		}
 		agg.modelSet[canon] = struct{}{}
+		if rawTrim := strings.TrimSpace(r.Model); rawTrim != "" && !strings.EqualFold(rawTrim, canon) {
+			if agg.modelAliases[canon] == nil {
+				agg.modelAliases[canon] = map[string]struct{}{}
+			}
+			agg.modelAliases[canon][rawTrim] = struct{}{}
+		}
 		agg.hourSet[r.HourBucket] = struct{}{}
 		if r.FirstEventAt.Before(sm.FirstEventAt) {
 			sm.FirstEventAt = r.FirstEventAt
@@ -693,6 +701,13 @@ func (s *Service) Sessions(ctx context.Context, userID int64, filter QueryFilter
 	sessions := make([]SessionSummary, 0, len(bySess))
 	for _, agg := range bySess {
 		agg.summary.Models = sortedKeys(agg.modelSet)
+		if len(agg.modelAliases) > 0 {
+			m := make(map[string][]string, len(agg.modelAliases))
+			for canon, raws := range agg.modelAliases {
+				m[canon] = sortedKeys(raws)
+			}
+			agg.summary.ModelAliases = m
+		}
 		agg.summary.HourCount = len(agg.hourSet)
 		agg.summary.SubagentCount = len(agg.subSet)
 		sessions = append(sessions, agg.summary)
@@ -770,6 +785,7 @@ func (s *Service) SessionDetail(ctx context.Context, userID int64, sessionID, de
 		LastEventAt:  first.LastEventAt,
 	}
 	modelSet := map[string]struct{}{}
+	modelAliases := map[string]map[string]struct{}{}
 	hourSet := map[time.Time]struct{}{}
 	subSet := map[string]struct{}{}
 	items := make([]SessionHourItem, 0, len(rows))
@@ -812,6 +828,12 @@ func (s *Service) SessionDetail(ctx context.Context, userID int64, sessionID, de
 			subSet[r.SessionID] = struct{}{}
 		}
 		modelSet[canon] = struct{}{}
+		if rawTrim := strings.TrimSpace(r.Model); rawTrim != "" && !strings.EqualFold(rawTrim, canon) {
+			if modelAliases[canon] == nil {
+				modelAliases[canon] = map[string]struct{}{}
+			}
+			modelAliases[canon][rawTrim] = struct{}{}
+		}
 		hourSet[r.HourBucket] = struct{}{}
 		if r.FirstEventAt.Before(summary.FirstEventAt) {
 			summary.FirstEventAt = r.FirstEventAt
@@ -839,6 +861,13 @@ func (s *Service) SessionDetail(ctx context.Context, userID int64, sessionID, de
 		})
 	}
 	summary.Models = sortedKeys(modelSet)
+	if len(modelAliases) > 0 {
+		m := make(map[string][]string, len(modelAliases))
+		for canon, raws := range modelAliases {
+			m[canon] = sortedKeys(raws)
+		}
+		summary.ModelAliases = m
+	}
 	summary.HourCount = len(hourSet)
 	summary.SubagentCount = len(subSet)
 	return &SessionDetailResponse{Session: summary, Slices: items}, nil
@@ -999,18 +1028,24 @@ func (s *Service) DeleteModelPrice(ctx context.Context, userID, id int64) error 
 // Helpers
 
 type breakdownAgg struct {
-	items    map[string]*BreakdownItem
-	sessions map[string]map[string]struct{}
+	items     map[string]*BreakdownItem
+	sessions  map[string]map[string]struct{}
+	rawModels map[string]map[string]struct{}
 }
 
 func newBreakdownAgg() *breakdownAgg {
 	return &breakdownAgg{
-		items:    map[string]*BreakdownItem{},
-		sessions: map[string]map[string]struct{}{},
+		items:     map[string]*BreakdownItem{},
+		sessions:  map[string]map[string]struct{}{},
+		rawModels: map[string]map[string]struct{}{},
 	}
 }
 
 func (b *breakdownAgg) add(key, label string, r HourlySessionRecord, costUSD float64, rootSess string) {
+	b.addWithRaw(key, label, r, costUSD, rootSess, "")
+}
+
+func (b *breakdownAgg) addWithRaw(key, label string, r HourlySessionRecord, costUSD float64, rootSess, rawModel string) {
 	item, ok := b.items[key]
 	if !ok {
 		item = &BreakdownItem{Key: key, Label: label}
@@ -1025,12 +1060,21 @@ func (b *breakdownAgg) add(key, label string, r HourlySessionRecord, costUSD flo
 	item.RequestCount += int64(r.RequestCount)
 	item.ToolCallCount += int64(r.ToolCallCount)
 	b.sessions[key][rootSess] = struct{}{}
+	if rawTrim := strings.TrimSpace(rawModel); rawTrim != "" && !strings.EqualFold(rawTrim, label) {
+		if b.rawModels[key] == nil {
+			b.rawModels[key] = map[string]struct{}{}
+		}
+		b.rawModels[key][rawTrim] = struct{}{}
+	}
 }
 
 func (b *breakdownAgg) sorted() []BreakdownItem {
 	out := make([]BreakdownItem, 0, len(b.items))
 	for k, item := range b.items {
 		item.SessionCount = len(b.sessions[k])
+		if raws := b.rawModels[k]; len(raws) > 0 {
+			item.MergedRawModels = sortedKeys(raws)
+		}
 		out = append(out, *item)
 	}
 	sort.Slice(out, func(i, j int) bool {

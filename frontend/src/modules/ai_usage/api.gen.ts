@@ -69,6 +69,7 @@ export interface BreakdownItem {
   request_count: number /* int64 */;
   tool_call_count: number /* int64 */;
   session_count: number /* int */;
+  merged_raw_models?: string[];
 }
 export interface HourOfDayItem {
   hour: number /* int */;
@@ -137,6 +138,7 @@ export interface SessionSummary {
   agent: string;
   project: string;
   models: string[];
+  model_aliases?: { [key: string]: string[]};
   tokens: TokenTotals;
   cost_usd: number /* float64 */;
   max_context_tokens: number /* int64 */;
