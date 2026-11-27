@@ -3,6 +3,7 @@ import { storageModule } from './storage';
 import { plannerModule } from './planner';
 import { aiUsageModule } from './ai_usage';
 import { assetsModule } from './assets';
+import { clipboardModule } from './clipboard';
 
 /**
  * Single frontend module registry.
@@ -13,4 +14,5 @@ export const registeredModules: FrontendModule[] = [
   plannerModule,
   aiUsageModule,
   assetsModule,
+  clipboardModule,
 ];

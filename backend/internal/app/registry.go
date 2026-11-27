@@ -4,6 +4,7 @@ import (
 	"yukideck/internal/core/module"
 	"yukideck/internal/modules/ai_usage"
 	"yukideck/internal/modules/assets"
+	"yukideck/internal/modules/clipboard"
 	"yukideck/internal/modules/planner"
 	"yukideck/internal/modules/storage"
 )
@@ -17,5 +18,6 @@ func BuildModules(deps module.Deps) []module.Module {
 		planner.New(deps),
 		ai_usage.New(deps),
 		assets.New(deps),
+		clipboard.New(deps),
 	}
 }

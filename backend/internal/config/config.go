@@ -40,6 +40,7 @@ type Config struct {
 	RequestMaxBodyBytes int64         `env:"REQUEST_MAX_BODY_BYTES" envDefault:"1048576"`
 	ExternalHTTPTimeout time.Duration `env:"EXTERNAL_HTTP_TIMEOUT" envDefault:"10s"`
 	StorageProxyMaxMB   int64         `env:"STORAGE_PROXY_MAX_MB" envDefault:"20"`
+	ClipboardMaxBytes   int64         `env:"CLIPBOARD_MAX_BYTES" envDefault:"262144"`
 }
 
 func Load() (*Config, error) {

@@ -209,4 +209,5 @@ flowchart LR
 | **Stage 3** | 日程与提醒模块（`planner`，详见 [planner-module.md](./planner-module.md)） | ✅ 已完成 |
 | **Stage 4** | 平台底座升级（全局 API Key + `messenger` 自定义推送终结点路径分流） | ✅ 已完成 |
 | **Stage 5** | AI Agent 用量统计模块（`ai-usage` + `collector/`，详见 [ai-usage-module.md](./ai-usage-module.md)） | ✅ 已完成 |
-| **Stage 6** | 物品价值计算模块（`assets`） | ⏳ 待对齐需求 |
+| **Stage 6** | 物品价值计算模块（`assets`，详见 [assets-module.md](./assets-module.md)） | ✅ 已完成 |
+| **Stage 7** | 剪切板模块（`clipboard`，详见 [clipboard-module.md](./clipboard-module.md)） | ✅ 已完成 |

@@ -307,6 +307,68 @@
     background-image: radial-gradient(rgba(148, 163, 184, 0.28) 1px, transparent 1px);
     background-size: 20px 20px;
   }
+
+  /* Markdown preview typography (clipboard module) */
+  .yd-md-preview h1 {
+    @apply text-xl font-semibold text-zinc-900 mt-5 mb-2.5 pb-1.5 border-b border-zinc-200/80 first:mt-0;
+  }
+
+  .yd-md-preview h2 {
+    @apply text-lg font-semibold text-zinc-900 mt-5 mb-2 first:mt-0;
+  }
+
+  .yd-md-preview h3 {
+    @apply text-base font-semibold text-zinc-800 mt-4 mb-1.5 first:mt-0;
+  }
+
+  .yd-md-preview p {
+    @apply my-2.5;
+  }
+
+  .yd-md-preview ul {
+    @apply my-2.5 list-disc pl-6 space-y-1;
+  }
+
+  .yd-md-preview ol {
+    @apply my-2.5 list-decimal pl-6 space-y-1;
+  }
+
+  .yd-md-preview blockquote {
+    @apply my-3 border-l-3 border-sky-300 bg-sky-50/40 px-3.5 py-2 text-zinc-600 rounded-r-lg;
+  }
+
+  .yd-md-preview code {
+    @apply rounded bg-[#f3f6fa] px-1.5 py-0.5 font-mono text-[12.5px] text-zinc-700;
+  }
+
+  .yd-md-preview pre {
+    @apply my-3 overflow-x-auto rounded-lg border border-zinc-200/80 bg-[#f8fafc] p-3.5;
+  }
+
+  .yd-md-preview pre code {
+    @apply bg-transparent p-0 text-[12.5px] leading-relaxed;
+  }
+
+  .yd-md-preview a {
+    @apply text-sky-600 underline decoration-sky-300 underline-offset-2 hover:text-sky-700;
+  }
+
+  .yd-md-preview hr {
+    @apply my-4 border-zinc-200;
+  }
+
+  .yd-md-preview table {
+    @apply my-3 w-full border-collapse text-xs;
+  }
+
+  .yd-md-preview th,
+  .yd-md-preview td {
+    @apply border border-zinc-200/80 px-2.5 py-1.5 text-left;
+  }
+
+  .yd-md-preview th {
+    @apply bg-[#f8fafc] font-semibold text-zinc-700;
+  }
 }
 
 @keyframes yd-fade-in {
