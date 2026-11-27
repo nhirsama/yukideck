@@ -230,13 +230,14 @@ func (s *Service) loadEnriched(ctx context.Context, userID int64, filter QueryFi
 	filterDevice := strings.TrimSpace(filter.DeviceID)
 	filterProject := strings.TrimSpace(filter.Project)
 
+	book := NewPriceBook(aliases, prices)
 	out := make([]enrichedSlice, 0, len(rows))
 	for _, row := range rows {
 		dev, knownDev := devMap[row.DeviceID]
 		if knownDev && dev.Hidden && !filter.IncludeHidden && filterDevice == "" {
 			continue
 		}
-		canon := NormalizeModel(row.Model, aliases)
+		canon := book.DisplayModel(row.Model)
 
 		agentSet[row.Agent] = struct{}{}
 		modelSet[canon] = struct{}{}
@@ -257,7 +258,7 @@ func (s *Service) loadEnriched(ctx context.Context, userID int64, filter QueryFi
 			continue
 		}
 
-		cost, savings := ComputeCost(row, canon, prices)
+		cost, savings := book.ComputeSliceCost(row)
 		devName := row.DeviceID
 		if knownDev && dev.Name != "" {
 			devName = dev.Name
@@ -540,6 +541,7 @@ func (s *Service) Sessions(ctx context.Context, userID int64, filter QueryFilter
 		devices []Device
 		aliases []ModelAlias
 		prices  []ModelPrice
+		book    *PriceBook
 		err     error
 	)
 
@@ -588,9 +590,10 @@ func (s *Service) Sessions(ctx context.Context, userID int64, filter QueryFilter
 		if errMeta != nil {
 			return nil, errMeta
 		}
+		book = NewPriceBook(aliases, prices)
 		matchedRaw := make([]string, 0, len(distinctModels))
 		for _, raw := range distinctModels {
-			canon := NormalizeModel(raw, aliases)
+			canon := book.DisplayModel(raw)
 			if strings.EqualFold(canon, filterModel) || strings.EqualFold(raw, filterModel) {
 				matchedRaw = append(matchedRaw, raw)
 			}
@@ -623,9 +626,12 @@ func (s *Service) Sessions(ctx context.Context, userID int64, filter QueryFilter
 	}
 	bySess := map[string]*sessAgg{}
 
+	if book == nil {
+		book = NewPriceBook(aliases, prices)
+	}
 	for _, r := range rows {
-		canon := NormalizeModel(r.Model, aliases)
-		costUSD, _ := ComputeCost(r, canon, prices)
+		canon := book.DisplayModel(r.Model)
+		costUSD, _ := book.ComputeSliceCost(r)
 		devName := r.DeviceID
 		if dev, ok := devMap[r.DeviceID]; ok && dev.Name != "" {
 			devName = dev.Name
@@ -790,9 +796,10 @@ func (s *Service) SessionDetail(ctx context.Context, userID int64, sessionID, de
 	subSet := map[string]struct{}{}
 	items := make([]SessionHourItem, 0, len(rows))
 
+	book := NewPriceBook(aliases, prices)
 	for _, r := range rows {
-		canon := NormalizeModel(r.Model, aliases)
-		cost, _ := ComputeCost(r, canon, prices)
+		canon := book.DisplayModel(r.Model)
+		cost, _ := book.ComputeSliceCost(r)
 		tot := r.TotalTokens()
 		tokens := TokenTotals{
 			InputTokens:        r.InputTokens,

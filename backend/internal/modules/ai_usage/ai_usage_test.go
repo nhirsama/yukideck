@@ -461,7 +461,7 @@ func TestNormalizeModelAndPricing(t *testing.T) {
 		{"gpt-6.2-astra", 8.00, 40.00},
 		{"gpt-6.1-terra", 1.00, 5.00},
 		{"gpt-6-luna", 0.10, 0.50},
-		{"gpt-5.6-sol", 5.00, 30.00},
+		{"gpt-5.6-sol", 4.00, 20.00},
 		{"gpt-5.6", 4.00, 20.00},
 		{"gpt-5.5", 5.00, 30.00},
 		{"gpt-5.3-codex-spark", 1.75, 14.00},
@@ -473,8 +473,8 @@ func TestNormalizeModelAndPricing(t *testing.T) {
 		{"gemini-4-hydrogen", 1.50, 7.50},
 		{"gemini-3.8-flash", 0.75, 3.75},
 		{"gemini-3-pro-preview", 2.00, 12.00},
-		{"deepseek/deepseek-v4-pro", 1.32, 3.96},
-		{"deepseek-v3.2", 0.26, 0.38},
+		{"deepseek/deepseek-v4-pro", 0.66, 1.98},
+		{"deepseek-v3.2", 0.28, 0.42},
 		{"zai-org/glm-5.3", 1.40, 4.40},
 		{"glm-5.1", 1.40, 4.40},
 		{"moonshotai/kimi-k3.1-pro", 2.00, 10.00},
@@ -1066,5 +1066,350 @@ func TestIngestReplacesLegacyNonSubagentOrphanSlice(t *testing.T) {
 	}
 	if sessRes.Sessions[0].ToolCallCount != 5 || sessRes.Sessions[0].Tokens.TotalTokens != 1200 {
 		t.Fatalf("expected deduplicated tool_call_count=5 and total_tokens=1200, got %+v", sessRes.Sessions[0])
+	}
+}
+
+func TestVersionedPricingAndTagMultipliers(t *testing.T) {
+	holidays := map[string]struct{}{
+		"2026-10-01": {}, // Thursday statutory holiday
+	}
+	specs := []BillingModelPricing{
+		{
+			BillingModel: "deepseek-v4",
+			MatchPrefix:  true,
+			Versions: []PriceVersion{
+				// Intentionally out of order to verify compile-time sorting.
+				{
+					EffectiveFrom:  "2026-06-01T00:00:00+08:00",
+					Base:           RateCard{InputPerM: 2.00, OutputPerM: 6.00, CacheReadPerM: 0.20},
+					TagMultipliers: map[string]float64{TagOffpeak: 0.5},
+				},
+				{
+					EffectiveFrom: "",
+					Base:          RateCard{InputPerM: 1.00, OutputPerM: 4.00, CacheReadPerM: 0.10},
+				},
+			},
+		},
+		{
+			BillingModel: "gpt-5.4",
+			MatchPrefix:  true,
+			Versions: []PriceVersion{
+				{
+					Base:           RateCard{InputPerM: 2.50, OutputPerM: 15.00, CacheReadPerM: 0.25},
+					TagMultipliers: map[string]float64{TagFast: 2.0},
+				},
+			},
+		},
+		{
+			BillingModel: "grok-code-fast",
+			MatchPrefix:  true,
+			Versions: []PriceVersion{
+				{
+					Base:           RateCard{InputPerM: 0.20, OutputPerM: 1.50, CacheReadPerM: 0.02},
+					TagMultipliers: map[string]float64{TagFast: 2.0},
+				},
+			},
+		},
+	}
+	timeTaggers := map[string]TimeTagger{
+		"deepseek-v4": NewCNPeakOffpeakTagger(holidays),
+	}
+	catalog := compileCatalog(specs, timeTaggers, nil)
+
+	aliases := []ModelAlias{
+		{ID: 1, MatchPattern: "gpt-5.4-fast", CanonicalModel: "gpt-5.4-display", Priority: 10},
+		{ID: 2, MatchPattern: "private-relay/secret-fast", CanonicalModel: "gpt-5.4-fast", Priority: 20},
+	}
+	book := newPriceBookWithCatalog(catalog, aliases, nil)
+
+	// 1. Before 2026-06-01 CST: uses baseline version ($1/$4, no offpeak multiplier).
+	tEarly := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC) // 2026-05-31 23:00 CST (offpeak, but v1 has no TagMultipliers)
+	cEarly, sEarly := book.ComputeSliceCost(HourlySessionRecord{
+		Model:           "deepseek/deepseek-v4",
+		HourBucket:      tEarly,
+		InputTokens:     1_000_000,
+		OutputTokens:    1_000_000,
+		CacheReadTokens: 1_000_000,
+	})
+	// 1 + 4 + 0.1 = 5.1; savings = 1 - 0.1 = 0.9
+	if math.Abs(cEarly-5.1) > 1e-6 || math.Abs(sEarly-0.9) > 1e-6 {
+		t.Fatalf("early version cost=(%.6f, %.6f), want (5.1, 0.9)", cEarly, sEarly)
+	}
+
+	// 2. After 2026-06-01 CST during weekday peak (2026-06-01 Monday 10:00 CST == 02:00 UTC): full v2 price ($2/$6/$0.2).
+	tPeak := time.Date(2026, 6, 1, 2, 0, 0, 0, time.UTC)
+	cPeak, sPeak := book.ComputeSliceCost(HourlySessionRecord{
+		Model:           "deepseek-v4",
+		HourBucket:      tPeak,
+		InputTokens:     1_000_000,
+		OutputTokens:    1_000_000,
+		CacheReadTokens: 1_000_000,
+	})
+	// 2 + 6 + 0.2 = 8.2; savings = 2 - 0.2 = 1.8
+	if math.Abs(cPeak-8.2) > 1e-6 || math.Abs(sPeak-1.8) > 1e-6 {
+		t.Fatalf("peak v2 cost=(%.6f, %.6f), want (8.2, 1.8)", cPeak, sPeak)
+	}
+
+	// 3. After 2026-06-01 CST during weekday lunch offpeak (12:00 CST == 04:00 UTC): half v2 price.
+	tLunch := time.Date(2026, 6, 1, 4, 0, 0, 0, time.UTC)
+	cLunch, sLunch := book.ComputeSliceCost(HourlySessionRecord{
+		Model:           "deepseek-v4",
+		HourBucket:      tLunch,
+		InputTokens:     1_000_000,
+		OutputTokens:    1_000_000,
+		CacheReadTokens: 1_000_000,
+	})
+	if math.Abs(cLunch-4.1) > 1e-6 || math.Abs(sLunch-0.9) > 1e-6 {
+		t.Fatalf("lunch offpeak v2 cost=(%.6f, %.6f), want (4.1, 0.9)", cLunch, sLunch)
+	}
+
+	// 4. Weekday statutory holiday (2026-10-01 Thursday 10:00 CST == 02:00 UTC): offpeak all day.
+	tHoliday := time.Date(2026, 10, 1, 2, 0, 0, 0, time.UTC)
+	cHol, _ := book.ComputeSliceCost(HourlySessionRecord{
+		Model:        "deepseek-v4",
+		HourBucket:   tHoliday,
+		InputTokens:  1_000_000,
+		OutputTokens: 1_000_000,
+	})
+	// (2 + 6) * 0.5 = 4.0
+	if math.Abs(cHol-4.0) > 1e-6 {
+		t.Fatalf("holiday offpeak cost=%.6f, want 4.0", cHol)
+	}
+
+	// 5. DisplayModel & BillingModel independence + static "fast" tag multiplier (2x).
+	taggedFast := book.TagSlice("openai/gpt-5.4-fast", tPeak)
+	if taggedFast.DisplayModel != "gpt-5.4-display" || taggedFast.BillingModel != "gpt-5.4" || len(taggedFast.Tags) != 1 || taggedFast.Tags[0] != TagFast {
+		t.Fatalf("unexpected taggedFast: %+v", taggedFast)
+	}
+	cFast, _ := book.ComputeSliceCost(HourlySessionRecord{
+		Model:       "openai/gpt-5.4-fast",
+		HourBucket:  tPeak,
+		InputTokens: 1_000_000,
+	})
+	// 2.50 * 2.0 = 5.0
+	if math.Abs(cFast-5.0) > 1e-6 {
+		t.Fatalf("gpt-5.4-fast cost=%.6f, want 5.0", cFast)
+	}
+
+	// 6. Private relay model aliased to gpt-5.4-fast also bills via gpt-5.4 + fast tag.
+	cRelayFast, _ := book.ComputeSliceCost(HourlySessionRecord{
+		Model:       "private-relay/secret-fast",
+		HourBucket:  tPeak,
+		InputTokens: 1_000_000,
+	})
+	if math.Abs(cRelayFast-5.0) > 1e-6 {
+		t.Fatalf("aliased relay fast cost=%.6f, want 5.0", cRelayFast)
+	}
+
+	// 7. Native "-fast" model ("grok-code-fast") must NOT be mis-tagged as fast 2x.
+	taggedGrok := book.TagSlice("x-ai/grok-code-fast", tPeak)
+	if taggedGrok.BillingModel != "grok-code-fast" || len(taggedGrok.Tags) != 0 {
+		t.Fatalf("grok-code-fast should not get fast tag: %+v", taggedGrok)
+	}
+	cGrok, _ := book.ComputeSliceCost(HourlySessionRecord{
+		Model:       "x-ai/grok-code-fast",
+		HourBucket:  tPeak,
+		InputTokens: 1_000_000,
+	})
+	if math.Abs(cGrok-0.20) > 1e-6 {
+		t.Fatalf("grok-code-fast cost=%.6f, want 0.20", cGrok)
+	}
+
+	// 8. User custom price override is flat and does NOT stack built-in tag multipliers.
+	customBook := newPriceBookWithCatalog(catalog, aliases, []ModelPrice{
+		{ModelPattern: "gpt-5.4-fast", InputPerM: 4.2, OutputPerM: 20.0},
+	})
+	cCustom, _ := customBook.ComputeSliceCost(HourlySessionRecord{
+		Model:       "openai/gpt-5.4-fast",
+		HourBucket:  tPeak,
+		InputTokens: 1_000_000,
+	})
+	if math.Abs(cCustom-4.2) > 1e-6 {
+		t.Fatalf("user custom override should be flat 4.2 (not multiplied by 2x), got %.6f", cCustom)
+	}
+}
+
+func TestIsCNWorkdayPeakHour(t *testing.T) {
+	cst := time.FixedZone("Asia/Shanghai", 8*3600)
+	holidays := map[string]struct{}{
+		"2026-05-01": {}, // Friday Labor Day
+	}
+
+	// 2026-05-04 is Monday (normal workday)
+	workdayChecks := map[int]bool{
+		0: false, 8: false,
+		9: true, 10: true, 11: true,
+		12: false, 13: false,
+		14: true, 15: true, 16: true, 17: true,
+		18: false, 23: false,
+	}
+	for hour, wantPeak := range workdayChecks {
+		ts := time.Date(2026, 5, 4, hour, 0, 0, 0, cst).UTC()
+		if got := IsCNWorkdayPeakHour(ts, holidays); got != wantPeak {
+			t.Fatalf("workday CST %02d:00 peak=%v, want %v", hour, got, wantPeak)
+		}
+	}
+
+	// Weekend (2026-05-02 Saturday, 2026-05-03 Sunday) -> always offpeak
+	for _, day := range []int{2, 3} {
+		for _, hour := range []int{9, 10, 15, 17} {
+			ts := time.Date(2026, 5, day, hour, 0, 0, 0, cst).UTC()
+			if IsCNWorkdayPeakHour(ts, holidays) {
+				t.Fatalf("weekend 2026-05-%02d CST %02d:00 should be offpeak", day, hour)
+			}
+		}
+	}
+
+	// Statutory holiday on weekday (2026-05-01 Friday) -> always offpeak
+	for _, hour := range []int{9, 10, 14, 17} {
+		ts := time.Date(2026, 5, 1, hour, 0, 0, 0, cst).UTC()
+		if IsCNWorkdayPeakHour(ts, holidays) {
+			t.Fatalf("statutory holiday 2026-05-01 CST %02d:00 should be offpeak", hour)
+		}
+	}
+}
+
+func TestImportedOfficialCatalogHistoryAndMultipliers(t *testing.T) {
+	cst := time.FixedZone("Asia/Shanghai", 8*3600)
+	book := NewPriceBook(nil, nil)
+
+	// 1. OpenAI gpt-4o DevDay price cut (2024-10-03): $5/$15 -> $2.50/$10
+	cOld4o, _ := book.ComputeSliceCost(HourlySessionRecord{
+		Model: "gpt-4o", HourBucket: time.Date(2024, 9, 1, 10, 0, 0, 0, time.UTC),
+		InputTokens: 1_000_000, OutputTokens: 1_000_000,
+	})
+	cNew4o, _ := book.ComputeSliceCost(HourlySessionRecord{
+		Model: "gpt-4o", HourBucket: time.Date(2024, 11, 1, 10, 0, 0, 0, time.UTC),
+		InputTokens: 1_000_000, OutputTokens: 1_000_000,
+	})
+	if math.Abs(cOld4o-20.0) > 1e-6 || math.Abs(cNew4o-12.5) > 1e-6 {
+		t.Fatalf("gpt-4o history cost=(%.4f, %.4f), want (20.0, 12.5)", cOld4o, cNew4o)
+	}
+
+	// 2. OpenAI gpt-5.6-sol price cut on 2026-08-22 ($5/$30 -> $4/$20) & gpt-5.6-luna spot fix ($0.20/$1.20)
+	cOld56, _ := book.ComputeSliceCost(HourlySessionRecord{
+		Model: "gpt-5.6-sol", HourBucket: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+		InputTokens: 1_000_000, OutputTokens: 1_000_000,
+	})
+	cNew56, _ := book.ComputeSliceCost(HourlySessionRecord{
+		Model: "gpt-5.6-sol", HourBucket: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+		InputTokens: 1_000_000, OutputTokens: 1_000_000,
+	})
+	cLuna, _ := book.ComputeSliceCost(HourlySessionRecord{
+		Model: "gpt-5.6-luna", HourBucket: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC),
+		InputTokens: 1_000_000, OutputTokens: 1_000_000,
+	})
+	if math.Abs(cOld56-35.0) > 1e-6 || math.Abs(cNew56-24.0) > 1e-6 || math.Abs(cLuna-1.4) > 1e-6 {
+		t.Fatalf("gpt-5.6 costs=(%.4f, %.4f, %.4f), want (35.0, 24.0, 1.4)", cOld56, cNew56, cLuna)
+	}
+
+	// 3. Anthropic claude-3.5-haiku price cut & fixed cache_read (0.08, not 0.8)
+	cHaiku, _ := book.ComputeSliceCost(HourlySessionRecord{
+		Model: "claude-3-5-haiku-20241022", HourBucket: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		InputTokens: 1_000_000, OutputTokens: 1_000_000, CacheReadTokens: 1_000_000,
+	})
+	// 0.8 + 4.0 + 0.08 = 4.88
+	if math.Abs(cHaiku-4.88) > 1e-6 {
+		t.Fatalf("claude-3.5-haiku cost=%.6f, want 4.88", cHaiku)
+	}
+
+	// 4. OpenAI gpt-6.2-sol fast (2x) and ultrafast (3x in 2026, 6x from 2027-03-01)
+	cSolFast, _ := book.ComputeSliceCost(HourlySessionRecord{
+		Model: "openai/gpt-6.2-sol-fast", HourBucket: time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC),
+		InputTokens: 1_000_000, OutputTokens: 1_000_000,
+	})
+	cSolUltra2026, _ := book.ComputeSliceCost(HourlySessionRecord{
+		Model: "openai/gpt-6.2-sol-ultrafast", HourBucket: time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC),
+		InputTokens: 1_000_000, OutputTokens: 1_000_000,
+	})
+	cSolUltra2027, _ := book.ComputeSliceCost(HourlySessionRecord{
+		Model: "openai/gpt-6.2-sol-ultrafast", HourBucket: time.Date(2027, 3, 2, 0, 0, 0, 0, time.UTC),
+		InputTokens: 1_000_000, OutputTokens: 1_000_000,
+	})
+	if math.Abs(cSolFast-24.0) > 1e-6 || math.Abs(cSolUltra2026-36.0) > 1e-6 || math.Abs(cSolUltra2027-72.0) > 1e-6 {
+		t.Fatalf("gpt-6.2-sol multipliers=(%.4f, %.4f, %.4f), want (24.0, 36.0, 72.0)", cSolFast, cSolUltra2026, cSolUltra2027)
+	}
+
+	// 5. Anthropic claude-opus-5.5 fast (2x): base $4/$20 -> $8/$40
+	cOpusFast, _ := book.ComputeSliceCost(HourlySessionRecord{
+		Model: "anthropic/claude-opus-5-5-fast", HourBucket: time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC),
+		InputTokens: 1_000_000, OutputTokens: 1_000_000,
+	})
+	if math.Abs(cOpusFast-48.0) > 1e-6 {
+		t.Fatalf("claude-opus-5.5-fast cost=%.4f, want 48.0", cOpusFast)
+	}
+
+	// 6. DeepSeek V4 Pro official China peak/off-peak + statutory holiday rules
+	// 2026-10-08 Thursday 10:00 CST (post-holiday workday peak) -> 2x ($1.32 + $3.96 = $5.28)
+	cDSPeak, _ := book.ComputeSliceCost(HourlySessionRecord{
+		Model: "deepseek/deepseek-v4-pro", HourBucket: time.Date(2026, 10, 8, 10, 0, 0, 0, cst).UTC(),
+		InputTokens: 1_000_000, OutputTokens: 1_000_000,
+	})
+	// 2026-10-08 Thursday 12:00 CST (lunch offpeak) -> 1x ($0.66 + $1.98 = $2.64)
+	cDSLunch, _ := book.ComputeSliceCost(HourlySessionRecord{
+		Model: "deepseek/deepseek-v4-pro", HourBucket: time.Date(2026, 10, 8, 12, 0, 0, 0, cst).UTC(),
+		InputTokens: 1_000_000, OutputTokens: 1_000_000,
+	})
+	// 2026-10-05 Monday 10:00 CST (China National Day statutory holiday -> offpeak all day!) -> $2.64
+	cDSHoliday, _ := book.ComputeSliceCost(HourlySessionRecord{
+		Model: "deepseek/deepseek-v4-pro", HourBucket: time.Date(2026, 10, 5, 10, 0, 0, 0, cst).UTC(),
+		InputTokens: 1_000_000, OutputTokens: 1_000_000,
+	})
+	// 2026-07-01 Wednesday 10:00 CST (v1 before 2026-10-03 -> $0.435 + $0.87 = $1.305)
+	cDSV1, _ := book.ComputeSliceCost(HourlySessionRecord{
+		Model: "deepseek/deepseek-v4-pro", HourBucket: time.Date(2026, 7, 1, 10, 0, 0, 0, cst).UTC(),
+		InputTokens: 1_000_000, OutputTokens: 1_000_000,
+	})
+	if math.Abs(cDSPeak-5.28) > 1e-6 || math.Abs(cDSLunch-2.64) > 1e-6 || math.Abs(cDSHoliday-2.64) > 1e-6 || math.Abs(cDSV1-1.305) > 1e-6 {
+		t.Fatalf("deepseek-v4-pro costs=(peak=%.4f, lunch=%.4f, holiday=%.4f, v1=%.4f), want (5.28, 2.64, 2.64, 1.305)", cDSPeak, cDSLunch, cDSHoliday, cDSV1)
+	}
+
+	// 7. Native "-fast" xAI models remain untouched (not multiplied by fast)
+	cGrok4Fast, _ := book.ComputeSliceCost(HourlySessionRecord{
+		Model: "x-ai/grok-4-fast", HourBucket: time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC),
+		InputTokens: 1_000_000, OutputTokens: 1_000_000,
+	})
+	if math.Abs(cGrok4Fast-0.70) > 1e-6 {
+		t.Fatalf("grok-4-fast cost=%.4f, want 0.70", cGrok4Fast)
+	}
+}
+
+func BenchmarkPriceBook10kSlices(b *testing.B) {
+	holidays := map[string]struct{}{"2026-10-01": {}}
+	catalog := compileCatalog(builtinBillingCatalog, map[string]TimeTagger{
+		"deepseek-v4": NewCNPeakOffpeakTagger(holidays),
+	}, loadEmbeddedCatalogPrices(embeddedModelPricesJSON))
+
+	models := []string{
+		"anthropic/claude-opus-5-5-20261001",
+		"openai/gpt-5.4-fast",
+		"deepseek/deepseek-v4",
+		"google-antigravity/gemini-4-neon-high",
+		"x-ai/grok-code-fast",
+		"zai-org/glm-5.3",
+	}
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	rows := make([]HourlySessionRecord, 10_000)
+	for i := range rows {
+		rows[i] = HourlySessionRecord{
+			Model:           models[i%len(models)],
+			HourBucket:      base.Add(time.Duration(i) * time.Hour),
+			InputTokens:     50_000,
+			OutputTokens:    10_000,
+			CacheReadTokens: 200_000,
+		}
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		book := newPriceBookWithCatalog(catalog, nil, nil)
+		var total float64
+		for _, r := range rows {
+			c, _ := book.ComputeSliceCost(r)
+			total += c
+		}
+		if total <= 0 {
+			b.Fatal("expected positive total")
+		}
 	}
 }

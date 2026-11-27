@@ -4,9 +4,9 @@ import (
 	_ "embed"
 	"encoding/json"
 	"math"
-	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 //go:embed model_prices_and_context_window.json
@@ -20,40 +20,151 @@ type litellmPriceEntry struct {
 	CacheCreation1hTokenCost    float64 `json:"cache_creation_input_token_cost_above_1hr"`
 }
 
-// embeddedCatalogPrices stores O(1) exact model pricing loaded from the embedded
-// sub2api / LiteLLM-compatible model_prices_and_context_window.json catalog.
-var (
-	embeddedCatalogPrices map[string]ModelPrice
-	builtinExactPrices    map[string]ModelPrice
-	builtinWildcardPrices []ModelPrice
-)
+type compiledPriceVersion struct {
+	effectiveFromUnix int64
+	base              RateCard
+	tagMultipliers    map[string]float64
+}
+
+type compiledBillingModel struct {
+	billingModel string
+	matchPrefix  bool
+	versions     []compiledPriceVersion
+}
+
+func (m *compiledBillingModel) lookupVersion(at time.Time) (compiledPriceVersion, bool) {
+	n := len(m.versions)
+	if n == 0 {
+		return compiledPriceVersion{}, false
+	}
+	if n == 1 && m.versions[0].effectiveFromUnix == math.MinInt64 {
+		return m.versions[0], true
+	}
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	ts := at.UTC().Unix()
+	idx := sort.Search(n, func(i int) bool {
+		return m.versions[i].effectiveFromUnix > ts
+	}) - 1
+	if idx < 0 {
+		return compiledPriceVersion{}, false
+	}
+	return m.versions[idx], true
+}
+
+func (m *compiledBillingModel) latestBase() RateCard {
+	if v, ok := m.lookupVersion(time.Now().UTC()); ok {
+		return v.base
+	}
+	if len(m.versions) == 0 {
+		return RateCard{}
+	}
+	return m.versions[len(m.versions)-1].base
+}
+
+type compiledCatalog struct {
+	ordered       []*compiledBillingModel
+	exact         map[string]*compiledBillingModel
+	prefixSorted  []*compiledBillingModel
+	embeddedExact map[string]RateCard
+	timeTaggers   map[string]TimeTagger
+}
+
+func (c *compiledCatalog) isNativeExactBillingModel(name string) bool {
+	if _, ok := c.exact[name]; ok {
+		return true
+	}
+	if _, ok := c.embeddedExact[name]; ok {
+		return true
+	}
+	return false
+}
+
+var defaultCatalog *compiledCatalog
 
 func init() {
-	embeddedCatalogPrices = loadEmbeddedCatalogPrices(embeddedModelPricesJSON)
-	builtinExactPrices = make(map[string]ModelPrice, len(builtinModelPrices))
-	builtinWildcardPrices = make([]ModelPrice, 0, len(builtinModelPrices))
-	for _, p := range builtinModelPrices {
-		key := strings.ToLower(strings.TrimSpace(p.ModelPattern))
-		if key == "" {
-			continue
-		}
-		if strings.Contains(key, "*") {
-			builtinWildcardPrices = append(builtinWildcardPrices, p)
-		} else {
-			builtinExactPrices[key] = p
+	embedded := loadEmbeddedCatalogPrices(embeddedModelPricesJSON)
+	defaultCatalog = compileCatalog(builtinBillingCatalog, builtinTimeTaggers, embedded)
+}
+
+func parseEffectiveFrom(raw string) int64 {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return math.MinInt64
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t.UTC().Unix()
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t.UTC().Unix()
+	}
+	return math.MinInt64
+}
+
+func compileCatalog(specs []BillingModelPricing, timeTaggers map[string]TimeTagger, embedded map[string]RateCard) *compiledCatalog {
+	cat := &compiledCatalog{
+		ordered:       make([]*compiledBillingModel, 0, len(specs)),
+		exact:         make(map[string]*compiledBillingModel, len(specs)),
+		prefixSorted:  make([]*compiledBillingModel, 0, len(specs)),
+		embeddedExact: embedded,
+		timeTaggers:   make(map[string]TimeTagger, len(timeTaggers)),
+	}
+	for k, fn := range timeTaggers {
+		key := strings.ToLower(strings.TrimSpace(k))
+		if key != "" && fn != nil {
+			cat.timeTaggers[key] = fn
 		}
 	}
-	sort.SliceStable(builtinWildcardPrices, func(i, j int) bool {
-		return patternSpecificity(builtinWildcardPrices[i].ModelPattern) > patternSpecificity(builtinWildcardPrices[j].ModelPattern)
+	for _, spec := range specs {
+		key := strings.ToLower(strings.TrimSpace(spec.BillingModel))
+		if key == "" || len(spec.Versions) == 0 {
+			continue
+		}
+		versions := make([]compiledPriceVersion, 0, len(spec.Versions))
+		for _, v := range spec.Versions {
+			var mults map[string]float64
+			if len(v.TagMultipliers) > 0 {
+				mults = make(map[string]float64, len(v.TagMultipliers))
+				for tk, mv := range v.TagMultipliers {
+					ntk := strings.ToLower(strings.TrimSpace(tk))
+					if ntk != "" {
+						mults[ntk] = mv
+					}
+				}
+			}
+			versions = append(versions, compiledPriceVersion{
+				effectiveFromUnix: parseEffectiveFrom(v.EffectiveFrom),
+				base:              v.Base,
+				tagMultipliers:    mults,
+			})
+		}
+		sort.SliceStable(versions, func(i, j int) bool {
+			return versions[i].effectiveFromUnix < versions[j].effectiveFromUnix
+		})
+		cm := &compiledBillingModel{
+			billingModel: key,
+			matchPrefix:  spec.MatchPrefix,
+			versions:     versions,
+		}
+		cat.ordered = append(cat.ordered, cm)
+		cat.exact[key] = cm
+		if cm.matchPrefix {
+			cat.prefixSorted = append(cat.prefixSorted, cm)
+		}
+	}
+	sort.SliceStable(cat.prefixSorted, func(i, j int) bool {
+		return len(cat.prefixSorted[i].billingModel) > len(cat.prefixSorted[j].billingModel)
 	})
+	return cat
 }
 
 func round6(v float64) float64 {
 	return math.Round(v*1e6) / 1e6
 }
 
-func loadEmbeddedCatalogPrices(raw []byte) map[string]ModelPrice {
-	out := map[string]ModelPrice{}
+func loadEmbeddedCatalogPrices(raw []byte) map[string]RateCard {
+	out := map[string]RateCard{}
 	if len(raw) == 0 {
 		return out
 	}
@@ -73,471 +184,166 @@ func loadEmbeddedCatalogPrices(raw []byte) map[string]ModelPrice {
 		if key == "" {
 			continue
 		}
-		out[key] = ModelPrice{
-			ModelPattern:     key,
+		out[key] = RateCard{
 			InputPerM:        round6(entry.InputCostPerToken * 1e6),
 			OutputPerM:       round6(entry.OutputCostPerToken * 1e6),
 			CacheReadPerM:    round6(entry.CacheReadInputTokenCost * 1e6),
 			CacheWritePerM:   round6(entry.CacheCreationInputTokenCost * 1e6),
 			CacheWrite1hPerM: round6(entry.CacheCreation1hTokenCost * 1e6),
-			Builtin:          true,
 		}
 	}
 	return out
 }
 
-var (
-	reTagSuffix  = regexp.MustCompile(`:(?:free|beta|extended|thinking|exacto|floor|nitro)$`)
-	reDateSuffix = regexp.MustCompile(`(?:[-@](?:20\d{6}|20\d{2}-\d{2}-\d{2})|-v\d+:\d+)$`)
-	dotChannelPrefixes = []string{
-		"us.anthropic.",
-		"eu.anthropic.",
-		"apac.anthropic.",
-		"global.anthropic.",
-		"anthropic.",
+func rateCardFromModelPrice(p ModelPrice) RateCard {
+	return RateCard{
+		InputPerM:        p.InputPerM,
+		OutputPerM:       p.OutputPerM,
+		CacheReadPerM:    p.CacheReadPerM,
+		CacheWritePerM:   p.CacheWritePerM,
+		CacheWrite1hPerM: p.CacheWrite1hPerM,
 	}
-)
+}
 
-// stripChannelPrefixes removes multi-level slash channel prefixes (e.g. a/b/c/model -> model)
-// as well as Bedrock-style dot channel prefixes (e.g. us.anthropic.claude-* -> claude-*).
-func stripChannelPrefixes(raw string) string {
-	cleaned := strings.ToLower(strings.TrimSpace(raw))
-	cleaned = strings.TrimRight(cleaned, "/")
-	if idx := strings.LastIndex(cleaned, "/"); idx >= 0 && idx < len(cleaned)-1 {
-		cleaned = cleaned[idx+1:]
+func modelPriceFromRateCard(pattern string, rc RateCard, builtin bool) ModelPrice {
+	return ModelPrice{
+		ModelPattern:     pattern,
+		InputPerM:        rc.InputPerM,
+		OutputPerM:       rc.OutputPerM,
+		CacheReadPerM:    rc.CacheReadPerM,
+		CacheWritePerM:   rc.CacheWritePerM,
+		CacheWrite1hPerM: rc.CacheWrite1hPerM,
+		Builtin:          builtin,
 	}
-	for {
-		stripped := false
-		for _, pfx := range dotChannelPrefixes {
-			if strings.HasPrefix(cleaned, pfx) {
-				cleaned = strings.TrimPrefix(cleaned, pfx)
-				stripped = true
-				break
-			}
-		}
-		if !stripped {
-			break
-		}
+}
+
+func scaleRateCard(base RateCard, mul float64) RateCard {
+	if mul == 1.0 {
+		return base
 	}
-	return cleaned
+	return RateCard{
+		InputPerM:        base.InputPerM * mul,
+		OutputPerM:       base.OutputPerM * mul,
+		CacheReadPerM:    base.CacheReadPerM * mul,
+		CacheWritePerM:   base.CacheWritePerM * mul,
+		CacheWrite1hPerM: base.CacheWrite1hPerM * mul,
+	}
 }
 
-func stripModelTagsAndDate(s string) string {
-	s = reTagSuffix.ReplaceAllString(s, "")
-	s = reDateSuffix.ReplaceAllString(s, "")
-	return s
+func computeCostFromRateCard(row HourlySessionRecord, rc RateCard) (costUSD float64, cacheSavingsUSD float64) {
+	const perMillion = 1_000_000.0
+	outputBillable := row.OutputTokens + row.ReasoningTokens
+	cacheWrite1hRate := rc.CacheWrite1hPerM
+	if cacheWrite1hRate <= 0 {
+		cacheWrite1hRate = rc.CacheWritePerM
+	}
+
+	costUSD = (float64(row.InputTokens)*rc.InputPerM +
+		float64(outputBillable)*rc.OutputPerM +
+		float64(row.CacheReadTokens)*rc.CacheReadPerM +
+		float64(row.CacheWriteTokens)*rc.CacheWritePerM +
+		float64(row.CacheWrite1hTokens)*cacheWrite1hRate) / perMillion
+
+	if row.CacheReadTokens > 0 && rc.InputPerM > rc.CacheReadPerM {
+		cacheSavingsUSD = float64(row.CacheReadTokens) * (rc.InputPerM - rc.CacheReadPerM) / perMillion
+	}
+	return costUSD, cacheSavingsUSD
 }
 
-func patternSpecificity(pattern string) int {
-	p := strings.ToLower(strings.TrimSpace(pattern))
-	return len(strings.ReplaceAll(p, "*", ""))
-}
-
-type builtinAliasRule struct {
-	pattern   string
-	canonical string
-}
-
-var builtinAliasRules = []builtinAliasRule{
-	// Anthropic Claude Fable / Mythos / 5.5 / 5
-	{pattern: "claude-fable-5-2*", canonical: "claude-fable-5.2"},
-	{pattern: "claude-fable-5.2*", canonical: "claude-fable-5.2"},
-	{pattern: "claude-fable-5-1*", canonical: "claude-fable-5.1"},
-	{pattern: "claude-fable-5.1*", canonical: "claude-fable-5.1"},
-	{pattern: "claude-fable-5*", canonical: "claude-fable-5"},
-	{pattern: "claude-mythos-5-2*", canonical: "claude-mythos-5.2"},
-	{pattern: "claude-mythos-5.2*", canonical: "claude-mythos-5.2"},
-	{pattern: "claude-mythos-5-1*", canonical: "claude-mythos-5.1"},
-	{pattern: "claude-mythos-5.1*", canonical: "claude-mythos-5.1"},
-	{pattern: "claude-mythos-5*", canonical: "claude-mythos-5"},
-	{pattern: "claude-opus-5-5*", canonical: "claude-opus-5.5"},
-	{pattern: "claude-opus-5.5*", canonical: "claude-opus-5.5"},
-	{pattern: "claude-5-5-opus*", canonical: "claude-opus-5.5"},
-	{pattern: "claude-5.5-opus*", canonical: "claude-opus-5.5"},
-	{pattern: "claude-sonnet-5-5*", canonical: "claude-sonnet-5.5"},
-	{pattern: "claude-sonnet-5.5*", canonical: "claude-sonnet-5.5"},
-	{pattern: "claude-5-5-sonnet*", canonical: "claude-sonnet-5.5"},
-	{pattern: "claude-5.5-sonnet*", canonical: "claude-sonnet-5.5"},
-	{pattern: "claude-haiku-5-5*", canonical: "claude-haiku-5.5"},
-	{pattern: "claude-haiku-5.5*", canonical: "claude-haiku-5.5"},
-	{pattern: "claude-5-5-haiku*", canonical: "claude-haiku-5.5"},
-	{pattern: "claude-5.5-haiku*", canonical: "claude-haiku-5.5"},
-	{pattern: "claude-opus-5*", canonical: "claude-opus-5"},
-	{pattern: "claude-5-opus*", canonical: "claude-opus-5"},
-	{pattern: "claude-sonnet-5*", canonical: "claude-sonnet-5"},
-	{pattern: "claude-5-sonnet*", canonical: "claude-sonnet-5"},
-	{pattern: "claude-haiku-5*", canonical: "claude-haiku-5.5"},
-	{pattern: "claude-5-haiku*", canonical: "claude-haiku-5.5"},
-
-	// Anthropic Claude 4.x
-	{pattern: "claude-opus-4-8*", canonical: "claude-opus-4.8"},
-	{pattern: "claude-opus-4.8*", canonical: "claude-opus-4.8"},
-	{pattern: "claude-4-8-opus*", canonical: "claude-opus-4.8"},
-	{pattern: "claude-4.8-opus*", canonical: "claude-opus-4.8"},
-	{pattern: "claude-opus-4-7*", canonical: "claude-opus-4.7"},
-	{pattern: "claude-opus-4.7*", canonical: "claude-opus-4.7"},
-	{pattern: "claude-4-7-opus*", canonical: "claude-opus-4.7"},
-	{pattern: "claude-4.7-opus*", canonical: "claude-opus-4.7"},
-	{pattern: "claude-sonnet-4-7*", canonical: "claude-sonnet-4.7"},
-	{pattern: "claude-sonnet-4.7*", canonical: "claude-sonnet-4.7"},
-	{pattern: "claude-4-7-sonnet*", canonical: "claude-sonnet-4.7"},
-	{pattern: "claude-4.7-sonnet*", canonical: "claude-sonnet-4.7"},
-	{pattern: "claude-opus-4-6*", canonical: "claude-opus-4.6"},
-	{pattern: "claude-opus-4.6*", canonical: "claude-opus-4.6"},
-	{pattern: "claude-4-6-opus*", canonical: "claude-opus-4.6"},
-	{pattern: "claude-4.6-opus*", canonical: "claude-opus-4.6"},
-	{pattern: "claude-sonnet-4-6*", canonical: "claude-sonnet-4.6"},
-	{pattern: "claude-sonnet-4.6*", canonical: "claude-sonnet-4.6"},
-	{pattern: "claude-4-6-sonnet*", canonical: "claude-sonnet-4.6"},
-	{pattern: "claude-4.6-sonnet*", canonical: "claude-sonnet-4.6"},
-	{pattern: "claude-opus-4-5*", canonical: "claude-opus-4.5"},
-	{pattern: "claude-opus-4.5*", canonical: "claude-opus-4.5"},
-	{pattern: "claude-4-5-opus*", canonical: "claude-opus-4.5"},
-	{pattern: "claude-4.5-opus*", canonical: "claude-opus-4.5"},
-	{pattern: "claude-sonnet-4-5*", canonical: "claude-sonnet-4.5"},
-	{pattern: "claude-sonnet-4.5*", canonical: "claude-sonnet-4.5"},
-	{pattern: "claude-4-5-sonnet*", canonical: "claude-sonnet-4.5"},
-	{pattern: "claude-4.5-sonnet*", canonical: "claude-sonnet-4.5"},
-	{pattern: "claude-haiku-4-5*", canonical: "claude-haiku-4.5"},
-	{pattern: "claude-haiku-4.5*", canonical: "claude-haiku-4.5"},
-	{pattern: "claude-4-5-haiku*", canonical: "claude-haiku-4.5"},
-	{pattern: "claude-4.5-haiku*", canonical: "claude-haiku-4.5"},
-	{pattern: "claude-opus-4-1*", canonical: "claude-opus-4.1"},
-	{pattern: "claude-opus-4.1*", canonical: "claude-opus-4.1"},
-	{pattern: "claude-opus-4*", canonical: "claude-opus-4"},
-	{pattern: "claude-sonnet-4*", canonical: "claude-sonnet-4"},
-
-	// Anthropic Claude 3.x
-	{pattern: "claude-3-7-sonnet*", canonical: "claude-3.7-sonnet"},
-	{pattern: "claude-3.7-sonnet*", canonical: "claude-3.7-sonnet"},
-	{pattern: "claude-3-5-sonnet*", canonical: "claude-3.5-sonnet"},
-	{pattern: "claude-3.5-sonnet*", canonical: "claude-3.5-sonnet"},
-	{pattern: "claude-3-5-haiku*", canonical: "claude-3.5-haiku"},
-	{pattern: "claude-3.5-haiku*", canonical: "claude-3.5-haiku"},
-
-	// Google Gemini 4 aliases
-	{pattern: "gemini-4.0-neon*", canonical: "gemini-4-neon"},
-	{pattern: "gemini-4.0-carbon*", canonical: "gemini-4-carbon"},
-	{pattern: "gemini-4.0-argon*", canonical: "gemini-4-argon"},
-	{pattern: "gemini-4.0-hydrogen*", canonical: "gemini-4-hydrogen"},
-}
-
-// builtinModelPrices holds curated wildcard USD prices per 1M tokens for popular coding models.
-// It serves both as the Settings reference list and as a wildcard fallback behind the embedded
-// sub2api / LiteLLM catalog (`model_prices_and_context_window.json`).
-// More specific patterns must appear before broader wildcard patterns.
-var builtinModelPrices = []ModelPrice{
-	// Anthropic Claude
-	{ModelPattern: "claude-fable-5.2", InputPerM: 8.00, OutputPerM: 40.00, CacheReadPerM: 0.20, CacheWritePerM: 10.00, CacheWrite1hPerM: 16.00, Builtin: true},
-	{ModelPattern: "claude-fable-5.1", InputPerM: 10.00, OutputPerM: 50.00, CacheReadPerM: 0.25, CacheWritePerM: 12.50, CacheWrite1hPerM: 20.00, Builtin: true},
-	{ModelPattern: "claude-fable-5", InputPerM: 10.00, OutputPerM: 50.00, CacheReadPerM: 1.00, CacheWritePerM: 12.50, CacheWrite1hPerM: 20.00, Builtin: true},
-	{ModelPattern: "claude-fable-latest", InputPerM: 8.00, OutputPerM: 40.00, CacheReadPerM: 0.20, CacheWritePerM: 10.00, CacheWrite1hPerM: 16.00, Builtin: true},
-	{ModelPattern: "claude-mythos-5.2", InputPerM: 8.00, OutputPerM: 40.00, CacheReadPerM: 0.20, CacheWritePerM: 10.00, CacheWrite1hPerM: 16.00, Builtin: true},
-	{ModelPattern: "claude-mythos-5.1", InputPerM: 10.00, OutputPerM: 50.00, CacheReadPerM: 0.25, CacheWritePerM: 12.50, CacheWrite1hPerM: 20.00, Builtin: true},
-	{ModelPattern: "claude-mythos-5", InputPerM: 10.00, OutputPerM: 50.00, CacheReadPerM: 1.00, CacheWritePerM: 12.50, CacheWrite1hPerM: 20.00, Builtin: true},
-	{ModelPattern: "claude-mythos-preview", InputPerM: 10.00, OutputPerM: 50.00, CacheReadPerM: 1.00, CacheWritePerM: 12.50, CacheWrite1hPerM: 20.00, Builtin: true},
-	{ModelPattern: "claude-opus-5.5", InputPerM: 4.00, OutputPerM: 20.00, CacheReadPerM: 0.20, CacheWritePerM: 5.00, CacheWrite1hPerM: 8.00, Builtin: true},
-	{ModelPattern: "claude-opus-5", InputPerM: 5.00, OutputPerM: 25.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, CacheWrite1hPerM: 10.00, Builtin: true},
-	{ModelPattern: "claude-opus-latest", InputPerM: 4.00, OutputPerM: 20.00, CacheReadPerM: 0.20, CacheWritePerM: 5.00, CacheWrite1hPerM: 8.00, Builtin: true},
-	{ModelPattern: "claude-sonnet-5.5", InputPerM: 2.00, OutputPerM: 10.00, CacheReadPerM: 0.10, CacheWritePerM: 2.50, CacheWrite1hPerM: 4.00, Builtin: true},
-	{ModelPattern: "claude-sonnet-5", InputPerM: 2.00, OutputPerM: 10.00, CacheReadPerM: 0.20, CacheWritePerM: 2.50, CacheWrite1hPerM: 4.00, Builtin: true},
-	{ModelPattern: "claude-sonnet-latest", InputPerM: 2.00, OutputPerM: 10.00, CacheReadPerM: 0.10, CacheWritePerM: 2.50, CacheWrite1hPerM: 4.00, Builtin: true},
-	{ModelPattern: "claude-haiku-5.5", InputPerM: 0.10, OutputPerM: 0.50, CacheReadPerM: 0.01, CacheWritePerM: 0.125, CacheWrite1hPerM: 0.20, Builtin: true},
-	{ModelPattern: "claude-haiku-latest", InputPerM: 0.10, OutputPerM: 0.50, CacheReadPerM: 0.01, CacheWritePerM: 0.125, CacheWrite1hPerM: 0.20, Builtin: true},
-	{ModelPattern: "claude-opus-4.8", InputPerM: 5.00, OutputPerM: 25.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, CacheWrite1hPerM: 10.00, Builtin: true},
-	{ModelPattern: "claude-opus-4.7", InputPerM: 5.00, OutputPerM: 25.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, CacheWrite1hPerM: 10.00, Builtin: true},
-	{ModelPattern: "claude-opus-4.6", InputPerM: 5.00, OutputPerM: 25.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, CacheWrite1hPerM: 10.00, Builtin: true},
-	{ModelPattern: "claude-opus-4.5", InputPerM: 5.00, OutputPerM: 25.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, CacheWrite1hPerM: 10.00, Builtin: true},
-	{ModelPattern: "claude-opus-4.1", InputPerM: 15.00, OutputPerM: 75.00, CacheReadPerM: 1.50, CacheWritePerM: 18.75, CacheWrite1hPerM: 30.00, Builtin: true},
-	{ModelPattern: "claude-opus-4", InputPerM: 15.00, OutputPerM: 75.00, CacheReadPerM: 1.50, CacheWritePerM: 18.75, CacheWrite1hPerM: 30.00, Builtin: true},
-	{ModelPattern: "claude-sonnet-4.7", InputPerM: 3.00, OutputPerM: 15.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75, CacheWrite1hPerM: 6.00, Builtin: true},
-	{ModelPattern: "claude-sonnet-4.6", InputPerM: 3.00, OutputPerM: 15.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75, CacheWrite1hPerM: 6.00, Builtin: true},
-	{ModelPattern: "claude-sonnet-4.5", InputPerM: 3.00, OutputPerM: 15.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75, CacheWrite1hPerM: 6.00, Builtin: true},
-	{ModelPattern: "claude-sonnet-4", InputPerM: 3.00, OutputPerM: 15.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75, CacheWrite1hPerM: 6.00, Builtin: true},
-	{ModelPattern: "claude-3.7-sonnet", InputPerM: 3.00, OutputPerM: 15.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75, CacheWrite1hPerM: 6.00, Builtin: true},
-	{ModelPattern: "claude-3.5-sonnet", InputPerM: 3.00, OutputPerM: 15.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75, CacheWrite1hPerM: 6.00, Builtin: true},
-	{ModelPattern: "claude-haiku-4.5", InputPerM: 1.00, OutputPerM: 5.00, CacheReadPerM: 0.10, CacheWritePerM: 1.25, CacheWrite1hPerM: 2.00, Builtin: true},
-	{ModelPattern: "claude-3.5-haiku", InputPerM: 0.80, OutputPerM: 4.00, CacheReadPerM: 0.08, CacheWritePerM: 1.00, CacheWrite1hPerM: 1.60, Builtin: true},
-
-	// OpenAI GPT-6 / GPT-5 / Codex / o-series
-	{ModelPattern: "gpt-6.2-astra*", InputPerM: 8.00, OutputPerM: 40.00, CacheReadPerM: 0.40, CacheWritePerM: 10.00, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-6.2-sol*", InputPerM: 2.00, OutputPerM: 10.00, CacheReadPerM: 0.10, CacheWritePerM: 2.50, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-6.1-sol*", InputPerM: 2.00, OutputPerM: 10.00, CacheReadPerM: 0.10, CacheWritePerM: 2.50, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-6.1-terra*", InputPerM: 1.00, OutputPerM: 5.00, CacheReadPerM: 0.05, CacheWritePerM: 1.25, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-6-astra*", InputPerM: 10.00, OutputPerM: 50.00, CacheReadPerM: 1.00, CacheWritePerM: 12.50, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-6-sol*", InputPerM: 2.00, OutputPerM: 10.00, CacheReadPerM: 0.20, CacheWritePerM: 2.50, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-6-terra*", InputPerM: 1.00, OutputPerM: 5.00, CacheReadPerM: 0.05, CacheWritePerM: 1.25, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-6-luna*", InputPerM: 0.10, OutputPerM: 0.50, CacheReadPerM: 0.01, CacheWritePerM: 0.125, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-6-cyber*", InputPerM: 20.00, OutputPerM: 100.00, CacheReadPerM: 2.00, CacheWritePerM: 25.00, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-6-rosalind*", InputPerM: 15.00, OutputPerM: 75.00, CacheReadPerM: 1.50, CacheWritePerM: 18.75, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-astra-latest", InputPerM: 8.00, OutputPerM: 40.00, CacheReadPerM: 0.40, CacheWritePerM: 10.00, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-sol-latest", InputPerM: 2.00, OutputPerM: 10.00, CacheReadPerM: 0.10, CacheWritePerM: 2.50, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-terra-latest", InputPerM: 1.00, OutputPerM: 5.00, CacheReadPerM: 0.05, CacheWritePerM: 1.25, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-luna-latest", InputPerM: 0.10, OutputPerM: 0.50, CacheReadPerM: 0.01, CacheWritePerM: 0.125, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.6-cyber*", InputPerM: 12.50, OutputPerM: 75.00, CacheReadPerM: 1.25, CacheWritePerM: 15.625, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.6-sol*", InputPerM: 5.00, OutputPerM: 30.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.6-terra*", InputPerM: 2.00, OutputPerM: 12.00, CacheReadPerM: 0.20, CacheWritePerM: 2.50, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.6-luna*", InputPerM: 0.20, OutputPerM: 1.20, CacheReadPerM: 0.02, CacheWritePerM: 0.25, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.6*", InputPerM: 4.00, OutputPerM: 20.00, CacheReadPerM: 0.40, CacheWritePerM: 5.00, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.5-pro*", InputPerM: 30.00, OutputPerM: 180.00, CacheReadPerM: 0, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.5-cyber*", InputPerM: 12.50, OutputPerM: 75.00, CacheReadPerM: 1.25, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.5-mini*", InputPerM: 0.90, OutputPerM: 5.50, CacheReadPerM: 0.09, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.5*", InputPerM: 5.00, OutputPerM: 30.00, CacheReadPerM: 0.50, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.4-pro*", InputPerM: 30.00, OutputPerM: 180.00, CacheReadPerM: 0, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.4-mini*", InputPerM: 0.75, OutputPerM: 4.50, CacheReadPerM: 0.075, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.4-nano*", InputPerM: 0.20, OutputPerM: 1.25, CacheReadPerM: 0.02, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.4*", InputPerM: 2.50, OutputPerM: 15.00, CacheReadPerM: 0.25, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.3-codex*", InputPerM: 1.75, OutputPerM: 14.00, CacheReadPerM: 0.175, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.3*", InputPerM: 1.75, OutputPerM: 14.00, CacheReadPerM: 0.175, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.2-pro*", InputPerM: 21.00, OutputPerM: 168.00, CacheReadPerM: 0, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.2-codex*", InputPerM: 1.75, OutputPerM: 14.00, CacheReadPerM: 0.175, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.2*", InputPerM: 1.75, OutputPerM: 14.00, CacheReadPerM: 0.175, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.1-codex-mini*", InputPerM: 0.25, OutputPerM: 2.00, CacheReadPerM: 0.025, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5.1-codex*", InputPerM: 1.25, OutputPerM: 10.00, CacheReadPerM: 0.125, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5-pro*", InputPerM: 15.00, OutputPerM: 120.00, CacheReadPerM: 0, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5-codex*", InputPerM: 1.25, OutputPerM: 10.00, CacheReadPerM: 0.125, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5-mini*", InputPerM: 0.25, OutputPerM: 2.00, CacheReadPerM: 0.025, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5-nano*", InputPerM: 0.05, OutputPerM: 0.40, CacheReadPerM: 0.005, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-5*", InputPerM: 1.25, OutputPerM: 10.00, CacheReadPerM: 0.125, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "codex-auto-review*", InputPerM: 0.20, OutputPerM: 1.20, CacheReadPerM: 0.02, CacheWritePerM: 0.25, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-4.1-nano*", InputPerM: 0.10, OutputPerM: 0.40, CacheReadPerM: 0.025, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-4.1-mini*", InputPerM: 0.40, OutputPerM: 1.60, CacheReadPerM: 0.10, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-4.1*", InputPerM: 2.00, OutputPerM: 8.00, CacheReadPerM: 0.50, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-4o-mini*", InputPerM: 0.15, OutputPerM: 0.60, CacheReadPerM: 0.075, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gpt-4o*", InputPerM: 2.50, OutputPerM: 10.00, CacheReadPerM: 1.25, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "o3-pro*", InputPerM: 20.00, OutputPerM: 80.00, CacheReadPerM: 0, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "o3-mini*", InputPerM: 1.10, OutputPerM: 4.40, CacheReadPerM: 0.55, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "o3*", InputPerM: 2.00, OutputPerM: 8.00, CacheReadPerM: 0.50, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "o4-mini*", InputPerM: 1.10, OutputPerM: 4.40, CacheReadPerM: 0.275, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-
-	// Google Gemini
-	{ModelPattern: "gemini-4-neon*", InputPerM: 3.00, OutputPerM: 15.00, CacheReadPerM: 0.15, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gemini-4-carbon*", InputPerM: 2.00, OutputPerM: 10.00, CacheReadPerM: 0.10, CacheWritePerM: 2.00, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gemini-4-argon*", InputPerM: 2.00, OutputPerM: 10.00, CacheReadPerM: 0.10, CacheWritePerM: 2.00, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gemini-4-hydrogen*", InputPerM: 1.50, OutputPerM: 7.50, CacheReadPerM: 0.075, CacheWritePerM: 1.50, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gemini-3.8-flash-cyber*", InputPerM: 1.50, OutputPerM: 7.50, CacheReadPerM: 0.15, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gemini-3.8-flash*", InputPerM: 0.75, OutputPerM: 3.75, CacheReadPerM: 0.075, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gemini-3.7-flash*", InputPerM: 0.75, OutputPerM: 3.75, CacheReadPerM: 0.075, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gemini-3.6-flash*", InputPerM: 0.75, OutputPerM: 3.75, CacheReadPerM: 0.075, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gemini-3.5-flash-lite*", InputPerM: 0.30, OutputPerM: 2.50, CacheReadPerM: 0.03, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gemini-3.5-flash*", InputPerM: 1.50, OutputPerM: 9.00, CacheReadPerM: 0.15, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gemini-3.1-pro*", InputPerM: 2.00, OutputPerM: 12.00, CacheReadPerM: 0.20, CacheWritePerM: 2.00, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gemini-3.1-flash-lite*", InputPerM: 0.25, OutputPerM: 1.50, CacheReadPerM: 0.025, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gemini-3.1-flash*", InputPerM: 0.50, OutputPerM: 3.00, CacheReadPerM: 0.05, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gemini-3-pro*", InputPerM: 2.00, OutputPerM: 12.00, CacheReadPerM: 0.20, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gemini-3-flash*", InputPerM: 0.50, OutputPerM: 3.00, CacheReadPerM: 0.05, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gemini-2.5-pro*", InputPerM: 1.25, OutputPerM: 10.00, CacheReadPerM: 0.125, CacheWritePerM: 1.25, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gemini-2.5-flash-lite*", InputPerM: 0.10, OutputPerM: 0.40, CacheReadPerM: 0.01, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "gemini-2.5-flash*", InputPerM: 0.30, OutputPerM: 2.50, CacheReadPerM: 0.03, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-
-	// DeepSeek
-	{ModelPattern: "deepseek-v4-pro*", InputPerM: 1.32, OutputPerM: 3.96, CacheReadPerM: 0.044, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "deepseek-v4.1-flash*", InputPerM: 0.30, OutputPerM: 1.20, CacheReadPerM: 0.006, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "deepseek-v4-flash*", InputPerM: 0.30, OutputPerM: 1.20, CacheReadPerM: 0.006, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "deepseek-flash*", InputPerM: 0.30, OutputPerM: 1.20, CacheReadPerM: 0.006, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "deepseek-v4*", InputPerM: 1.32, OutputPerM: 3.96, CacheReadPerM: 0.044, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "deepseek-v3.2*", InputPerM: 0.26, OutputPerM: 0.38, CacheReadPerM: 0.13, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "deepseek-reasoner*", InputPerM: 0.28, OutputPerM: 0.42, CacheReadPerM: 0.028, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "deepseek-r1*", InputPerM: 0.55, OutputPerM: 2.19, CacheReadPerM: 0.14, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "deepseek-chat*", InputPerM: 0.28, OutputPerM: 0.42, CacheReadPerM: 0.028, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "deepseek-v3*", InputPerM: 0.27, OutputPerM: 1.10, CacheReadPerM: 0.07, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-
-	// Zhipu GLM
-	{ModelPattern: "glm-5.3-flashx*", InputPerM: 0.37, OutputPerM: 1.25, CacheReadPerM: 0.075, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "glm-5.3-flash*", InputPerM: 0.15, OutputPerM: 0.50, CacheReadPerM: 0.03, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "glm-5.3*", InputPerM: 1.40, OutputPerM: 4.40, CacheReadPerM: 0.26, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "glm-5.2*", InputPerM: 1.179, OutputPerM: 4.127, CacheReadPerM: 0.2948, CacheWritePerM: 1.179, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "glm-5.1*", InputPerM: 1.40, OutputPerM: 4.40, CacheReadPerM: 0.28, CacheWritePerM: 1.00, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "glm-5-turbo*", InputPerM: 0.737, OutputPerM: 3.243, CacheReadPerM: 0.1769, CacheWritePerM: 0.737, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "glm-5*", InputPerM: 0.5896, OutputPerM: 2.653, CacheReadPerM: 0.1474, CacheWritePerM: 0.5896, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "glm-4.7-flashx*", InputPerM: 0.07, OutputPerM: 0.40, CacheReadPerM: 0.01, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "glm-4.7-flash*", InputPerM: 0.00, OutputPerM: 0.00, CacheReadPerM: 0.00, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "glm-4.7*", InputPerM: 0.60, OutputPerM: 2.20, CacheReadPerM: 0.11, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "glm-4.6*", InputPerM: 0.60, OutputPerM: 2.20, CacheReadPerM: 0.11, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "glm-4.5-air*", InputPerM: 0.20, OutputPerM: 1.10, CacheReadPerM: 0.03, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "glm-4.5*", InputPerM: 0.60, OutputPerM: 2.20, CacheReadPerM: 0.11, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-
-	// Moonshot Kimi
-	{ModelPattern: "kimi-k3.1-pro-highspeed*", InputPerM: 4.00, OutputPerM: 20.00, CacheReadPerM: 0.20, CacheWritePerM: 4.00, CacheWrite1hPerM: 8.00, Builtin: true},
-	{ModelPattern: "kimi-k3.1*", InputPerM: 2.00, OutputPerM: 10.00, CacheReadPerM: 0.20, CacheWritePerM: 2.00, CacheWrite1hPerM: 4.00, Builtin: true},
-	{ModelPattern: "kimi-k3*", InputPerM: 2.948, OutputPerM: 14.74, CacheReadPerM: 0.2948, CacheWritePerM: 2.948, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "kimi-k2.7*", InputPerM: 0.9581, OutputPerM: 3.98, CacheReadPerM: 0.1916, CacheWritePerM: 0.9581, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "kimi-k2.6*", InputPerM: 0.954, OutputPerM: 3.961, CacheReadPerM: 0.161, CacheWritePerM: 0.954, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "kimi-k2.5*", InputPerM: 0.60, OutputPerM: 2.25, CacheReadPerM: 0.10, CacheWritePerM: 0.60, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "kimi-k2*", InputPerM: 0.60, OutputPerM: 2.50, CacheReadPerM: 0.15, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "kimi-for-coding*", InputPerM: 0.60, OutputPerM: 2.50, CacheReadPerM: 0.15, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-
-	// Alibaba Qwen
-	{ModelPattern: "qwen3.8-max*", InputPerM: 2.00, OutputPerM: 6.00, CacheReadPerM: 0.20, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "qwen3.8-flash*", InputPerM: 0.15, OutputPerM: 0.47, CacheReadPerM: 0.015, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "qwen3.7-max*", InputPerM: 2.50, OutputPerM: 7.50, CacheReadPerM: 0.25, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "qwen3.7-plus*", InputPerM: 0.40, OutputPerM: 1.60, CacheReadPerM: 0.04, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "qwen3-coder*", InputPerM: 0.30, OutputPerM: 1.50, CacheReadPerM: 0.03, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "qwen3-max*", InputPerM: 1.20, OutputPerM: 6.00, CacheReadPerM: 0.12, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "qwen3-plus*", InputPerM: 0.40, OutputPerM: 1.60, CacheReadPerM: 0.04, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "qwen3.5*", InputPerM: 0.40, OutputPerM: 1.60, CacheReadPerM: 0.04, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-
-	// MiniMax
-	{ModelPattern: "minimax-m3.1-flash*", InputPerM: 0.15, OutputPerM: 0.60, CacheReadPerM: 0.015, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "minimax-m3*", InputPerM: 0.30, OutputPerM: 1.20, CacheReadPerM: 0.06, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "minimax-m2.7*", InputPerM: 0.30, OutputPerM: 1.20, CacheReadPerM: 0.06, CacheWritePerM: 0.375, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "minimax-m2.5*", InputPerM: 0.30, OutputPerM: 1.20, CacheReadPerM: 0.06, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "minimax-m2*", InputPerM: 0.30, OutputPerM: 1.20, CacheReadPerM: 0.03, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-
-	// xAI Grok
-	{ModelPattern: "grok-4.7*", InputPerM: 2.00, OutputPerM: 6.00, CacheReadPerM: 0.50, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "grok-4.6*", InputPerM: 2.00, OutputPerM: 6.00, CacheReadPerM: 0.50, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "grok-4.5*", InputPerM: 2.00, OutputPerM: 6.00, CacheReadPerM: 0.30, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "grok-4.3*", InputPerM: 1.25, OutputPerM: 2.50, CacheReadPerM: 0.20, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "grok-4.20*", InputPerM: 1.25, OutputPerM: 2.50, CacheReadPerM: 0.20, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "grok-code-fast*", InputPerM: 0.20, OutputPerM: 1.50, CacheReadPerM: 0.02, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "grok-build*", InputPerM: 1.00, OutputPerM: 2.00, CacheReadPerM: 0.20, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-	{ModelPattern: "grok-4*", InputPerM: 3.00, OutputPerM: 15.00, CacheReadPerM: 0.75, CacheWritePerM: 0, CacheWrite1hPerM: 0, Builtin: true},
-}
-
+// DefaultModelPrices returns the latest active built-in base price for each catalog model.
 func DefaultModelPrices() []ModelPrice {
-	out := make([]ModelPrice, len(builtinModelPrices))
-	copy(out, builtinModelPrices)
+	out := make([]ModelPrice, 0, len(defaultCatalog.ordered))
+	for _, cm := range defaultCatalog.ordered {
+		pattern := cm.billingModel
+		if cm.matchPrefix {
+			pattern += "*"
+		}
+		out = append(out, modelPriceFromRateCard(pattern, cm.latestBase(), true))
+	}
 	return out
 }
 
-// MatchPattern performs case-insensitive glob matching supporting '*' wildcards.
-func MatchPattern(pattern, target string) bool {
-	p := strings.ToLower(strings.TrimSpace(pattern))
-	s := strings.ToLower(strings.TrimSpace(target))
-	if p == "" {
-		return false
-	}
-	if p == "*" || p == s {
-		return true
-	}
-	parts := strings.Split(p, "*")
-	if len(parts) == 1 {
-		return p == s
-	}
-	if !strings.HasPrefix(s, parts[0]) {
-		return false
-	}
-	s = s[len(parts[0]):]
-	last := parts[len(parts)-1]
-	if !strings.HasSuffix(s, last) {
-		return false
-	}
-	s = s[:len(s)-len(last)]
-	for _, mid := range parts[1 : len(parts)-1] {
-		if mid == "" {
+type compiledUserPrice struct {
+	pattern string
+	rate    RateCard
+}
+
+type cachedModelRoute struct {
+	displayModel string
+	billingModel string
+	staticTags   []string
+	timeTagger   TimeTagger
+
+	matched        bool
+	matchedPattern string
+	matchedBuiltin bool
+	staticRate     *RateCard
+	builtinSpec    *compiledBillingModel
+}
+
+// PriceBook is a per-request compiled pricing resolver that caches model normalization and
+// rule routing across slices in a single query.
+type PriceBook struct {
+	catalog      *compiledCatalog
+	aliases      compiledAliasSet
+	userExact    map[string]compiledUserPrice
+	userWildcard []compiledUserPrice
+	routeCache   map[string]cachedModelRoute
+}
+
+// NewPriceBook compiles user aliases and custom prices against the default built-in catalog.
+func NewPriceBook(userAliases []ModelAlias, userPrices []ModelPrice) *PriceBook {
+	return newPriceBookWithCatalog(defaultCatalog, userAliases, userPrices)
+}
+
+func newPriceBookWithCatalog(catalog *compiledCatalog, userAliases []ModelAlias, userPrices []ModelPrice) *PriceBook {
+	userExact := make(map[string]compiledUserPrice, len(userPrices))
+	userWildcard := make([]compiledUserPrice, 0, len(userPrices))
+	for _, p := range userPrices {
+		key := strings.ToLower(strings.TrimSpace(p.ModelPattern))
+		if key == "" {
 			continue
 		}
-		idx := strings.Index(s, mid)
-		if idx < 0 {
-			return false
+		cp := compiledUserPrice{
+			pattern: p.ModelPattern,
+			rate:    rateCardFromModelPrice(p),
 		}
-		s = s[idx+len(mid):]
+		if strings.Contains(key, "*") {
+			userWildcard = append(userWildcard, cp)
+		} else {
+			if _, exists := userExact[key]; !exists {
+				userExact[key] = cp
+			}
+		}
 	}
-	return true
+	sort.SliceStable(userWildcard, func(i, j int) bool {
+		si := patternSpecificity(userWildcard[i].pattern)
+		sj := patternSpecificity(userWildcard[j].pattern)
+		if si != sj {
+			return si > sj
+		}
+		return len(userWildcard[i].pattern) > len(userWildcard[j].pattern)
+	})
+	return &PriceBook{
+		catalog:      catalog,
+		aliases:      compileAliases(userAliases),
+		userExact:    userExact,
+		userWildcard: userWildcard,
+		routeCache:   make(map[string]cachedModelRoute, 16),
+	}
 }
 
-func appendUniqueLower(dst []string, s string) []string {
-	k := strings.ToLower(strings.TrimSpace(s))
-	if k == "" {
-		return dst
+func (b *PriceBook) routeForRaw(rawModel string) cachedModelRoute {
+	if route, ok := b.routeCache[rawModel]; ok {
+		return route
 	}
-	for _, existing := range dst {
-		if existing == k {
-			return dst
-		}
-	}
-	return append(dst, k)
+	display := b.aliases.resolveDisplay(rawModel)
+	route := b.computeRoute(rawModel, display)
+	b.routeCache[rawModel] = route
+	return route
 }
 
-// NormalizeModel resolves a raw model name via user aliases first (exact before wildcard),
-// then strips multi-level channel prefixes / tags / dates and applies built-in family rules.
-func NormalizeModel(raw string, userAliases []ModelAlias) string {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return "unknown"
-	}
-
-	stripped := stripChannelPrefixes(trimmed)
-	cleaned := stripModelTagsAndDate(stripped)
-
-	candidates := make([]string, 0, 3)
-	candidates = appendUniqueLower(candidates, trimmed)
-	candidates = appendUniqueLower(candidates, stripped)
-	candidates = appendUniqueLower(candidates, cleaned)
-
-	if len(userAliases) > 0 {
-		exactAliases := make([]ModelAlias, 0, len(userAliases))
-		wildcardAliases := make([]ModelAlias, 0, len(userAliases))
-		for _, a := range userAliases {
-			if strings.TrimSpace(a.MatchPattern) == "" || strings.TrimSpace(a.CanonicalModel) == "" {
-				continue
-			}
-			if strings.Contains(a.MatchPattern, "*") {
-				wildcardAliases = append(wildcardAliases, a)
-			} else {
-				exactAliases = append(exactAliases, a)
-			}
-		}
-		sort.SliceStable(exactAliases, func(i, j int) bool {
-			if exactAliases[i].Priority != exactAliases[j].Priority {
-				return exactAliases[i].Priority < exactAliases[j].Priority
-			}
-			return exactAliases[i].ID < exactAliases[j].ID
-		})
-		sort.SliceStable(wildcardAliases, func(i, j int) bool {
-			if wildcardAliases[i].Priority != wildcardAliases[j].Priority {
-				return wildcardAliases[i].Priority < wildcardAliases[j].Priority
-			}
-			si := patternSpecificity(wildcardAliases[i].MatchPattern)
-			sj := patternSpecificity(wildcardAliases[j].MatchPattern)
-			if si != sj {
-				return si > sj
-			}
-			return wildcardAliases[i].ID < wildcardAliases[j].ID
-		})
-
-		// 1a. User exact aliases always take priority over any wildcard alias.
-		for _, c := range candidates {
-			for _, a := range exactAliases {
-				if strings.EqualFold(strings.TrimSpace(a.MatchPattern), c) {
-					return strings.TrimSpace(a.CanonicalModel)
-				}
-			}
-		}
-		// 1b. User wildcard aliases.
-		for _, c := range candidates {
-			for _, a := range wildcardAliases {
-				if MatchPattern(a.MatchPattern, c) {
-					return strings.TrimSpace(a.CanonicalModel)
-				}
-			}
-		}
-	}
-
-	// 2. Built-in family canonicalization (exact before wildcard).
-	for _, rule := range builtinAliasRules {
-		if !strings.Contains(rule.pattern, "*") && strings.EqualFold(rule.pattern, cleaned) {
-			return rule.canonical
-		}
-	}
-	for _, rule := range builtinAliasRules {
-		if strings.Contains(rule.pattern, "*") && MatchPattern(rule.pattern, cleaned) {
-			return rule.canonical
-		}
-	}
-	return cleaned
-}
-
-// ResolvePrice resolves model pricing with global exact-before-wildcard precedence:
-//  1. User exact prices (raw candidates first, then canonical candidates)
-//  2. Built-in exact prices (embedded catalog + exact built-in entries; raw first, then canonical)
-//  3. User wildcard prices (more specific first; raw first, then canonical)
-//  4. Built-in wildcard prices (more specific first; raw first, then canonical)
-//
-// Matching raw candidates before canonical candidates ensures a model grouped under a broader
-// alias (e.g. gpt-6.1-sol-fast -> gpt-6.1-sol) still bills at its own exact price when defined.
-func ResolvePrice(rawModel, canonicalModel string, userPrices []ModelPrice) (ModelPrice, bool) {
+func (b *PriceBook) computeRoute(rawModel, displayModel string) cachedModelRoute {
 	rawStripped := stripChannelPrefixes(rawModel)
 	rawCleaned := stripModelTagsAndDate(rawStripped)
 	rawCandidates := make([]string, 0, 3)
@@ -545,118 +351,217 @@ func ResolvePrice(rawModel, canonicalModel string, userPrices []ModelPrice) (Mod
 	rawCandidates = appendUniqueLower(rawCandidates, rawStripped)
 	rawCandidates = appendUniqueLower(rawCandidates, rawCleaned)
 
-	canonStripped := stripChannelPrefixes(canonicalModel)
-	canonCleaned := stripModelTagsAndDate(canonStripped)
-	canonCandidates := make([]string, 0, 3)
-	canonCandidates = appendUniqueLower(canonCandidates, canonicalModel)
-	canonCandidates = appendUniqueLower(canonCandidates, canonStripped)
-	canonCandidates = appendUniqueLower(canonCandidates, canonCleaned)
+	dispStripped := stripChannelPrefixes(displayModel)
+	dispCleaned := stripModelTagsAndDate(dispStripped)
+	dispCandidates := make([]string, 0, 3)
+	dispCandidates = appendUniqueLower(dispCandidates, displayModel)
+	dispCandidates = appendUniqueLower(dispCandidates, dispStripped)
+	dispCandidates = appendUniqueLower(dispCandidates, dispCleaned)
 
-	orderedCandidates := make([]string, 0, len(rawCandidates)+len(canonCandidates))
+	// Resolve billing model & static tags from raw model first; fall back to display model
+	// so custom user aliases (e.g. private relay names -> standard models) bill accurately.
+	billingSpec, billingExact, billingKey, staticTags := resolveBillingFromName(rawModel, b.catalog)
+	if billingSpec == nil {
+		dispSpec, dispExact, dispKey, dispTags := resolveBillingFromName(displayModel, b.catalog)
+		if dispSpec != nil {
+			billingSpec = dispSpec
+			billingExact = dispExact
+			billingKey = dispKey
+		} else if billingKey == "" {
+			billingKey = dispKey
+		}
+		for _, tg := range dispTags {
+			staticTags = appendUniqueTag(staticTags, tg)
+		}
+	}
+
+	orderedCandidates := make([]string, 0, len(rawCandidates)+len(dispCandidates)+1)
 	for _, c := range rawCandidates {
 		orderedCandidates = appendUniqueLower(orderedCandidates, c)
 	}
-	for _, c := range canonCandidates {
+	for _, c := range dispCandidates {
 		orderedCandidates = appendUniqueLower(orderedCandidates, c)
 	}
+	orderedCandidates = appendUniqueLower(orderedCandidates, billingKey)
 
-	userExact := make(map[string]ModelPrice, len(userPrices))
-	userWildcard := make([]ModelPrice, 0, len(userPrices))
-	for _, p := range userPrices {
-		key := strings.ToLower(strings.TrimSpace(p.ModelPattern))
-		if key == "" {
-			continue
-		}
-		if strings.Contains(key, "*") {
-			userWildcard = append(userWildcard, p)
-		} else {
-			if _, exists := userExact[key]; !exists {
-				userExact[key] = p
-			}
-		}
+	route := cachedModelRoute{
+		displayModel: displayModel,
+		billingModel: billingKey,
+		staticTags:   staticTags,
 	}
-	sort.SliceStable(userWildcard, func(i, j int) bool {
-		si := patternSpecificity(userWildcard[i].ModelPattern)
-		sj := patternSpecificity(userWildcard[j].ModelPattern)
-		if si != sj {
-			return si > sj
-		}
-		return len(userWildcard[i].ModelPattern) > len(userWildcard[j].ModelPattern)
-	})
 
-	// 1. User exact price (raw -> canonical).
+	// Tier 1: User exact price (raw -> display -> billing). User overrides are flat and do not stack built-in tags.
 	for _, c := range orderedCandidates {
-		if p, ok := userExact[c]; ok {
-			return p, true
+		if up, ok := b.userExact[c]; ok {
+			rc := up.rate
+			route.matched = true
+			route.matchedPattern = up.pattern
+			route.matchedBuiltin = false
+			route.staticRate = &rc
+			return route
 		}
 	}
 
-	// 2. Built-in exact price (raw -> canonical).
+	// Tier 2: Built-in exact price (versioned billing catalog exact match, then embedded LiteLLM catalog exact match).
+	if billingSpec != nil && billingExact {
+		route.matched = true
+		route.matchedPattern = billingSpec.billingModel
+		route.matchedBuiltin = true
+		route.builtinSpec = billingSpec
+		route.timeTagger = b.catalog.timeTaggers[billingSpec.billingModel]
+		return route
+	}
 	for _, c := range orderedCandidates {
-		if p, ok := embeddedCatalogPrices[c]; ok {
-			return p, true
-		}
-		if p, ok := builtinExactPrices[c]; ok {
-			return p, true
-		}
-	}
-
-	// 3. User wildcard price (raw -> canonical, most specific pattern first).
-	for _, p := range userWildcard {
-		for _, c := range rawCandidates {
-			if MatchPattern(p.ModelPattern, c) {
-				return p, true
-			}
-		}
-	}
-	for _, p := range userWildcard {
-		for _, c := range canonCandidates {
-			if MatchPattern(p.ModelPattern, c) {
-				return p, true
-			}
+		if rc, ok := b.catalog.embeddedExact[c]; ok {
+			cp := rc
+			route.matched = true
+			route.matchedPattern = c
+			route.matchedBuiltin = true
+			route.staticRate = &cp
+			return route
 		}
 	}
 
-	// 4. Built-in wildcard price (raw -> canonical, most specific pattern first).
-	for _, p := range builtinWildcardPrices {
+	// Tier 3: User wildcard price (raw -> display -> billing, most specific first).
+	for _, up := range b.userWildcard {
 		for _, c := range rawCandidates {
-			if MatchPattern(p.ModelPattern, c) {
-				return p, true
+			if MatchPattern(up.pattern, c) {
+				rc := up.rate
+				route.matched = true
+				route.matchedPattern = up.pattern
+				route.matchedBuiltin = false
+				route.staticRate = &rc
+				return route
 			}
 		}
 	}
-	for _, p := range builtinWildcardPrices {
-		for _, c := range canonCandidates {
-			if MatchPattern(p.ModelPattern, c) {
-				return p, true
+	for _, up := range b.userWildcard {
+		for _, c := range dispCandidates {
+			if MatchPattern(up.pattern, c) {
+				rc := up.rate
+				route.matched = true
+				route.matchedPattern = up.pattern
+				route.matchedBuiltin = false
+				route.staticRate = &rc
+				return route
 			}
 		}
 	}
-	return ModelPrice{}, false
+	if billingKey != "" {
+		for _, up := range b.userWildcard {
+			if MatchPattern(up.pattern, billingKey) {
+				rc := up.rate
+				route.matched = true
+				route.matchedPattern = up.pattern
+				route.matchedBuiltin = false
+				route.staticRate = &rc
+				return route
+			}
+		}
+	}
+
+	// Tier 4: Built-in prefix fallback (longest matching billing model prefix).
+	if billingSpec != nil {
+		route.matched = true
+		route.matchedPattern = billingSpec.billingModel
+		route.matchedBuiltin = true
+		route.builtinSpec = billingSpec
+		route.timeTagger = b.catalog.timeTaggers[billingSpec.billingModel]
+		return route
+	}
+
+	return route
+}
+
+// DisplayModel returns the cached display model name for a raw model string.
+func (b *PriceBook) DisplayModel(rawModel string) string {
+	return b.routeForRaw(rawModel).displayModel
+}
+
+// TagSlice resolves display model, billing model, and all tags (static + time-based) for a slice.
+func (b *PriceBook) TagSlice(rawModel string, hourBucket time.Time) TaggedModel {
+	route := b.routeForRaw(rawModel)
+	tags := make([]string, 0, len(route.staticTags)+1)
+	tags = append(tags, route.staticTags...)
+	if route.timeTagger != nil && !hourBucket.IsZero() {
+		for _, tg := range route.timeTagger(route.billingModel, hourBucket) {
+			tags = appendUniqueTag(tags, tg)
+		}
+	}
+	return TaggedModel{
+		DisplayModel: route.displayModel,
+		BillingModel: route.billingModel,
+		Tags:         tags,
+	}
+}
+
+func (b *PriceBook) resolveRateCard(route cachedModelRoute, at time.Time) (RateCard, bool) {
+	if !route.matched {
+		return RateCard{}, false
+	}
+	if route.staticRate != nil {
+		return *route.staticRate, true
+	}
+	if route.builtinSpec == nil {
+		return RateCard{}, false
+	}
+	ver, ok := route.builtinSpec.lookupVersion(at)
+	if !ok {
+		return RateCard{}, false
+	}
+	if len(ver.tagMultipliers) == 0 {
+		return ver.base, true
+	}
+	mul := 1.0
+	for _, tg := range route.staticTags {
+		if m, exists := ver.tagMultipliers[tg]; exists {
+			mul *= m
+		}
+	}
+	if route.timeTagger != nil && !at.IsZero() {
+		for _, tg := range route.timeTagger(route.billingModel, at) {
+			if m, exists := ver.tagMultipliers[tg]; exists {
+				mul *= m
+			}
+		}
+	}
+	return scaleRateCard(ver.base, mul), true
+}
+
+// ComputeSliceCost calculates equivalent USD cost and cache savings for one hourly slice.
+func (b *PriceBook) ComputeSliceCost(row HourlySessionRecord) (costUSD float64, cacheSavingsUSD float64) {
+	route := b.routeForRaw(row.Model)
+	rc, ok := b.resolveRateCard(route, row.HourBucket)
+	if !ok {
+		return row.ReportedCostUSD, 0
+	}
+	return computeCostFromRateCard(row, rc)
+}
+
+// ResolvePrice resolves the latest active pricing for a (rawModel, canonicalModel) pair.
+// Preserved for direct callers and tests; query paths use PriceBook for cached versioned lookups.
+func ResolvePrice(rawModel, canonicalModel string, userPrices []ModelPrice) (ModelPrice, bool) {
+	return ResolvePriceAt(rawModel, canonicalModel, time.Time{}, userPrices)
+}
+
+// ResolvePriceAt resolves pricing for a (rawModel, canonicalModel) pair at a specific UTC time.
+func ResolvePriceAt(rawModel, canonicalModel string, at time.Time, userPrices []ModelPrice) (ModelPrice, bool) {
+	book := NewPriceBook(nil, userPrices)
+	route := book.computeRoute(rawModel, canonicalModel)
+	rc, ok := book.resolveRateCard(route, at)
+	if !ok {
+		return ModelPrice{}, false
+	}
+	return modelPriceFromRateCard(route.matchedPattern, rc, route.matchedBuiltin), true
 }
 
 // ComputeCost calculates equivalent USD cost and cache savings for one slice.
 func ComputeCost(row HourlySessionRecord, canonicalModel string, userPrices []ModelPrice) (costUSD float64, cacheSavingsUSD float64) {
-	price, ok := ResolvePrice(row.Model, canonicalModel, userPrices)
+	book := NewPriceBook(nil, userPrices)
+	route := book.computeRoute(row.Model, canonicalModel)
+	rc, ok := book.resolveRateCard(route, row.HourBucket)
 	if !ok {
 		return row.ReportedCostUSD, 0
 	}
-
-	const perMillion = 1_000_000.0
-	outputBillable := row.OutputTokens + row.ReasoningTokens
-	cacheWrite1hRate := price.CacheWrite1hPerM
-	if cacheWrite1hRate <= 0 {
-		cacheWrite1hRate = price.CacheWritePerM
-	}
-
-	costUSD = (float64(row.InputTokens)*price.InputPerM +
-		float64(outputBillable)*price.OutputPerM +
-		float64(row.CacheReadTokens)*price.CacheReadPerM +
-		float64(row.CacheWriteTokens)*price.CacheWritePerM +
-		float64(row.CacheWrite1hTokens)*cacheWrite1hRate) / perMillion
-
-	if row.CacheReadTokens > 0 && price.InputPerM > price.CacheReadPerM {
-		cacheSavingsUSD = float64(row.CacheReadTokens) * (price.InputPerM - price.CacheReadPerM) / perMillion
-	}
-	return costUSD, cacheSavingsUSD
+	return computeCostFromRateCard(row, rc)
 }
