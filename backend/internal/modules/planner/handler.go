@@ -34,6 +34,8 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.With(writeMW).Put("/items/{id}", httpx.Handle(h.logger, h.updateItem))
 	r.With(writeMW).Delete("/items/{id}", httpx.Handle(h.logger, h.deleteItem))
 	r.With(writeMW).Post("/items/{id}/complete", httpx.Handle(h.logger, h.completeItem))
+	r.With(writeMW).Post("/items/{id}/finish", httpx.Handle(h.logger, h.finishItem))
+	r.With(writeMW).Post("/items/{id}/advance-current", httpx.Handle(h.logger, h.advanceItemToCurrent))
 	r.With(writeMW).Post("/items/{id}/reopen", httpx.Handle(h.logger, h.reopenItem))
 	r.With(writeMW).Post("/items/{id}/pause", httpx.Handle(h.logger, h.pauseItem))
 	r.With(writeMW).Post("/items/{id}/resume", httpx.Handle(h.logger, h.resumeItem))
@@ -120,6 +122,40 @@ func (h *Handler) completeItem(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	item, err := h.svc.CompleteItem(r.Context(), uid, id)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"item": item})
+	return nil
+}
+
+func (h *Handler) finishItem(w http.ResponseWriter, r *http.Request) error {
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		return httpx.Unauthorized("未登录")
+	}
+	id, err := parseID(r)
+	if err != nil {
+		return err
+	}
+	item, err := h.svc.FinishItem(r.Context(), uid, id)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"item": item})
+	return nil
+}
+
+func (h *Handler) advanceItemToCurrent(w http.ResponseWriter, r *http.Request) error {
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		return httpx.Unauthorized("未登录")
+	}
+	id, err := parseID(r)
+	if err != nil {
+		return err
+	}
+	item, err := h.svc.AdvanceItemToCurrent(r.Context(), uid, id)
 	if err != nil {
 		return err
 	}

@@ -166,11 +166,13 @@ export function Select({
     };
   }, [open, filteredOptions, activeIdx, onChange]);
 
+  const hasCoords = Boolean(coords);
+
   useEffect(() => {
-    if (!open || activeIdx < 0 || !listRef.current) return;
+    if (!open || !hasCoords || activeIdx < 0 || !listRef.current) return;
     const el = listRef.current.children[activeIdx] as HTMLElement | undefined;
     el?.scrollIntoView({ block: 'nearest' });
-  }, [activeIdx, open]);
+  }, [activeIdx, open, hasCoords]);
 
   const sizeClass =
     size === 'md'

@@ -258,7 +258,7 @@ export function ItemCardView({
                 )}
               </div>
 
-              {!batchMode && (
+              {!batchMode && item.pricing_mode !== 'time' && (
                 <Tooltip content="记录使用次数 +1">
                   <button
                     type="button"
@@ -298,6 +298,7 @@ export function ItemListView({
 }: CommonViewProps) {
   const [dragId, setDragId] = useState<number | null>(null);
   const [overId, setOverId] = useState<number | null>(null);
+  const showUsageColumn = items.some((it) => it.pricing_mode !== 'time');
 
   return (
     <div className="yd-card overflow-x-auto">
@@ -310,7 +311,7 @@ export function ItemListView({
             <th className="px-3 py-2.5 text-right">总投入</th>
             <th className="px-3 py-2.5 text-right">均价 / 持有</th>
             <th className="px-3 py-2.5">状态 / 保修</th>
-            <th className="px-3 py-2.5 text-right">使用次数</th>
+            {showUsageColumn && <th className="px-3 py-2.5 text-right">使用次数</th>}
           </tr>
         </thead>
         <tbody className="yd-tbody">
@@ -429,16 +430,24 @@ export function ItemListView({
                     <WarrantyBadge item={item} />
                   </div>
                 </td>
-                <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    type="button"
-                    onClick={() => onUseItem(item.id)}
-                    className="inline-flex items-center gap-1 rounded-md border border-zinc-200/80 bg-white px-2 py-0.5 font-mono text-xs text-zinc-600 hover:border-sky-300 hover:bg-sky-50 hover:text-sky-700"
-                  >
-                    <Plus className="h-3 w-3" />
-                    {item.usage_count}
-                  </button>
-                </td>
+                {showUsageColumn && (
+                  <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
+                    {item.pricing_mode !== 'time' ? (
+                      <Tooltip content="记录使用次数 +1">
+                        <button
+                          type="button"
+                          onClick={() => onUseItem(item.id)}
+                          className="inline-flex items-center gap-1 rounded-md border border-zinc-200/80 bg-white px-2 py-0.5 font-mono text-xs text-zinc-600 hover:border-sky-300 hover:bg-sky-50 hover:text-sky-700"
+                        >
+                          <Plus className="h-3 w-3" />
+                          {item.usage_count}
+                        </button>
+                      </Tooltip>
+                    ) : (
+                      <span className="text-xs text-zinc-300">—</span>
+                    )}
+                  </td>
+                )}
               </tr>
             );
           })}

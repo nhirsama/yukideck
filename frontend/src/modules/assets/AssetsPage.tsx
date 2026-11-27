@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, FolderInput, PackageOpen, Plus, Trash2 } from 'lucide-react';
+import { Archive, Check, FolderInput, PackageOpen, Plus, Trash2 } from 'lucide-react';
 import { LoadingState } from '@/components/LoadingState';
 import { Select } from '@/components/Select';
 import {
@@ -50,12 +50,23 @@ export default function AssetsPage() {
     itemId: null,
   });
   const [metaManagerOpen, setMetaManagerOpen] = useState(false);
-  const [toast, setToast] = useState('');
+  const [toast, setToast] = useState<{ text: string; tone?: 'info' | 'error' } | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
 
-  const showToast = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast((cur) => (cur === msg ? '' : cur)), 2500);
-  };
+  const showToast = useCallback((text: string, tone: 'info' | 'error' = 'info') => {
+    setToast({ text, tone });
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 2200);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    };
+  }, []);
 
   const invalidateAll = () => {
     void qc.invalidateQueries({ queryKey: ['assets'] });
@@ -116,7 +127,7 @@ export default function AssetsPage() {
       );
       void qc.invalidateQueries({ queryKey: ['assets', 'items'] });
     },
-    onError: (err: Error) => showToast(err.message),
+    onError: (err: Error) => showToast(err.message, 'error'),
   });
 
   const refreshRatesMut = useMutation({
@@ -134,7 +145,7 @@ export default function AssetsPage() {
             : '外部汇率接口暂不可用，使用参考汇率',
       );
     },
-    onError: (err: Error) => showToast(err.message),
+    onError: (err: Error) => showToast(err.message, 'error'),
   });
 
   const useItemMut = useMutation({
@@ -142,7 +153,7 @@ export default function AssetsPage() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['assets', 'items'] });
     },
-    onError: (err: Error) => showToast(err.message),
+    onError: (err: Error) => showToast(err.message, 'error'),
   });
 
   const toggleFavoriteMut = useMutation({
@@ -169,7 +180,7 @@ export default function AssetsPage() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['assets', 'items'] });
     },
-    onError: (err: Error) => showToast(err.message),
+    onError: (err: Error) => showToast(err.message, 'error'),
   });
 
   const reorderMut = useMutation({
@@ -177,7 +188,7 @@ export default function AssetsPage() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['assets', 'items'] });
     },
-    onError: (err: Error) => showToast(err.message),
+    onError: (err: Error) => showToast(err.message, 'error'),
   });
 
   const batchMut = useMutation({
@@ -194,7 +205,7 @@ export default function AssetsPage() {
             : '修改分类';
       showToast(`已批量${label} ${res.affected} 件物品`);
     },
-    onError: (err: Error) => showToast(err.message),
+    onError: (err: Error) => showToast(err.message, 'error'),
   });
 
   const handleUpdateSettings = (patch: Partial<AssetSettings>) => {
@@ -252,7 +263,21 @@ export default function AssetsPage() {
         onFilterWarranty={(st) => setQuery((q) => ({ ...q, warranty_status: st }))}
       />
 
-      {toast && <div className="yd-notice">{toast}</div>}
+      {/* Floating Toast (no layout shift, aligned with StoragePage) */}
+      {toast && (
+        <div className="fixed top-5 right-5 z-[60] pointer-events-none flex flex-col items-end gap-2">
+          <div
+            className={`pointer-events-auto flex items-center gap-2 rounded-xl border bg-white/95 backdrop-blur-md px-3.5 py-2 text-xs shadow-[0_8px_24px_rgba(15,23,42,0.08)] ${
+              toast.tone === 'error'
+                ? 'border-red-200 text-red-700'
+                : 'border-zinc-200/90 text-zinc-700'
+            }`}
+          >
+            {toast.tone !== 'error' && <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0" />}
+            <span>{toast.text}</span>
+          </div>
+        </div>
+      )}
 
       <FilterBar
         query={query}

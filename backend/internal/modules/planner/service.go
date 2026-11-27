@@ -16,10 +16,18 @@ type Service struct {
 	store    Store
 	notifier messenger.Notifier
 	worker   *WakeupWorker
+	nowFunc  func() time.Time
 }
 
 func NewService(store Store, notifier messenger.Notifier, worker *WakeupWorker) *Service {
-	return &Service{store: store, notifier: notifier, worker: worker}
+	return &Service{store: store, notifier: notifier, worker: worker, nowFunc: time.Now}
+}
+
+func (s *Service) nowUTC() time.Time {
+	if s.nowFunc != nil {
+		return s.nowFunc().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func (s *Service) ListItems(ctx context.Context, userID int64) ([]ItemView, error) {
@@ -165,6 +173,108 @@ func (s *Service) CompleteItem(ctx context.Context, userID, id int64) (*ItemView
 	updated, err := s.store.UpdateItem(ctx, *item)
 	if err != nil {
 		return nil, httpx.Internal("更新事项状态失败", err)
+	}
+	s.wakeup()
+	v := toItemView(*updated)
+	return &v, nil
+}
+
+// FinishItem permanently marks any item (including recurring items) as done.
+func (s *Service) FinishItem(ctx context.Context, userID, id int64) (*ItemView, error) {
+	item, err := s.store.GetItem(ctx, userID, id)
+	if err != nil {
+		return nil, httpx.Internal("查询事项失败", err)
+	}
+	if item == nil {
+		return nil, httpx.NotFound("事项不存在")
+	}
+
+	item.Status = StatusDone
+	item.RetryState = nil
+	item.Paused = false
+	item.PausedUntil = nil
+	item.NextTriggerAt = nil
+
+	updated, err := s.store.UpdateItem(ctx, *item)
+	if err != nil {
+		return nil, httpx.Internal("标记事项完成失败", err)
+	}
+	s.wakeup()
+	v := toItemView(*updated)
+	return &v, nil
+}
+
+// AdvanceItemToCurrent fast-forwards an overdue recurring item straight to the earliest upcoming
+// occurrence strictly after now while preserving original recurrence anchors.
+func (s *Service) AdvanceItemToCurrent(ctx context.Context, userID, id int64) (*ItemView, error) {
+	item, err := s.store.GetItem(ctx, userID, id)
+	if err != nil {
+		return nil, httpx.Internal("查询事项失败", err)
+	}
+	if item == nil {
+		return nil, httpx.NotFound("事项不存在")
+	}
+	if item.Status != StatusPending {
+		return nil, httpx.BadRequest("已完成的事项无法推进周期")
+	}
+	if item.TargetAt == nil || item.RepeatType == RepeatNone || item.RepeatType == "" {
+		return nil, httpx.BadRequest("仅循环事项支持推进至当前周期")
+	}
+
+	now := s.nowUTC()
+	if item.TargetAt.After(now) {
+		return nil, httpx.BadRequest("当前事项尚未逾期，无需快速推进")
+	}
+
+	var nextTarget time.Time
+	if item.RepeatType == RepeatCron {
+		loc, tzName, err := LoadTimezone(item.Timezone)
+		if err != nil {
+			return nil, httpx.BadRequest(err.Error())
+		}
+		sched, err := parseCronWithTZ(item.RepeatConfig.CronExpr, tzName)
+		if err != nil {
+			return nil, httpx.BadRequest("Cron 表达式无效: " + err.Error())
+		}
+		nextTarget = sched.Next(now.In(loc)).UTC()
+		if nextTarget.IsZero() {
+			return nil, httpx.BadRequest("无法计算下一周期时间")
+		}
+	} else {
+		cur := *item.TargetAt
+		advanced := false
+		for i := 0; i < 50000; i++ {
+			cand, ok, err := AdvanceTarget(cur, item.RepeatConfig, item.CalendarType, item.RepeatType, item.Timezone)
+			if err != nil {
+				return nil, httpx.BadRequest("推进至当前周期失败: " + err.Error())
+			}
+			if !ok || !cand.After(cur) {
+				break
+			}
+			cur = cand
+			if cur.After(now) {
+				nextTarget = cur
+				advanced = true
+				break
+			}
+		}
+		if !advanced {
+			return nil, httpx.BadRequest("无法推进至当前周期，请手动修改目标时间")
+		}
+	}
+
+	item.Status = StatusPending
+	item.TargetAt = &nextTarget
+	item.RetryState = nil
+	item.Paused = false
+	item.PausedUntil = nil
+
+	settledKeys, _ := s.store.ListSettledTriggerKeys(ctx, item.ID)
+	item.NextTriggerAt = ComputeNextTrigger(*item, settledKeys, now.Truncate(time.Minute))
+
+	updated, err := s.store.UpdateItem(ctx, *item)
+	if err != nil {
+		return nil, httpx.Internal("推进事项周期失败", err)
 	}
 	s.wakeup()
 	v := toItemView(*updated)

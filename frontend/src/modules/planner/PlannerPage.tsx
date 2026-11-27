@@ -9,7 +9,9 @@ import {
   Bell,
   Calendar as CalendarIcon,
   Check,
+  CheckCheck,
   Clock,
+  FastForward,
   History,
   ListTodo,
   MoreHorizontal,
@@ -33,7 +35,6 @@ import {
   formatRepeatLabel,
   getLunarDayBadge,
   isItemOverdue,
-  needsConfirmation,
   plannerApi,
   type LogStatus,
   type PlannerItem,
@@ -97,7 +98,8 @@ export default function PlannerPage() {
     const end = new Date(now.getFullYear(), now.getMonth() + 2, 0);
     return { start: start.toISOString(), end: end.toISOString() };
   });
-  const [toast, setToast] = useState('');
+  const [toast, setToast] = useState<{ text: string; tone?: 'info' | 'error' } | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (openMenuId === null) return;
@@ -116,10 +118,20 @@ export default function PlannerPage() {
     };
   }, [openMenuId]);
 
-  const showToast = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast((cur) => (cur === msg ? '' : cur)), 2500);
+  const showToast = (text: string, tone: 'info' | 'error' = 'info') => {
+    setToast({ text, tone });
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 2200);
   };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    };
+  }, []);
 
   const invalidateAll = () => {
     void qc.invalidateQueries({ queryKey: ['planner'] });
@@ -149,7 +161,7 @@ export default function PlannerPage() {
       setQuickTitle('');
       invalidateAll();
     },
-    onError: (err: Error) => showToast(err.message),
+    onError: (err: Error) => showToast(err.message, 'error'),
   });
 
   const completeMut = useMutation({
@@ -157,16 +169,34 @@ export default function PlannerPage() {
     onSuccess: (res) => {
       invalidateAll();
       if (res.item.repeat_type !== 'none') {
-        showToast(`已推进至下一周期：${res.item.target_local || ''}`);
+        showToast(`已推进至下一周期：${res.item.target_local?.replace('T', ' ') || ''}`);
       }
     },
-    onError: (err: Error) => showToast(err.message),
+    onError: (err: Error) => showToast(err.message, 'error'),
+  });
+
+  const finishMut = useMutation({
+    mutationFn: (id: number) => plannerApi.finishItem(id),
+    onSuccess: () => {
+      invalidateAll();
+      showToast('已标记为已完成');
+    },
+    onError: (err: Error) => showToast(err.message, 'error'),
+  });
+
+  const advanceCurrentMut = useMutation({
+    mutationFn: (id: number) => plannerApi.advanceItemToCurrent(id),
+    onSuccess: (res) => {
+      invalidateAll();
+      showToast(`已推进至当前周期：${res.item.target_local?.replace('T', ' ') || ''}`);
+    },
+    onError: (err: Error) => showToast(err.message, 'error'),
   });
 
   const reopenMut = useMutation({
     mutationFn: (id: number) => plannerApi.reopenItem(id),
     onSuccess: invalidateAll,
-    onError: (err: Error) => showToast(err.message),
+    onError: (err: Error) => showToast(err.message, 'error'),
   });
 
   const resumeMut = useMutation({
@@ -175,19 +205,19 @@ export default function PlannerPage() {
       invalidateAll();
       showToast('已恢复通知');
     },
-    onError: (err: Error) => showToast(err.message),
+    onError: (err: Error) => showToast(err.message, 'error'),
   });
 
   const deleteMut = useMutation({
     mutationFn: (id: number) => plannerApi.deleteItem(id),
     onSuccess: invalidateAll,
-    onError: (err: Error) => showToast(err.message),
+    onError: (err: Error) => showToast(err.message, 'error'),
   });
 
   const testMut = useMutation({
     mutationFn: (id: number) => plannerApi.testItem(id),
     onSuccess: () => showToast('测试推送已发送'),
-    onError: (err: Error) => showToast(`推送失败：${err.message}`),
+    onError: (err: Error) => showToast(`推送失败：${err.message}`, 'error'),
   });
 
   const overdueCount = useMemo(
@@ -264,7 +294,21 @@ export default function PlannerPage() {
         ))}
       </div>
 
-      {toast && <div className="yd-notice">{toast}</div>}
+      {/* Floating Toast (no layout shift, aligned with StoragePage) */}
+      {toast && (
+        <div className="fixed top-5 right-5 z-[60] pointer-events-none flex flex-col items-end gap-2">
+          <div
+            className={`pointer-events-auto flex items-center gap-2 rounded-xl border bg-white/95 backdrop-blur-md px-3.5 py-2 text-xs shadow-[0_8px_24px_rgba(15,23,42,0.08)] ${
+              toast.tone === 'error'
+                ? 'border-red-200 text-red-700'
+                : 'border-zinc-200/90 text-zinc-700'
+            }`}
+          >
+            {toast.tone !== 'error' && <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0" />}
+            <span>{toast.text}</span>
+          </div>
+        </div>
+      )}
 
       {/* TAB 1: Unified Todo & Schedule List */}
       {tab === 'list' && (
@@ -326,8 +370,8 @@ export default function PlannerPage() {
             <div className="space-y-2">
               {filteredItems.map((it) => {
                 const isDone = it.status === 'done';
+                const isRecurring = it.repeat_type !== 'none';
                 const overdue = isItemOverdue(it);
-                const canConfirm = needsConfirmation(it);
                 const hasPushConfig =
                   it.remind_offsets.length > 0 || Boolean(it.overdue_config?.enabled);
                 const repeatLabel = formatRepeatLabel(it.repeat_type, it.repeat_config);
@@ -421,12 +465,12 @@ export default function PlannerPage() {
                       )}
                     </div>
 
-                    {/* Right action bar: [Check?] [Bell?] [Pause/Resume?] [Edit?] [More...] */}
+                    {/* Right action bar: [Check] [Bell?] [Pause/Resume?] [Edit?] [More...] */}
                     <div className="flex items-center gap-0.5 shrink-0">
-                      {!isDone && canConfirm && (
+                      {!isDone && (
                         <Tooltip
                           content={
-                            it.repeat_type !== 'none'
+                            isRecurring
                               ? '确认本期并推进至下一周期'
                               : '确认完成'
                           }
@@ -503,19 +547,47 @@ export default function PlannerPage() {
                         </Tooltip>
 
                         {menuOpen && (
-                          <div className="absolute right-0 mt-1.5 w-32 rounded-xl border border-zinc-200/90 bg-white py-1 shadow-lg z-30">
+                          <div className="absolute right-0 mt-1.5 w-40 rounded-xl border border-zinc-200/90 bg-white py-1 shadow-lg z-30">
                             {!isDone ? (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setOpenMenuId(null);
-                                  testMut.mutate(it.id);
-                                }}
-                                className="w-full px-3 py-1.5 text-left text-xs text-zinc-700 hover:bg-zinc-50 flex items-center gap-2"
-                              >
-                                <Send className="h-3.5 w-3.5 text-zinc-400" />
-                                测试通知
-                              </button>
+                              <>
+                                {isRecurring && overdue && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenMenuId(null);
+                                      advanceCurrentMut.mutate(it.id);
+                                    }}
+                                    className="w-full px-3 py-1.5 text-left text-xs text-zinc-700 hover:bg-zinc-50 flex items-center gap-2"
+                                  >
+                                    <FastForward className="h-3.5 w-3.5 text-sky-500 shrink-0" />
+                                    推进至当前周期
+                                  </button>
+                                )}
+                                {isRecurring && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenMenuId(null);
+                                      finishMut.mutate(it.id);
+                                    }}
+                                    className="w-full px-3 py-1.5 text-left text-xs text-zinc-700 hover:bg-zinc-50 flex items-center gap-2"
+                                  >
+                                    <CheckCheck className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                                    标记为已完成
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOpenMenuId(null);
+                                    testMut.mutate(it.id);
+                                  }}
+                                  className="w-full px-3 py-1.5 text-left text-xs text-zinc-700 hover:bg-zinc-50 flex items-center gap-2"
+                                >
+                                  <Send className="h-3.5 w-3.5 text-zinc-400 shrink-0" />
+                                  测试通知
+                                </button>
+                              </>
                             ) : (
                               <button
                                 type="button"

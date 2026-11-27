@@ -652,3 +652,119 @@ func TestPauseTimedAutoResumeAndIndefinitePause(t *testing.T) {
 		t.Fatalf("expected resumed active item with future next_trigger_at, got %+v", resumedView)
 	}
 }
+
+func TestFinishRecurringItemAndAdvanceToCurrent(t *testing.T) {
+	store := newMemStore()
+	notifier := &fakeNotifier{}
+	worker := NewWakeupWorker(store, notifier, nil)
+	svc := NewService(store, notifier, worker)
+	ctx := context.Background()
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+
+	// Fixed "now": 2026-11-27 13:15 Asia/Shanghai
+	now := time.Date(2026, 11, 27, 13, 15, 0, 0, loc)
+	svc.nowFunc = func() time.Time { return now }
+
+	// 1. Overdue daily task at 20:00 stuck 7 days ago -> advances to TODAY 20:00
+	oldEvening := time.Date(2026, 11, 20, 20, 0, 0, 0, loc).UTC()
+	eveningItem, _ := store.CreateItem(ctx, ItemRecord{
+		UserID:        1,
+		Title:         "晚间复盘",
+		Status:        StatusPending,
+		TargetAt:      &oldEvening,
+		Timezone:      "Asia/Shanghai",
+		CalendarType:  CalendarSolar,
+		RepeatType:    RepeatDaily,
+		RepeatConfig:  RepeatConfig{AnchorHour: 20, AnchorMinute: 0},
+		AutoAdvance:   true,
+		RemindOffsets: []RemindOffset{{Unit: "minute", Value: 30}},
+	})
+	v1, err := svc.AdvanceItemToCurrent(ctx, 1, eveningItem.ID)
+	if err != nil {
+		t.Fatalf("AdvanceItemToCurrent evening: %v", err)
+	}
+	if v1.TargetLocal != "2026-11-27T20:00" {
+		t.Fatalf("expected 2026-11-27T20:00, got %s", v1.TargetLocal)
+	}
+	if v1.NextTriggerAt == nil || v1.NextTriggerAt.In(loc).Format("2006-01-02 15:04") != "2026-11-27 19:30" {
+		t.Fatalf("expected next trigger 2026-11-27 19:30, got %v", v1.NextTriggerAt)
+	}
+
+	// Calling again while no longer overdue should return an error
+	if _, err := svc.AdvanceItemToCurrent(ctx, 1, eveningItem.ID); err == nil {
+		t.Fatalf("expected error when advancing a non-overdue item")
+	}
+
+	// 2. Overdue daily task at 09:00 stuck 7 days ago -> today's 09:00 passed, advances to TOMORROW 09:00
+	oldMorning := time.Date(2026, 11, 20, 9, 0, 0, 0, loc).UTC()
+	morningItem, _ := store.CreateItem(ctx, ItemRecord{
+		UserID:       1,
+		Title:        "晨间打卡",
+		Status:       StatusPending,
+		TargetAt:     &oldMorning,
+		Timezone:     "Asia/Shanghai",
+		CalendarType: CalendarSolar,
+		RepeatType:   RepeatDaily,
+		RepeatConfig: RepeatConfig{AnchorHour: 9, AnchorMinute: 0},
+		AutoAdvance:  true,
+	})
+	v2, err := svc.AdvanceItemToCurrent(ctx, 1, morningItem.ID)
+	if err != nil {
+		t.Fatalf("AdvanceItemToCurrent morning: %v", err)
+	}
+	if v2.TargetLocal != "2026-11-28T09:00" {
+		t.Fatalf("expected 2026-11-28T09:00, got %s", v2.TargetLocal)
+	}
+
+	// 3. Overdue monthly 31st preserves anchor across short months (Jan 31 -> Nov 30 -> Dec 31)
+	jan31 := time.Date(2026, 1, 31, 9, 0, 0, 0, loc).UTC()
+	monthlyItem, _ := store.CreateItem(ctx, ItemRecord{
+		UserID:       1,
+		Title:        "月底结算",
+		Status:       StatusPending,
+		TargetAt:     &jan31,
+		Timezone:     "Asia/Shanghai",
+		CalendarType: CalendarSolar,
+		RepeatType:   RepeatMonthly,
+		RepeatConfig: RepeatConfig{AnchorDay: 31, AnchorHour: 9, AnchorMinute: 0},
+		AutoAdvance:  true,
+	})
+	v3, err := svc.AdvanceItemToCurrent(ctx, 1, monthlyItem.ID)
+	if err != nil {
+		t.Fatalf("AdvanceItemToCurrent monthly: %v", err)
+	}
+	if v3.TargetLocal != "2026-11-30T09:00" {
+		t.Fatalf("expected 2026-11-30T09:00, got %s", v3.TargetLocal)
+	}
+
+	// 4. Overdue cron task jumps directly to next future tick
+	oldCron := time.Date(2026, 1, 1, 9, 0, 0, 0, loc).UTC()
+	cronItem, _ := store.CreateItem(ctx, ItemRecord{
+		UserID:       1,
+		Title:        "工作日晨会",
+		Status:       StatusPending,
+		TargetAt:     &oldCron,
+		Timezone:     "Asia/Shanghai",
+		CalendarType: CalendarSolar,
+		RepeatType:   RepeatCron,
+		RepeatConfig: RepeatConfig{CronExpr: "30 14 * * 1-5"},
+		AutoAdvance:  true,
+	})
+	v4, err := svc.AdvanceItemToCurrent(ctx, 1, cronItem.ID)
+	if err != nil {
+		t.Fatalf("AdvanceItemToCurrent cron: %v", err)
+	}
+	// 2026-11-27 is Friday, so 14:30 today is strictly after 13:15
+	if v4.TargetLocal != "2026-11-27T14:30" {
+		t.Fatalf("expected 2026-11-27T14:30, got %s", v4.TargetLocal)
+	}
+
+	// 5. FinishItem marks recurring item permanently as done and clears triggers/pause
+	finished, err := svc.FinishItem(ctx, 1, eveningItem.ID)
+	if err != nil {
+		t.Fatalf("FinishItem: %v", err)
+	}
+	if finished.Status != StatusDone || finished.NextTriggerAt != nil || finished.Paused {
+		t.Fatalf("expected done item with nil trigger, got %+v", finished)
+	}
+}

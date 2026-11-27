@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { X } from 'lucide-react';
 import { InfoTooltip } from '@/components/InfoTooltip';
@@ -6,14 +6,22 @@ import { Select } from '@/components/Select';
 import {
   COMMON_TIMEZONES,
   formatTimezoneOptionLabel,
+  lunarPartsToSolarLocal,
   plannerApi,
-  previewLunarToSolar,
+  solarLocalToLunarParts,
   type CalendarType,
   type PlannerItem,
   type RepeatConfig,
   type RepeatType,
   type UpsertPlannerItemPayload,
 } from './api';
+import {
+  DateTimePicker,
+  formatSolarLocal,
+  parseSolarLocal,
+  type LunarDateValue,
+  type SolarDateValue,
+} from './DateTimePicker';
 import {
   getOverdueCycleError,
   NotificationFields,
@@ -70,21 +78,86 @@ export function ItemModal({
   );
   const [calendarType, setCalendarType] = useState<CalendarType>(initial?.calendar_type ?? 'solar');
   const [timezone, setTimezone] = useState(initial?.timezone ?? defaultTimezone());
-  const [targetLocal, setTargetLocal] = useState(
-    initial?.target_local ?? defaultLocalDateTime(prefillDate),
+  const initialTargetLocal = initial?.target_local ?? defaultLocalDateTime(prefillDate);
+  const initialSolarParsed = useMemo(
+    () => parseSolarLocal(initialTargetLocal),
+    [initialTargetLocal],
   );
+  const [solarDate, setSolarDate] = useState<SolarDateValue>(initialSolarParsed.date);
+  const [timeStr, setTimeStr] = useState(initialSolarParsed.time);
 
-  // Lunar fields
-  const nowYear = new Date().getFullYear();
-  const [lunarYear, setLunarYear] = useState(initial?.repeat_config.anchor_year || nowYear);
-  const [lunarMonth, setLunarMonth] = useState(initial?.repeat_config.anchor_month || 1);
-  const [lunarDay, setLunarDay] = useState(initial?.repeat_config.anchor_day || 1);
-  const [lunarIsLeap, setLunarIsLeap] = useState(Boolean(initial?.repeat_config.anchor_is_leap));
-  const [lunarTime, setLunarTime] = useState(() => {
-    const h = String(initial?.repeat_config.anchor_hour ?? 9).padStart(2, '0');
-    const m = String(initial?.repeat_config.anchor_minute ?? 0).padStart(2, '0');
-    return `${h}:${m}`;
-  });
+  // Lunar fields (initialized from current occurrence or today's real lunar date)
+  const initialLunar = useMemo<LunarDateValue>(() => {
+    const fromSolar = solarLocalToLunarParts(initialTargetLocal);
+    if (fromSolar) {
+      return {
+        year: fromSolar.year,
+        signedMonth: fromSolar.signedMonth,
+        day: fromSolar.day,
+      };
+    }
+    if (
+      initial?.calendar_type === 'lunar' &&
+      initial.repeat_config.anchor_year &&
+      initial.repeat_config.anchor_month &&
+      initial.repeat_config.anchor_day
+    ) {
+      const m = initial.repeat_config.anchor_month;
+      return {
+        year: initial.repeat_config.anchor_year,
+        signedMonth: initial.repeat_config.anchor_is_leap ? -m : m,
+        day: initial.repeat_config.anchor_day,
+      };
+    }
+    return { year: new Date().getFullYear(), signedMonth: 1, day: 1 };
+  }, [initial, initialTargetLocal]);
+
+  const [lunarDate, setLunarDate] = useState<LunarDateValue>(initialLunar);
+
+  const handleSelectSolarDate = (next: SolarDateValue) => {
+    setSolarDate(next);
+    const synced = solarLocalToLunarParts(formatSolarLocal(next, timeStr));
+    if (synced) {
+      setLunarDate({
+        year: synced.year,
+        signedMonth: synced.signedMonth,
+        day: synced.day,
+      });
+    }
+  };
+
+  const handleSelectLunarDate = (next: LunarDateValue) => {
+    setLunarDate(next);
+    const converted = lunarPartsToSolarLocal(next.year, next.signedMonth, next.day, timeStr);
+    if (converted) {
+      setSolarDate(parseSolarLocal(converted).date);
+    }
+  };
+
+  const switchCalendarType = (nextType: CalendarType) => {
+    if (nextType === calendarType) return;
+    if (nextType === 'lunar') {
+      const parts = solarLocalToLunarParts(formatSolarLocal(solarDate, timeStr));
+      if (parts) {
+        setLunarDate({
+          year: parts.year,
+          signedMonth: parts.signedMonth,
+          day: parts.day,
+        });
+      }
+    } else {
+      const converted = lunarPartsToSolarLocal(
+        lunarDate.year,
+        lunarDate.signedMonth,
+        lunarDate.day,
+        timeStr,
+      );
+      if (converted) {
+        setSolarDate(parseSolarLocal(converted).date);
+      }
+    }
+    setCalendarType(nextType);
+  };
 
   // Recurrence
   const [repeatType, setRepeatType] = useState<RepeatType>(initial?.repeat_type ?? 'none');
@@ -168,17 +241,17 @@ export function ItemModal({
         payload.repeat_config = { cron_expr: cronExpr };
       } else {
         if (calendarType === 'lunar') {
-          const [hh, mm] = lunarTime.split(':').map((n) => Number(n) || 0);
+          const [hh, mm] = timeStr.split(':').map((n) => Number(n) || 0);
           payload.lunar_target = {
-            year: lunarYear,
-            month: lunarMonth,
-            day: lunarDay,
-            is_leap: lunarIsLeap,
+            year: lunarDate.year,
+            month: Math.abs(lunarDate.signedMonth),
+            day: lunarDate.day,
+            is_leap: lunarDate.signedMonth < 0,
             hour: hh,
             minute: mm,
           };
         } else {
-          payload.target_local = targetLocal;
+          payload.target_local = formatSolarLocal(solarDate, timeStr);
         }
         payload.repeat_config = currentRepeatConfig;
       }
@@ -260,7 +333,7 @@ export function ItemModal({
                     <div className="yd-segment w-full">
                       <button
                         type="button"
-                        onClick={() => setCalendarType('solar')}
+                        onClick={() => switchCalendarType('solar')}
                         className={`yd-segment-btn flex-1 ${
                           calendarType === 'solar' ? 'yd-segment-active' : 'yd-segment-idle'
                         }`}
@@ -270,7 +343,7 @@ export function ItemModal({
                       <button
                         type="button"
                         disabled={repeatType === 'cron'}
-                        onClick={() => setCalendarType('lunar')}
+                        onClick={() => switchCalendarType('lunar')}
                         className={`yd-segment-btn flex-1 disabled:opacity-40 ${
                           calendarType === 'lunar' ? 'yd-segment-active' : 'yd-segment-idle'
                         }`}
@@ -297,76 +370,18 @@ export function ItemModal({
                   </div>
                 </div>
 
-                {/* Target DateTime (exact to minute) */}
-                {repeatType !== 'cron' &&
-                  (calendarType === 'solar' ? (
-                    <label className="block space-y-1.5">
-                      <span className="yd-label">目标时间</span>
-                      <input
-                        type="datetime-local"
-                        required
-                        value={targetLocal}
-                        onChange={(e) => setTargetLocal(e.target.value)}
-                        className="yd-input"
-                      />
-                    </label>
-                  ) : (
-                    <div className="space-y-2">
-                      <span className="yd-label">农历目标日期与时刻</span>
-                      <div className="grid grid-cols-4 gap-2">
-                        <input
-                          type="number"
-                          min={1901}
-                          max={2099}
-                          value={lunarYear}
-                          onChange={(e) => setLunarYear(Number(e.target.value))}
-                          placeholder="年"
-                          className="yd-input-sm w-full"
-                        />
-                        <Select
-                          value={String(lunarMonth)}
-                          onChange={(v) => setLunarMonth(Number(v))}
-                          options={Array.from({ length: 12 }, (_, i) => ({
-                            value: String(i + 1),
-                            label: `${i + 1}月`,
-                          }))}
-                          searchable={false}
-                          className="w-full"
-                          ariaLabel="选择农历月份"
-                        />
-                        <Select
-                          value={String(lunarDay)}
-                          onChange={(v) => setLunarDay(Number(v))}
-                          options={Array.from({ length: 30 }, (_, i) => ({
-                            value: String(i + 1),
-                            label: `${i + 1}日`,
-                          }))}
-                          searchable={false}
-                          className="w-full"
-                          ariaLabel="选择农历日期"
-                        />
-                        <input
-                          type="time"
-                          value={lunarTime}
-                          onChange={(e) => setLunarTime(e.target.value)}
-                          className="yd-input-sm w-full"
-                        />
-                      </div>
-                      <div className="flex items-center justify-between text-xs text-zinc-500">
-                        <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={lunarIsLeap}
-                            onChange={(e) => setLunarIsLeap(e.target.checked)}
-                          />
-                          闰月
-                        </label>
-                        <span className="tabular-nums">
-                          对应公历：{previewLunarToSolar(lunarYear, lunarMonth, lunarDay, lunarIsLeap)}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
+                {/* Unified Solar / Lunar Target DateTime Picker */}
+                {repeatType !== 'cron' && (
+                  <DateTimePicker
+                    calendarType={calendarType}
+                    solarDate={solarDate}
+                    lunarDate={lunarDate}
+                    time={timeStr}
+                    onSelectSolarDate={handleSelectSolarDate}
+                    onSelectLunarDate={handleSelectLunarDate}
+                    onTimeChange={setTimeStr}
+                  />
+                )}
 
                 {/* Unified Cycle / Repeat Config */}
                 <div className="space-y-2.5">
@@ -377,7 +392,7 @@ export function ItemModal({
                       onChange={(v) => {
                         const next = v as RepeatType;
                         setRepeatType(next);
-                        if (next === 'cron') setCalendarType('solar');
+                        if (next === 'cron') switchCalendarType('solar');
                       }}
                       options={[
                         { value: 'none', label: '不重复' },

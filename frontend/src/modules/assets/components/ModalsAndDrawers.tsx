@@ -22,6 +22,7 @@ import {
   RETIRE_REASON_LABELS,
   assetsApi,
   buildCategorySelectOptions,
+  currencySymbol,
   formatMoney,
   getLocalTodayString,
   type AssetCategory,
@@ -402,12 +403,11 @@ export function ItemModal({
     },
     onSuccess: () => {
       setErrMsg('');
-      onMutated(isEdit ? '物品已更新' : '物品已录入');
       if (isEdit) {
         refreshDetail();
-      } else {
-        onClose();
       }
+      onMutated(isEdit ? '物品已更新' : '物品已录入');
+      onClose();
     },
     onError: (err: Error) => setErrMsg(err.message),
   });
@@ -508,7 +508,7 @@ export function ItemModal({
         <div
           onClick={(e) => e.stopPropagation()}
           className={`flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden rounded-2xl border border-zinc-200/90 bg-white shadow-xl transition-all ${
-            showMore || isEdit ? 'max-w-2xl' : 'max-w-lg'
+            showMore || isEdit ? 'max-w-2xl' : 'max-w-xl'
           }`}
         >
           {/* Header */}
@@ -634,32 +634,34 @@ export function ItemModal({
                       />
                     </label>
 
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
-                      <label className="block space-y-1.5 sm:col-span-5">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                      <label className="block space-y-1.5">
                         <span className="yd-label">购入价格</span>
+                        <div className="relative">
+                          <span className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 font-mono text-sm text-zinc-400">
+                            {currencySymbol(currency)}
+                          </span>
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={price}
+                            onChange={(e) => setPrice(e.target.value)}
+                            placeholder="0.00"
+                            className="yd-input pl-7 font-mono"
+                          />
+                        </div>
+                      </label>
+                      <label className="block space-y-1.5">
+                        <span className="yd-label">购买日期</span>
                         <input
-                          type="number"
-                          min={0}
-                          step="0.01"
-                          value={price}
-                          onChange={(e) => setPrice(e.target.value)}
-                          placeholder="0.00"
-                          className="yd-input font-mono"
+                          type="date"
+                          value={purchasedAt}
+                          onChange={(e) => setPurchasedAt(e.target.value)}
+                          className="yd-input"
                         />
                       </label>
-                      <div className="space-y-1.5 sm:col-span-3">
-                        <span className="yd-label block">币种</span>
-                        <Select
-                          value={currency}
-                          onChange={(v) => setCurrency(v as Currency)}
-                          options={CURRENCY_OPTIONS}
-                          size="md"
-                          searchable={false}
-                          className="w-full"
-                          ariaLabel="选择币种"
-                        />
-                      </div>
-                      <div className="space-y-1.5 sm:col-span-4">
+                      <div className="space-y-1.5">
                         <span className="yd-label block">分类</span>
                         <Select
                           value={categoryId}
@@ -686,7 +688,7 @@ export function ItemModal({
                         ) : (
                           <ChevronDown className="h-4 w-4" />
                         )}
-                        {showMore ? '收起更多选项' : '更多选项（日期、计价、图标、保修、渠道、子物品等）'}
+                        {showMore ? '收起更多选项' : '更多选项（币种、计价、图标、保修、渠道、子物品等）'}
                       </button>
                     </div>
                   )}
@@ -731,17 +733,24 @@ export function ItemModal({
                         )}
                       </div>
 
-                      {/* Purchase Date, Pricing Mode, Status, Usage Count */}
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <label className="block space-y-1.5">
-                          <span className="yd-label">购买日期</span>
-                          <input
-                            type="date"
-                            value={purchasedAt}
-                            onChange={(e) => setPurchasedAt(e.target.value)}
-                            className="yd-input"
+                      {/* Currency, Pricing Mode, Status, Usage Count (hidden for time-priced items) */}
+                      <div
+                        className={`grid grid-cols-1 gap-3 ${
+                          pricingMode !== 'time' ? 'sm:grid-cols-2' : 'sm:grid-cols-3'
+                        }`}
+                      >
+                        <div className="space-y-1.5">
+                          <span className="yd-label block">币种</span>
+                          <Select
+                            value={currency}
+                            onChange={(v) => setCurrency(v as Currency)}
+                            options={CURRENCY_OPTIONS}
+                            size="md"
+                            searchable={false}
+                            className="w-full"
+                            ariaLabel="选择币种"
                           />
-                        </label>
+                        </div>
 
                         <div className="space-y-1.5">
                           <span className="yd-label block">计价方式</span>
@@ -770,38 +779,40 @@ export function ItemModal({
                           />
                         </div>
 
-                        <div className="space-y-1.5">
-                          <span className="yd-label block">使用次数</span>
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setUsageCount(
-                                  String(Math.max(0, (parseInt(usageCount, 10) || 0) - 1)),
-                                )
-                              }
-                              className="yd-btn-secondary shrink-0 px-2.5 py-2"
-                            >
-                              <Minus className="h-3.5 w-3.5" />
-                            </button>
-                            <input
-                              type="number"
-                              min={0}
-                              value={usageCount}
-                              onChange={(e) => setUsageCount(e.target.value)}
-                              className="yd-input min-w-0 flex-1 text-center font-mono"
-                            />
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setUsageCount(String((parseInt(usageCount, 10) || 0) + 1))
-                              }
-                              className="yd-btn-secondary shrink-0 px-2.5 py-2"
-                            >
-                              <Plus className="h-3.5 w-3.5" />
-                            </button>
+                        {pricingMode !== 'time' && (
+                          <div className="space-y-1.5">
+                            <span className="yd-label block">使用次数</span>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setUsageCount(
+                                    String(Math.max(0, (parseInt(usageCount, 10) || 0) - 1)),
+                                  )
+                                }
+                                className="yd-btn-secondary shrink-0 px-2.5 py-2"
+                              >
+                                <Minus className="h-3.5 w-3.5" />
+                              </button>
+                              <input
+                                type="number"
+                                min={0}
+                                value={usageCount}
+                                onChange={(e) => setUsageCount(e.target.value)}
+                                className="yd-input min-w-0 flex-1 text-center font-mono"
+                              />
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setUsageCount(String((parseInt(usageCount, 10) || 0) + 1))
+                                }
+                                className="yd-btn-secondary shrink-0 px-2.5 py-2"
+                              >
+                                <Plus className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
                           </div>
-                        </div>
+                        )}
                       </div>
 
                       {/* Warranty & Expected Retire */}

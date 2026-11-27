@@ -119,15 +119,20 @@ func (s *PGStore) SeedDefaultCategories(ctx context.Context, userID int64, seeds
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	qtx := s.q.WithTx(tx)
-	settings, err := qtx.GetUserSettings(ctx, userID)
+	// Atomically claim the one-time category seed with row-level locking so concurrent
+	// bootstrap requests (e.g. parallel GET /meta + GET /items on first visit) never double-seed.
+	tag, err := tx.Exec(ctx,
+		`UPDATE assets_user_settings SET seeded_categories = TRUE, updated_at = NOW() WHERE user_id = $1 AND seeded_categories = FALSE`,
+		userID,
+	)
 	if err != nil {
-		return mapPGError(err, "用户偏好不存在", "用户偏好冲突")
+		return httpx.Internal("锁定默认分类初始化状态失败", err)
 	}
-	if settings.SeededCategories {
+	if tag.RowsAffected() == 0 {
 		return nil
 	}
 
+	qtx := s.q.WithTx(tx)
 	for i, cat := range seeds {
 		parent, err := qtx.CreateCategory(ctx, sqlcgen.CreateCategoryParams{
 			UserID:    userID,
@@ -153,9 +158,6 @@ func (s *PGStore) SeedDefaultCategories(ctx context.Context, userID int64, seeds
 		}
 	}
 
-	if err := qtx.MarkCategoriesSeeded(ctx, userID); err != nil {
-		return httpx.Internal("标记默认分类状态失败", err)
-	}
 	if err := tx.Commit(ctx); err != nil {
 		return httpx.Internal("提交默认分类事务失败", err)
 	}

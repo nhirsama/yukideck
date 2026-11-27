@@ -1,4 +1,4 @@
-import { Lunar, Solar } from 'lunar-typescript';
+import { Lunar, LunarYear, Solar } from 'lunar-typescript';
 import { request } from '@/core/api';
 import type {
   CalendarEventView,
@@ -43,6 +43,12 @@ export const plannerApi = {
     request<{ ok: boolean }>(`/api/v1/planner/items/${id}`, { method: 'DELETE' }),
   completeItem: (id: number) =>
     request<{ item: ItemView }>(`/api/v1/planner/items/${id}/complete`, { method: 'POST' }),
+  finishItem: (id: number) =>
+    request<{ item: ItemView }>(`/api/v1/planner/items/${id}/finish`, { method: 'POST' }),
+  advanceItemToCurrent: (id: number) =>
+    request<{ item: ItemView }>(`/api/v1/planner/items/${id}/advance-current`, {
+      method: 'POST',
+    }),
   reopenItem: (id: number) =>
     request<{ item: ItemView }>(`/api/v1/planner/items/${id}/reopen`, { method: 'POST' }),
   pauseItem: (id: number, payload: PauseItemInput) =>
@@ -134,15 +140,6 @@ export function formatOverdueConfigLabel(cfg?: OverdueConfig): string {
   const val = cfg.interval_value || 1;
   const max = cfg.max_count || 3;
   return `逾期每 ${val} ${unit}催办 · 上限 ${max} 次`;
-}
-
-export function needsConfirmation(item: ItemView): boolean {
-  if (item.status !== 'pending') return false;
-  if (!item.target_at) return true;
-  if (item.repeat_type === 'none') return true;
-  if (!item.auto_advance) return true;
-  if (item.overdue_config?.enabled) return true;
-  return false;
 }
 
 export function isItemOverdue(item: ItemView, nowMs = Date.now()): boolean {
@@ -248,20 +245,37 @@ export function buildUpsertPayloadFromItem(
   };
 
   if (item.target_at && item.repeat_type !== 'cron') {
-    if (
-      item.calendar_type === 'lunar' &&
-      item.repeat_config.anchor_year &&
-      item.repeat_config.anchor_month &&
-      item.repeat_config.anchor_day
-    ) {
-      base.lunar_target = {
-        year: item.repeat_config.anchor_year,
-        month: item.repeat_config.anchor_month,
-        day: item.repeat_config.anchor_day,
-        is_leap: Boolean(item.repeat_config.anchor_is_leap),
-        hour: item.repeat_config.anchor_hour ?? 9,
-        minute: item.repeat_config.anchor_minute ?? 0,
-      };
+    if (item.calendar_type === 'lunar') {
+      if (item.target_local) {
+        const cur = solarLocalToLunarParts(item.target_local);
+        if (cur) {
+          const curMonthDays = getLunarMonthDayCount(cur.year, cur.signedMonth);
+          const preserveDay30 =
+            item.repeat_config.anchor_day === 30 && cur.day === curMonthDays && curMonthDays === 29;
+          const [hh, mm] = cur.time.split(':').map((n) => Number(n) || 0);
+          base.lunar_target = {
+            year: cur.year,
+            month: Math.abs(cur.signedMonth),
+            day: preserveDay30 ? 30 : cur.day,
+            is_leap: cur.signedMonth < 0,
+            hour: hh,
+            minute: mm,
+          };
+        }
+      } else if (
+        item.repeat_config.anchor_year &&
+        item.repeat_config.anchor_month &&
+        item.repeat_config.anchor_day
+      ) {
+        base.lunar_target = {
+          year: item.repeat_config.anchor_year,
+          month: item.repeat_config.anchor_month,
+          day: item.repeat_config.anchor_day,
+          is_leap: Boolean(item.repeat_config.anchor_is_leap),
+          hour: item.repeat_config.anchor_hour ?? 9,
+          minute: item.repeat_config.anchor_minute ?? 0,
+        };
+      }
     } else if (item.target_local) {
       base.target_local = item.target_local;
     }
@@ -287,13 +301,138 @@ export function getLunarDayBadge(date: Date): { text: string; highlight: boolean
   }
 }
 
+const HEAVENLY_STEMS = ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸'];
+const EARTHLY_BRANCHES = ['子', '丑', '寅', '卯', '辰', '巳', '午', '未', '申', '酉', '戌', '亥'];
+const CHINESE_ZODIAC = ['鼠', '牛', '虎', '兔', '龙', '蛇', '马', '羊', '猴', '鸡', '狗', '猪'];
+
+const LUNAR_MONTH_NAMES = [
+  '正',
+  '二',
+  '三',
+  '四',
+  '五',
+  '六',
+  '七',
+  '八',
+  '九',
+  '十',
+  '冬',
+  '腊',
+];
+
+const WEEKDAY_ZH = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+export interface LunarMonthOption {
+  value: string;
+  label: string;
+  description: string;
+  signedMonth: number; // 1..12 for normal month, -1..-12 for leap month
+  month: number;
+  isLeap: boolean;
+  dayCount: number;
+}
+
+export interface LunarParts {
+  year: number;
+  signedMonth: number;
+  day: number;
+  time: string; // HH:MM
+}
+
+export function formatLunarYearLabel(year: number): string {
+  const safeYear = Math.min(2099, Math.max(1901, Math.floor(year || new Date().getFullYear())));
+  const ganZhi = HEAVENLY_STEMS[(safeYear - 4) % 10] + EARTHLY_BRANCHES[(safeYear - 4) % 12];
+  const zodiac = CHINESE_ZODIAC[(safeYear - 4) % 12];
+  return `${safeYear} ${ganZhi}${zodiac}年`;
+}
+
+export function getLunarMonthOptions(year: number): LunarMonthOption[] {
+  const safeYear = Math.min(2099, Math.max(1901, Math.floor(year || new Date().getFullYear())));
+  try {
+    const months = LunarYear.fromYear(safeYear).getMonthsInYear();
+    return months.map((m) => {
+      const signed = m.getMonth();
+      const absMonth = Math.abs(signed);
+      const isLeap = m.isLeap();
+      const dayCount = m.getDayCount();
+      const baseName = LUNAR_MONTH_NAMES[absMonth - 1] ?? String(absMonth);
+      return {
+        value: String(signed),
+        label: `${isLeap ? '闰' : ''}${baseName}月`,
+        description: `${dayCount === 30 ? '大月' : '小月'} · ${dayCount}天`,
+        signedMonth: signed,
+        month: absMonth,
+        isLeap,
+        dayCount,
+      };
+    });
+  } catch {
+    return LUNAR_MONTH_NAMES.map((name, idx) => ({
+      value: String(idx + 1),
+      label: `${name}月`,
+      description: '30天',
+      signedMonth: idx + 1,
+      month: idx + 1,
+      isLeap: false,
+      dayCount: 30,
+    }));
+  }
+}
+
+export function getLunarMonthDayCount(year: number, signedMonth: number): number {
+  const opts = getLunarMonthOptions(year);
+  return opts.find((o) => o.signedMonth === signedMonth)?.dayCount ?? 30;
+}
+
+export function solarLocalToLunarParts(localStr: string): LunarParts | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(localStr.trim());
+  if (!match) return null;
+  const y = Number(match[1]);
+  const m = Number(match[2]);
+  const d = Number(match[3]);
+  const hh = match[4] ?? '09';
+  const mm = match[5] ?? '00';
+  try {
+    const lunar = Solar.fromYmd(y, m, d).getLunar();
+    const ly = Math.min(2099, Math.max(1901, lunar.getYear()));
+    return {
+      year: ly,
+      signedMonth: lunar.getMonth(),
+      day: lunar.getDay(),
+      time: `${hh}:${mm}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function lunarPartsToSolarLocal(
+  year: number,
+  signedMonth: number,
+  day: number,
+  time: string,
+): string | null {
+  try {
+    const l = Lunar.fromYmd(year, signedMonth, day);
+    const s = l.getSolar();
+    const [rawH, rawM] = time.split(':');
+    const hh = String(Number(rawH) || 0).padStart(2, '0');
+    const mm = String(Number(rawM) || 0).padStart(2, '0');
+    return `${s.getYear()}-${String(s.getMonth()).padStart(2, '0')}-${String(s.getDay()).padStart(2, '0')}T${hh}:${mm}`;
+  } catch {
+    return null;
+  }
+}
+
 export function previewLunarToSolar(year: number, month: number, day: number, isLeap: boolean): string {
   try {
     const signedMonth = isLeap ? -month : month;
     const l = Lunar.fromYmd(year, signedMonth, day);
     const s = l.getSolar();
-    return `${s.getYear()}-${String(s.getMonth()).padStart(2, '0')}-${String(s.getDay()).padStart(2, '0')}`;
+    const wd = WEEKDAY_ZH[s.getWeek()] ?? '';
+    const dateStr = `${s.getYear()}-${String(s.getMonth()).padStart(2, '0')}-${String(s.getDay()).padStart(2, '0')}`;
+    return wd ? `${dateStr}（${wd}）` : dateStr;
   } catch {
-    return '该农历日期在当年不存在（保存时将自动夹逼/回退）';
+    return '该农历日期无效';
   }
 }
