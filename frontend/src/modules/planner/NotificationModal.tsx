@@ -285,7 +285,7 @@ export function NotificationFields({
       {hasAnyPush && (
         <div className="space-y-2 pt-3 border-t border-zinc-200/70">
           <span className="yd-label">推送渠道</span>
-          <div className="flex gap-4 text-xs text-zinc-700">
+          <div className="flex flex-wrap gap-4 text-xs text-zinc-700">
             <label className="inline-flex items-center gap-1.5 cursor-pointer">
               <input
                 type="radio"
@@ -389,14 +389,14 @@ export function NotificationModal({
   return (
     <div
       onClick={onClose}
-      className="fixed inset-0 z-50 bg-slate-900/15 backdrop-blur-[2px] flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 bg-slate-900/15 backdrop-blur-[2px] flex items-end sm:items-center justify-center p-0 sm:p-4"
     >
       <form
         onClick={(e) => e.stopPropagation()}
         onSubmit={handleSubmit}
-        className="w-full max-w-xl max-h-[calc(100vh-2rem)] flex flex-col rounded-2xl border border-zinc-200/90 bg-white shadow-xl overflow-hidden"
+        className="w-full max-w-xl max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] flex flex-col rounded-t-2xl sm:rounded-2xl border border-zinc-200/90 bg-white shadow-xl overflow-hidden"
       >
-        <div className="px-6 py-4 border-b border-zinc-100 flex items-center justify-between gap-3 shrink-0">
+        <div className="px-4 sm:px-6 py-3.5 sm:py-4 border-b border-zinc-100 flex items-center justify-between gap-3 shrink-0">
           <div className="min-w-0">
             <h3 className="text-sm font-semibold text-zinc-900 truncate">
               通知配置 · {item.title}
@@ -407,9 +407,9 @@ export function NotificationModal({
           </button>
         </div>
 
-        <div className="p-6 space-y-4 overflow-y-auto">
+        <div className="p-4 sm:p-6 space-y-4 overflow-y-auto">
           {error && <div className="yd-notice-error">{error}</div>}
-          <div className="yd-panel-subtle p-4">
+          <div className="yd-panel-subtle p-3.5 sm:p-4">
             <NotificationFields
               state={state}
               onChange={setState}
@@ -420,7 +420,7 @@ export function NotificationModal({
           </div>
         </div>
 
-        <div className="px-6 py-3.5 border-t border-zinc-100 bg-zinc-50/50 flex justify-end gap-2 shrink-0">
+        <div className="px-4 sm:px-6 py-3.5 pb-[max(0.875rem,env(safe-area-inset-bottom))] sm:pb-3.5 border-t border-zinc-100 bg-zinc-50/50 flex justify-end gap-2 shrink-0">
           <button type="button" onClick={onClose} className="yd-btn-secondary">
             取消
           </button>

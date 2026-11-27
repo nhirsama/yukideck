@@ -11,6 +11,7 @@ import {
   FolderPlus,
   Image as ImageIcon,
   Link2,
+  MoreHorizontal,
   Pencil,
   Search,
   Settings,
@@ -40,8 +41,7 @@ function useWaterfallColumns(): number {
   const getCols = () => {
     if (typeof window === 'undefined') return 3;
     if (window.innerWidth >= 1024) return 3;
-    if (window.innerWidth >= 640) return 2;
-    return 1;
+    return 2;
   };
   const [cols, setCols] = useState(getCols);
   useEffect(() => {
@@ -61,11 +61,13 @@ export default function StoragePage() {
   const [dragging, setDragging] = useState(false);
   const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
   const [moveModalOpen, setMoveModalOpen] = useState(false);
+  const [mobileActionFile, setMobileActionFile] = useState<FileEntry | null>(null);
   const [dimsMap, setDimsMap] = useState<Record<string, [number, number]>>(() => loadCachedDimensions());
   const [loadedUrls, setLoadedUrls] = useState<Record<string, true>>({});
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   const probedUrlsRef = useRef<Set<string>>(new Set());
   const copiedTimerRef = useRef<number | null>(null);
+  const lightboxTouchXRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const colCount = useWaterfallColumns();
 
@@ -445,9 +447,9 @@ export default function StoragePage() {
 
       {/* Sub-toolbar: Breadcrumbs + Search */}
       <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-zinc-200/70">
-        <div className="flex flex-wrap items-center gap-1">
+        <div className="flex items-center gap-1 overflow-x-auto max-w-full sm:flex-wrap sm:overflow-visible">
           {breadcrumbs.map((b, i) => (
-            <div key={b.prefix} className="flex items-center gap-1">
+            <div key={b.prefix} className="flex items-center gap-1 shrink-0">
               {i > 0 && <span className="text-zinc-300 text-xs">/</span>}
               <button
                 type="button"
@@ -455,7 +457,7 @@ export default function StoragePage() {
                   setPrefix(b.prefix);
                   setSelected(new Map());
                 }}
-                className={`rounded-md px-2 py-1 text-xs transition-colors ${
+                className={`rounded-md px-2 py-1 text-xs whitespace-nowrap transition-colors ${
                   i === breadcrumbs.length - 1
                     ? 'text-zinc-800 font-medium cursor-default'
                     : 'text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800'
@@ -467,13 +469,13 @@ export default function StoragePage() {
           ))}
         </div>
 
-        <div className="flex items-center gap-1.5 rounded-lg border border-zinc-200/90 bg-white px-2.5 py-1.5 text-xs focus-within:border-sky-300 focus-within:ring-2 focus-within:ring-sky-500/12 transition-colors">
-          <Search className="h-3.5 w-3.5 text-zinc-400" />
+        <div className="w-full sm:w-auto flex items-center gap-1.5 rounded-lg border border-zinc-200/90 bg-white px-2.5 py-1.5 text-xs focus-within:border-sky-300 focus-within:ring-2 focus-within:ring-sky-500/12 transition-colors">
+          <Search className="h-3.5 w-3.5 text-zinc-400 shrink-0" />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="筛选当前目录..."
-            className="w-40 outline-none text-zinc-800 placeholder:text-zinc-400 bg-transparent"
+            className="flex-1 min-w-0 sm:flex-none sm:w-40 outline-none text-zinc-800 placeholder:text-zinc-400 bg-transparent"
           />
         </div>
       </div>
@@ -524,7 +526,7 @@ export default function StoragePage() {
                       </Tooltip>
                       <span className="text-[13px] text-zinc-800 truncate">{folder.name}</span>
                     </div>
-                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                    <div className="flex items-center gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity shrink-0">
                       <Tooltip content="重命名文件夹">
                         <button
                           type="button"
@@ -560,9 +562,9 @@ export default function StoragePage() {
 
           {/* Album Files Waterfall Masonry */}
           {filteredFiles.length > 0 ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 items-start">
+            <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 items-start">
               {waterfallColumns.map((colFiles, colIdx) => (
-                <div key={colIdx} className="flex flex-col gap-4 min-w-0">
+                <div key={colIdx} className="flex flex-col gap-3 sm:gap-4 min-w-0">
                   {colFiles.map((file: FileEntry) => {
                     const isSel = selected.has(`file:${file.key}`);
                     const imgIdx = file.is_image ? imageFiles.findIndex((x) => x.key === file.key) : -1;
@@ -630,19 +632,21 @@ export default function StoragePage() {
                             e.stopPropagation();
                             toggleSelect({ type: 'file', path: file.key });
                           }}
-                          className={`absolute top-2.5 left-2.5 h-6 w-6 rounded-md border flex items-center justify-center transition-opacity ${
+                          className={`absolute top-2.5 left-2.5 h-6 w-6 rounded-md border items-center justify-center transition-opacity ${
                             isSel
-                              ? 'bg-sky-500 border-sky-500 text-white opacity-100'
-                              : 'bg-white/90 backdrop-blur-xs border-zinc-300 opacity-0 group-hover:opacity-100'
+                              ? 'flex bg-sky-500 border-sky-500 text-white opacity-100'
+                              : selected.size > 0
+                                ? 'flex bg-white/90 backdrop-blur-xs border-zinc-300 opacity-100 sm:opacity-0 sm:group-hover:opacity-100'
+                                : 'hidden sm:flex bg-white/90 backdrop-blur-xs border-zinc-300 opacity-0 group-hover:opacity-100'
                           }`}
                         >
                           {isSel && <Check className="h-3.5 w-3.5" />}
                         </button>
 
-                        {/* Top-right quick actions */}
+                        {/* Top-right quick actions (desktop hover; mobile uses compact footer + sheet) */}
                         <div
                           onClick={(e) => e.stopPropagation()}
-                          className="absolute top-2.5 right-2.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                          className="hidden sm:flex absolute top-2.5 right-2.5 items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
                         >
                           <Tooltip content="复制直链">
                             <button
@@ -683,13 +687,49 @@ export default function StoragePage() {
                           </Tooltip>
                         </div>
 
-                        {/* Bottom overlay metadata */}
-                        <div className="absolute inset-x-0 bottom-0 bg-white/90 backdrop-blur-xs border-t border-zinc-200/60 px-3 py-2 text-zinc-700 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-between gap-2">
+                        {/* Bottom overlay metadata (desktop hover only) */}
+                        <div className="hidden sm:flex absolute inset-x-0 bottom-0 bg-white/90 backdrop-blur-xs border-t border-zinc-200/60 px-3 py-2 text-zinc-700 opacity-0 group-hover:opacity-100 transition-opacity items-center justify-between gap-2">
                           <span className="text-xs font-medium truncate">{file.name}</span>
                           <span className="text-[11px] text-zinc-500 shrink-0 inline-flex items-center gap-1 tabular-nums">
                             {file.metadata_stripped && <ShieldCheck className="h-3 w-3 text-emerald-500" />}
                             {formatBytes(file.size)}
                           </span>
+                        </div>
+
+                        {/* Mobile-only static footer strip (always reachable without hover) */}
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          className="sm:hidden flex items-center justify-between gap-1 border-t border-zinc-100 bg-white px-2 py-1.5"
+                        >
+                          <span className="min-w-0 truncate text-[11px] font-medium text-zinc-700">
+                            {file.name}
+                          </span>
+                          <div className="flex items-center gap-0.5 shrink-0">
+                            <button
+                              type="button"
+                              aria-label="复制直链"
+                              onClick={() => void copyLink(file.url)}
+                              className={`inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors ${
+                                copiedUrl === file.url
+                                  ? 'text-emerald-600 bg-emerald-50'
+                                  : 'text-zinc-500 active:bg-zinc-100'
+                              }`}
+                            >
+                              {copiedUrl === file.url ? (
+                                <Check className="h-3.5 w-3.5" />
+                              ) : (
+                                <Link2 className="h-3.5 w-3.5" />
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              aria-label="更多文件操作"
+                              onClick={() => setMobileActionFile(file)}
+                              className="inline-flex h-6 w-6 items-center justify-center rounded-md text-zinc-500 active:bg-zinc-100"
+                            >
+                              <MoreHorizontal className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
                         </div>
                       </div>
                     );
@@ -708,7 +748,7 @@ export default function StoragePage() {
 
       {/* Floating Batch Selection Bar */}
       {selected.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 rounded-full border border-zinc-200/90 bg-white/95 backdrop-blur-md px-4 py-2 text-xs text-zinc-700 shadow-[0_8px_28px_rgba(15,23,42,0.1)]">
+        <div className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] sm:bottom-6 inset-x-3 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 z-30 flex flex-wrap sm:flex-nowrap items-center justify-between sm:justify-start gap-2 rounded-2xl sm:rounded-full border border-zinc-200/90 bg-white/95 backdrop-blur-md px-3.5 sm:px-4 py-2 text-xs text-zinc-700 shadow-[0_8px_28px_rgba(15,23,42,0.1)]">
           <span className="px-1.5 font-medium text-zinc-800 tabular-nums">已选 {selected.size} 项</span>
           <button
             type="button"
@@ -754,10 +794,112 @@ export default function StoragePage() {
         />
       )}
 
+      {/* Mobile File Action Sheet */}
+      {mobileActionFile && (
+        <div
+          onClick={() => setMobileActionFile(null)}
+          className="sm:hidden fixed inset-0 z-50 flex items-end bg-slate-900/25 backdrop-blur-[2px] yd-fade-in"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full rounded-t-2xl border-t border-zinc-200/90 bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl space-y-3"
+          >
+            <div className="flex items-start justify-between gap-3 pb-2 border-b border-zinc-100">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-zinc-900 break-all">
+                  {mobileActionFile.name}
+                </div>
+                <div className="mt-0.5 text-xs text-zinc-400 inline-flex items-center gap-1.5 tabular-nums">
+                  <span>{formatBytes(mobileActionFile.size)}</span>
+                  {mobileActionFile.metadata_stripped && (
+                    <span className="inline-flex items-center gap-0.5 text-emerald-600">
+                      <ShieldCheck className="h-3 w-3" />
+                      已清除 EXIF
+                    </span>
+                  )}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMobileActionFile(null)}
+                className="yd-btn-icon shrink-0"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-1">
+              <button
+                type="button"
+                onClick={() => {
+                  const target = mobileActionFile;
+                  setMobileActionFile(null);
+                  void copyLink(target.url);
+                }}
+                className="w-full flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm text-zinc-700 active:bg-zinc-100"
+              >
+                <Link2 className="h-4 w-4 text-zinc-400" />
+                复制直链
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const target = mobileActionFile;
+                  setMobileActionFile(null);
+                  toggleSelect({ type: 'file', path: target.key });
+                }}
+                className="w-full flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm text-zinc-700 active:bg-zinc-100"
+              >
+                <Check className="h-4 w-4 text-sky-500" />
+                {selected.has(`file:${mobileActionFile.key}`) ? '取消选择' : '加入多选'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const target = mobileActionFile;
+                  setMobileActionFile(null);
+                  handleRename('file', target.key, target.name);
+                }}
+                className="w-full flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm text-zinc-700 active:bg-zinc-100"
+              >
+                <Pencil className="h-4 w-4 text-zinc-400" />
+                重命名
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const target = mobileActionFile;
+                  setMobileActionFile(null);
+                  if (window.confirm(`确定删除文件「${target.name}」吗？`)) {
+                    deleteMut.mutate([{ type: 'file', path: target.key }]);
+                  }
+                }}
+                className="w-full flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm text-red-600 active:bg-red-50"
+              >
+                <Trash2 className="h-4 w-4" />
+                删除文件
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Fullscreen Lightbox */}
       {activeLightbox && lightboxIdx !== null && (
         <div
           onClick={() => setLightboxIdx(null)}
+          onTouchStart={(e) => {
+            lightboxTouchXRef.current = e.touches[0]?.clientX ?? null;
+          }}
+          onTouchEnd={(e) => {
+            const startX = lightboxTouchXRef.current;
+            lightboxTouchXRef.current = null;
+            if (startX === null) return;
+            const endX = e.changedTouches[0]?.clientX ?? startX;
+            const dx = endX - startX;
+            if (dx > 50 && lightboxIdx > 0) setLightboxIdx(lightboxIdx - 1);
+            else if (dx < -50 && lightboxIdx < imageFiles.length - 1) setLightboxIdx(lightboxIdx + 1);
+          }}
           className="fixed inset-0 z-50 bg-white/85 backdrop-blur-md flex flex-col items-center justify-center p-4"
         >
           <button
@@ -775,9 +917,9 @@ export default function StoragePage() {
                 e.stopPropagation();
                 setLightboxIdx(lightboxIdx - 1);
               }}
-              className="absolute left-4 rounded-full border border-zinc-200 bg-white p-2.5 text-zinc-600 shadow-xs hover:bg-zinc-50 hover:text-zinc-900 transition-colors"
+              className="absolute left-2 sm:left-4 rounded-full border border-zinc-200 bg-white p-1.5 sm:p-2.5 text-zinc-600 shadow-xs hover:bg-zinc-50 hover:text-zinc-900 transition-colors"
             >
-              <ChevronLeft className="h-6 w-6" />
+              <ChevronLeft className="h-5 w-5 sm:h-6 sm:w-6" />
             </button>
           )}
           {lightboxIdx < imageFiles.length - 1 && (
@@ -787,9 +929,9 @@ export default function StoragePage() {
                 e.stopPropagation();
                 setLightboxIdx(lightboxIdx + 1);
               }}
-              className="absolute right-4 rounded-full border border-zinc-200 bg-white p-2.5 text-zinc-600 shadow-xs hover:bg-zinc-50 hover:text-zinc-900 transition-colors"
+              className="absolute right-2 sm:right-4 rounded-full border border-zinc-200 bg-white p-1.5 sm:p-2.5 text-zinc-600 shadow-xs hover:bg-zinc-50 hover:text-zinc-900 transition-colors"
             >
-              <ChevronRight className="h-6 w-6" />
+              <ChevronRight className="h-5 w-5 sm:h-6 sm:w-6" />
             </button>
           )}
 
@@ -797,14 +939,16 @@ export default function StoragePage() {
             src={activeLightbox.url}
             alt={activeLightbox.name}
             onClick={(e) => e.stopPropagation()}
-            className="max-h-[80vh] max-w-[90vw] object-contain rounded-xl border border-zinc-200/80 bg-white shadow-xl"
+            className="max-h-[76dvh] sm:max-h-[80vh] max-w-[92vw] sm:max-w-[90vw] object-contain rounded-xl border border-zinc-200/80 bg-white shadow-xl"
           />
 
           <div
             onClick={(e) => e.stopPropagation()}
-            className="mt-4 flex flex-wrap items-center gap-2.5 rounded-full border border-zinc-200/90 bg-white px-4 py-2 text-xs text-zinc-700 shadow-sm"
+            className="mt-4 max-w-full flex flex-wrap items-center justify-center gap-2.5 rounded-2xl sm:rounded-full border border-zinc-200/90 bg-white px-4 py-2 text-xs text-zinc-700 shadow-sm"
           >
-            <span className="font-medium text-zinc-800">{activeLightbox.name}</span>
+            <span className="font-medium text-zinc-800 truncate max-w-[55vw] sm:max-w-none">
+              {activeLightbox.name}
+            </span>
             <span className="text-zinc-400 tabular-nums">{formatBytes(activeLightbox.size)}</span>
             <button
               type="button"
@@ -863,11 +1007,11 @@ function MoveFolderModal({
   return (
     <div
       onClick={onClose}
-      className="fixed inset-0 z-50 bg-slate-900/15 backdrop-blur-[2px] flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 bg-slate-900/15 backdrop-blur-[2px] flex items-end sm:items-center justify-center p-0 sm:p-4"
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-md rounded-2xl border border-zinc-200/90 bg-white p-5 space-y-4 shadow-xl"
+        className="w-full max-w-md max-h-[90dvh] overflow-y-auto rounded-t-2xl sm:rounded-2xl border border-zinc-200/90 bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:p-5 space-y-4 shadow-xl"
       >
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold text-zinc-900">移动 {items.length} 个项目到...</h3>

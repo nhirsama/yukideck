@@ -66,10 +66,10 @@ export function OverviewBar({
       </div>
 
       {/* Metrics & Quick Controls Card */}
-      <div className="yd-card p-4">
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="yd-card p-3 sm:p-4">
+        <div className="grid grid-cols-2 gap-2.5 sm:gap-4 md:grid-cols-2 xl:grid-cols-4">
           {/* Total Asset */}
-          <div className="rounded-xl bg-[#f8fafc] p-3.5">
+          <div className="col-span-2 md:col-span-1 rounded-xl bg-[#f8fafc] p-3 sm:p-3.5">
             <div className="flex items-center justify-between text-xs text-zinc-500">
               <span>总资产价值</span>
               <span className="yd-badge yd-badge-neutral">{summary?.total_count ?? 0} 件</span>
@@ -83,8 +83,8 @@ export function OverviewBar({
           </div>
 
           {/* Period Cost */}
-          <div className="rounded-xl bg-[#f8fafc] p-3.5">
-            <div className="flex items-center justify-between gap-2 text-xs text-zinc-500">
+          <div className="col-span-1 rounded-xl bg-[#f8fafc] p-3 sm:p-3.5">
+            <div className="flex flex-wrap items-center justify-between gap-1.5 sm:gap-2 text-xs text-zinc-500">
               <span>持有成本</span>
               <div className="yd-segment text-[11px]">
                 {PERIODS.map((p) => (
@@ -92,7 +92,7 @@ export function OverviewBar({
                     key={p.key}
                     type="button"
                     onClick={() => onUpdateSettings({ cost_period: p.key })}
-                    className={`yd-segment-btn px-2 py-0.5 ${
+                    className={`yd-segment-btn px-1.5 sm:px-2 py-0.5 ${
                       settings.cost_period === p.key ? 'yd-segment-active' : 'yd-segment-idle'
                     }`}
                   >
@@ -101,19 +101,19 @@ export function OverviewBar({
                 ))}
               </div>
             </div>
-            <div className="mt-1.5 font-mono text-2xl font-semibold tracking-tight text-sky-600">
+            <div className="mt-1.5 font-mono text-lg sm:text-2xl font-semibold tracking-tight text-sky-600 truncate">
               {formatMoneyExact(periodCost, cur, hidden)}
             </div>
             <div className="mt-1 text-[11px] text-zinc-400">仅统计按时间计价物品</div>
           </div>
 
           {/* Net Spent & Recovery */}
-          <div className="rounded-xl bg-[#f8fafc] p-3.5">
+          <div className="col-span-1 rounded-xl bg-[#f8fafc] p-3 sm:p-3.5">
             <div className="text-xs text-zinc-500">实际净支出</div>
-            <div className="mt-1.5 font-mono text-2xl font-semibold tracking-tight text-zinc-900">
+            <div className="mt-1.5 font-mono text-lg sm:text-2xl font-semibold tracking-tight text-zinc-900 truncate">
               {formatMoney(summary?.net_spent ?? 0, cur, hidden)}
             </div>
-            <div className="mt-1 flex items-center gap-3 font-mono text-[11px] text-zinc-500">
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 sm:gap-3 font-mono text-[11px] text-zinc-500">
               <span>投入 {formatMoney(summary?.total_invested ?? 0, cur, hidden)}</span>
               <span className="text-emerald-600">
                 回收 {formatMoney(summary?.total_recovered ?? 0, cur, hidden)}
@@ -122,7 +122,7 @@ export function OverviewBar({
           </div>
 
           {/* Controls & Warranty Status */}
-          <div className="flex flex-col justify-between gap-2.5 rounded-xl bg-[#f8fafc] p-3.5">
+          <div className="col-span-2 md:col-span-1 flex flex-col justify-between gap-2.5 rounded-xl bg-[#f8fafc] p-3 sm:p-3.5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="yd-segment text-xs">
                 {CURRENCIES.map((c) => (

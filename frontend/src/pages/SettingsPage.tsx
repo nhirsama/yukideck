@@ -161,7 +161,7 @@ function AboutPanel({
   );
 
   return (
-    <div className="yd-card p-6">
+    <div className="yd-card p-4 sm:p-6">
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
         <div className="space-y-1.5">
           <div className="text-xs text-zinc-400">应用版本</div>

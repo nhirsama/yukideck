@@ -206,7 +206,7 @@ export default function AIUsageSettingsPanel() {
   return (
     <div className="space-y-6">
       {/* 1. Devices */}
-      <section className="yd-card p-6 space-y-4">
+      <section className="yd-card p-4 sm:p-6 space-y-4">
         <div>
           <h2 className="text-[15px] font-semibold text-zinc-800">设备与探针</h2>
           <p className="text-[13px] text-zinc-500 mt-0.5">
@@ -218,24 +218,20 @@ export default function AIUsageSettingsPanel() {
         ) : devices.length === 0 ? (
           <div className="text-sm text-zinc-400">暂无已上报设备。</div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="yd-table">
-              <thead className="yd-thead">
-                <tr>
-                  <th className="py-2 pr-3 font-medium">设备名称</th>
-                  <th className="py-2 pr-3 font-medium">Device ID</th>
-                  <th className="py-2 pr-3 font-medium">系统 / 架构</th>
-                  <th className="py-2 pr-3 font-medium">探针版本</th>
-                  <th className="py-2 pr-3 font-medium">最近同步</th>
-                  <th className="py-2 text-right font-medium">操作</th>
-                </tr>
-              </thead>
-              <tbody className="yd-tbody tabular-nums">
-                {devices.map((d) => {
-                  const isEditing = editingDevice?.id === d.device_id;
-                  return (
-                    <tr key={d.device_id} className={`group ${d.hidden ? 'opacity-50' : ''}`}>
-                      <td className="py-2.5 pr-3">
+          <>
+            {/* Mobile Device Cards (< md) */}
+            <div className="md:hidden space-y-2.5">
+              {devices.map((d) => {
+                const isEditing = editingDevice?.id === d.device_id;
+                return (
+                  <div
+                    key={`m-${d.device_id}`}
+                    className={`rounded-xl border border-zinc-200/75 bg-[#fafcff] p-3.5 space-y-2.5 ${
+                      d.hidden ? 'opacity-60' : ''
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
                         {isEditing ? (
                           <input
                             autoFocus
@@ -253,66 +249,156 @@ export default function AIUsageSettingsPanel() {
                                 setEditingDevice(null);
                               }
                             }}
-                            className="yd-input-sm w-44"
+                            className="yd-input-sm w-full"
                           />
                         ) : (
-                          <div className="inline-flex items-center gap-1 max-w-[210px]">
-                            <span className="font-medium text-zinc-800 truncate">{d.name}</span>
-                            <Tooltip content="重命名设备">
+                          <div className="flex items-center gap-1 min-w-0">
+                            <span className="text-sm font-medium text-zinc-800 truncate">
+                              {d.name}
+                            </span>
+                            <button
+                              type="button"
+                              aria-label="重命名设备"
+                              onClick={() => {
+                                cancelEditRef.current = false;
+                                setEditingDevice({ id: d.device_id, value: d.name });
+                              }}
+                              className="yd-btn-icon p-1 shrink-0"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        )}
+                        <div className="font-mono text-[11px] text-zinc-400 break-all">
+                          {d.device_id}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => toggleDeviceHidden(d)}
+                          className="yd-btn-secondary py-1 text-xs"
+                        >
+                          {d.hidden ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                          {d.hidden ? '显示' : '隐藏'}
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="删除设备元信息"
+                          onClick={() => deleteDevMut.mutate(d.device_id)}
+                          className="yd-btn-danger-icon"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-500 tabular-nums">
+                      <span>系统：{[d.os, d.arch].filter(Boolean).join('/') || '-'}</span>
+                      <span className="font-mono">探针：{d.collector_version || '-'}</span>
+                      <span>同步：{formatDateTime(d.last_synced_at)}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Desktop Device Table (>= md, identical to original) */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="yd-table">
+                <thead className="yd-thead">
+                  <tr>
+                    <th className="py-2 pr-3 font-medium">设备名称</th>
+                    <th className="py-2 pr-3 font-medium">Device ID</th>
+                    <th className="py-2 pr-3 font-medium">系统 / 架构</th>
+                    <th className="py-2 pr-3 font-medium">探针版本</th>
+                    <th className="py-2 pr-3 font-medium">最近同步</th>
+                    <th className="py-2 text-right font-medium">操作</th>
+                  </tr>
+                </thead>
+                <tbody className="yd-tbody tabular-nums">
+                  {devices.map((d) => {
+                    const isEditing = editingDevice?.id === d.device_id;
+                    return (
+                      <tr key={d.device_id} className={`group ${d.hidden ? 'opacity-50' : ''}`}>
+                        <td className="py-2.5 pr-3">
+                          {isEditing ? (
+                            <input
+                              autoFocus
+                              value={editingDevice.value}
+                              onChange={(e) =>
+                                setEditingDevice({ id: d.device_id, value: e.target.value })
+                              }
+                              onBlur={() => commitDeviceRename(d)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  e.currentTarget.blur();
+                                } else if (e.key === 'Escape') {
+                                  cancelEditRef.current = true;
+                                  setEditingDevice(null);
+                                }
+                              }}
+                              className="yd-input-sm w-44"
+                            />
+                          ) : (
+                            <div className="inline-flex items-center gap-1 max-w-[210px]">
+                              <span className="font-medium text-zinc-800 truncate">{d.name}</span>
+                              <Tooltip content="重命名设备">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    cancelEditRef.current = false;
+                                    setEditingDevice({ id: d.device_id, value: d.name });
+                                  }}
+                                  className="yd-btn-icon p-1 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 focus:opacity-100 transition-opacity shrink-0"
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </button>
+                              </Tooltip>
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-2.5 pr-3 font-mono text-zinc-600">{d.device_id}</td>
+                        <td className="py-2.5 pr-3 text-zinc-600">
+                          {[d.os, d.arch].filter(Boolean).join('/') || '-'}
+                        </td>
+                        <td className="py-2.5 pr-3 font-mono text-zinc-600">{d.collector_version || '-'}</td>
+                        <td className="py-2.5 pr-3 text-zinc-500">{formatDateTime(d.last_synced_at)}</td>
+                        <td className="py-2.5 text-right whitespace-nowrap">
+                          <div className="inline-flex items-center gap-1">
+                            <Tooltip content={d.hidden ? '取消隐藏' : '隐藏设备'}>
                               <button
                                 type="button"
-                                onClick={() => {
-                                  cancelEditRef.current = false;
-                                  setEditingDevice({ id: d.device_id, value: d.name });
-                                }}
-                                className="yd-btn-icon p-1 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity shrink-0"
+                                onClick={() => toggleDeviceHidden(d)}
+                                className="yd-btn-secondary py-1"
                               >
-                                <Pencil className="h-3.5 w-3.5" />
+                                {d.hidden ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                                {d.hidden ? '显示' : '隐藏'}
+                              </button>
+                            </Tooltip>
+                            <Tooltip content="删除设备元信息">
+                              <button
+                                type="button"
+                                onClick={() => deleteDevMut.mutate(d.device_id)}
+                                className="yd-btn-danger-icon"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
                               </button>
                             </Tooltip>
                           </div>
-                        )}
-                      </td>
-                      <td className="py-2.5 pr-3 font-mono text-zinc-600">{d.device_id}</td>
-                      <td className="py-2.5 pr-3 text-zinc-600">
-                        {[d.os, d.arch].filter(Boolean).join('/') || '-'}
-                      </td>
-                      <td className="py-2.5 pr-3 font-mono text-zinc-600">{d.collector_version || '-'}</td>
-                      <td className="py-2.5 pr-3 text-zinc-500">{formatDateTime(d.last_synced_at)}</td>
-                      <td className="py-2.5 text-right whitespace-nowrap">
-                        <div className="inline-flex items-center gap-1">
-                          <Tooltip content={d.hidden ? '取消隐藏' : '隐藏设备'}>
-                            <button
-                              type="button"
-                              onClick={() => toggleDeviceHidden(d)}
-                              className="yd-btn-secondary py-1"
-                            >
-                              {d.hidden ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
-                              {d.hidden ? '显示' : '隐藏'}
-                            </button>
-                          </Tooltip>
-                          <Tooltip content="删除设备元信息">
-                            <button
-                              type="button"
-                              onClick={() => deleteDevMut.mutate(d.device_id)}
-                              className="yd-btn-danger-icon"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </Tooltip>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </section>
 
       {/* 2. Model Aliases */}
-      <section className="yd-card p-6 space-y-4">
+      <section className="yd-card p-4 sm:p-6 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 className="text-[15px] font-semibold text-zinc-800">模型别名规则</h2>
@@ -338,54 +424,96 @@ export default function AIUsageSettingsPanel() {
             暂无自定义别名规则（当前使用内置渠道前缀与日期后缀清洗）。
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="yd-table">
-              <thead className="yd-thead">
-                <tr>
-                  <th className="py-2 pr-3 font-medium">匹配模式</th>
-                  <th className="py-2 pr-3 font-medium">标准模型名</th>
-                  <th className="py-2 pr-3 font-medium">优先级</th>
-                  <th className="py-2 text-right font-medium">操作</th>
-                </tr>
-              </thead>
-              <tbody className="yd-tbody tabular-nums">
-                {aliases.map((a) => (
-                  <tr key={a.id}>
-                    <td className="py-2.5 pr-3 font-mono text-zinc-800">{a.match_pattern}</td>
-                    <td className="py-2.5 pr-3 font-mono text-zinc-800">{a.canonical_model}</td>
-                    <td className="py-2.5 pr-3 text-zinc-600">{a.priority}</td>
-                    <td className="py-2.5 text-right whitespace-nowrap">
-                      <div className="inline-flex items-center gap-1">
-                        <Tooltip content="编辑">
-                          <button
-                            type="button"
-                            onClick={() => openAliasModal(a)}
-                            className="yd-btn-icon"
-                          >
-                            <Pencil className="h-3.5 w-3.5" />
-                          </button>
-                        </Tooltip>
-                        <Tooltip content="删除">
-                          <button
-                            type="button"
-                            onClick={() => deleteAliasMut.mutate(a.id)}
-                            className="yd-btn-danger-icon"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </Tooltip>
-                      </div>
-                    </td>
+          <>
+            {/* Mobile Alias Cards (< md) */}
+            <div className="md:hidden space-y-2">
+              {aliases.map((a) => (
+                <div
+                  key={`m-alias-${a.id}`}
+                  className="rounded-xl border border-zinc-200/75 bg-[#fafcff] p-3 flex items-start justify-between gap-2"
+                >
+                  <div className="min-w-0 space-y-1">
+                    <div className="font-mono text-xs font-medium text-zinc-900 break-all">
+                      {a.match_pattern}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5 text-xs text-zinc-500">
+                      <span className="text-zinc-400">→</span>
+                      <span className="font-mono text-zinc-700 break-all">{a.canonical_model}</span>
+                      <span className="yd-badge yd-badge-neutral tabular-nums">优先级 {a.priority}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    <button
+                      type="button"
+                      aria-label="编辑"
+                      onClick={() => openAliasModal(a)}
+                      className="yd-btn-icon"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="删除"
+                      onClick={() => deleteAliasMut.mutate(a.id)}
+                      className="yd-btn-danger-icon"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Desktop Alias Table (>= md, identical to original) */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="yd-table">
+                <thead className="yd-thead">
+                  <tr>
+                    <th className="py-2 pr-3 font-medium">匹配模式</th>
+                    <th className="py-2 pr-3 font-medium">标准模型名</th>
+                    <th className="py-2 pr-3 font-medium">优先级</th>
+                    <th className="py-2 text-right font-medium">操作</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="yd-tbody tabular-nums">
+                  {aliases.map((a) => (
+                    <tr key={a.id}>
+                      <td className="py-2.5 pr-3 font-mono text-zinc-800">{a.match_pattern}</td>
+                      <td className="py-2.5 pr-3 font-mono text-zinc-800">{a.canonical_model}</td>
+                      <td className="py-2.5 pr-3 text-zinc-600">{a.priority}</td>
+                      <td className="py-2.5 text-right whitespace-nowrap">
+                        <div className="inline-flex items-center gap-1">
+                          <Tooltip content="编辑">
+                            <button
+                              type="button"
+                              onClick={() => openAliasModal(a)}
+                              className="yd-btn-icon"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                          </Tooltip>
+                          <Tooltip content="删除">
+                            <button
+                              type="button"
+                              onClick={() => deleteAliasMut.mutate(a.id)}
+                              className="yd-btn-danger-icon"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </Tooltip>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </section>
 
       {/* 3. Model Prices */}
-      <section className="yd-card p-6 space-y-4">
+      <section className="yd-card p-4 sm:p-6 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 className="text-[15px] font-semibold text-zinc-800">模型单价（USD / 1M Tokens）</h2>
@@ -415,62 +543,110 @@ export default function AIUsageSettingsPanel() {
         {loadingPrices ? (
           <LoadingState label="正在加载模块..." variant="compact" />
         ) : (
-          <div className="overflow-x-auto">
-            <table className="yd-table">
-              <thead className="yd-thead">
-                <tr>
-                  <th className="py-2 pr-3 font-medium">模型模式</th>
-                  <th className="py-2 pr-3 font-medium">Input</th>
-                  <th className="py-2 pr-3 font-medium">Output</th>
-                  <th className="py-2 pr-3 font-medium">Cache Read</th>
-                  <th className="py-2 pr-3 font-medium">Cache Write</th>
-                  <th className="py-2 pr-3 font-medium">Cache Write 1h</th>
-                  <th className="py-2 text-right font-medium">操作</th>
-                </tr>
-              </thead>
-              <tbody className="yd-tbody tabular-nums">
-                {customPrices.map((p) => (
-                  <tr key={`custom-${p.id}`}>
-                    <td className="py-2.5 pr-3 font-mono text-zinc-900">{p.model_pattern}</td>
-                    <td className="py-2.5 pr-3 text-zinc-700">${p.input_per_m}</td>
-                    <td className="py-2.5 pr-3 text-zinc-700">${p.output_per_m}</td>
-                    <td className="py-2.5 pr-3 text-zinc-700">${p.cache_read_per_m}</td>
-                    <td className="py-2.5 pr-3 text-zinc-700">${p.cache_write_per_m}</td>
-                    <td className="py-2.5 pr-3 text-zinc-700">${p.cache_write_1h_per_m}</td>
-                    <td className="py-2.5 text-right whitespace-nowrap">
-                      <div className="inline-flex items-center gap-1">
-                        <Tooltip content="编辑">
-                          <button
-                            type="button"
-                            onClick={() => openPriceModal(p, true)}
-                            className="yd-btn-icon"
-                          >
-                            <Pencil className="h-3.5 w-3.5" />
-                          </button>
-                        </Tooltip>
-                        <Tooltip content="删除">
-                          <button
-                            type="button"
-                            onClick={() => p.id && deletePriceMut.mutate(p.id)}
-                            className="yd-btn-danger-icon"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </Tooltip>
+          <>
+            {/* Mobile Custom Price Cards (< md) */}
+            <div className="md:hidden space-y-2.5">
+              {customPrices.length === 0 ? (
+                <div className="py-3 text-sm text-zinc-400">暂无自定义覆盖单价。</div>
+              ) : (
+                customPrices.map((p) => (
+                  <div
+                    key={`m-custom-${p.id}`}
+                    className="rounded-xl border border-zinc-200/75 bg-[#fafcff] p-3 space-y-2"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="font-mono text-xs font-medium text-zinc-900 break-all">
+                        {p.model_pattern}
+                      </span>
+                      <div className="flex items-center gap-0.5 shrink-0">
+                        <button
+                          type="button"
+                          aria-label="编辑"
+                          onClick={() => openPriceModal(p, true)}
+                          className="yd-btn-icon"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="删除"
+                          onClick={() => p.id && deletePriceMut.mutate(p.id)}
+                          className="yd-btn-danger-icon"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
                       </div>
-                    </td>
-                  </tr>
-                ))}
-                {customPrices.length === 0 && (
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-zinc-600 font-mono tabular-nums">
+                      <span>In: ${p.input_per_m}</span>
+                      <span>Out: ${p.output_per_m}</span>
+                      <span>C-Read: ${p.cache_read_per_m}</span>
+                      <span>C-Write: ${p.cache_write_per_m}</span>
+                      <span className="col-span-2">C-Write 1h: ${p.cache_write_1h_per_m}</span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Desktop Custom Price Table (>= md, identical to original) */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="yd-table">
+                <thead className="yd-thead">
                   <tr>
-                    <td colSpan={7} className="py-4 text-zinc-400">
-                      暂无自定义覆盖单价。
-                    </td>
+                    <th className="py-2 pr-3 font-medium">模型模式</th>
+                    <th className="py-2 pr-3 font-medium">Input</th>
+                    <th className="py-2 pr-3 font-medium">Output</th>
+                    <th className="py-2 pr-3 font-medium">Cache Read</th>
+                    <th className="py-2 pr-3 font-medium">Cache Write</th>
+                    <th className="py-2 pr-3 font-medium">Cache Write 1h</th>
+                    <th className="py-2 text-right font-medium">操作</th>
                   </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="yd-tbody tabular-nums">
+                  {customPrices.map((p) => (
+                    <tr key={`custom-${p.id}`}>
+                      <td className="py-2.5 pr-3 font-mono text-zinc-900">{p.model_pattern}</td>
+                      <td className="py-2.5 pr-3 text-zinc-700">${p.input_per_m}</td>
+                      <td className="py-2.5 pr-3 text-zinc-700">${p.output_per_m}</td>
+                      <td className="py-2.5 pr-3 text-zinc-700">${p.cache_read_per_m}</td>
+                      <td className="py-2.5 pr-3 text-zinc-700">${p.cache_write_per_m}</td>
+                      <td className="py-2.5 pr-3 text-zinc-700">${p.cache_write_1h_per_m}</td>
+                      <td className="py-2.5 text-right whitespace-nowrap">
+                        <div className="inline-flex items-center gap-1">
+                          <Tooltip content="编辑">
+                            <button
+                              type="button"
+                              onClick={() => openPriceModal(p, true)}
+                              className="yd-btn-icon"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                          </Tooltip>
+                          <Tooltip content="删除">
+                            <button
+                              type="button"
+                              onClick={() => p.id && deletePriceMut.mutate(p.id)}
+                              className="yd-btn-danger-icon"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </Tooltip>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {customPrices.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="py-4 text-zinc-400">
+                        暂无自定义覆盖单价。
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
 
         {showBuiltinPrices && (
@@ -479,25 +655,25 @@ export default function AIUsageSettingsPanel() {
             <table className="yd-table text-zinc-600">
               <thead className="yd-thead">
                 <tr>
-                  <th className="py-1.5 pr-3 font-medium">模型模式</th>
-                  <th className="py-1.5 pr-3 font-medium">Input</th>
-                  <th className="py-1.5 pr-3 font-medium">Output</th>
-                  <th className="py-1.5 pr-3 font-medium">Cache Read</th>
-                  <th className="py-1.5 pr-3 font-medium">Cache Write</th>
-                  <th className="py-1.5 pr-3 font-medium">Cache Write 1h</th>
-                  <th className="py-1.5 text-right font-medium">操作</th>
+                  <th className="py-1.5 pr-3 font-medium whitespace-nowrap">模型模式</th>
+                  <th className="py-1.5 pr-3 font-medium whitespace-nowrap">Input</th>
+                  <th className="py-1.5 pr-3 font-medium whitespace-nowrap">Output</th>
+                  <th className="py-1.5 pr-3 font-medium whitespace-nowrap">Cache Read</th>
+                  <th className="py-1.5 pr-3 font-medium whitespace-nowrap">Cache Write</th>
+                  <th className="py-1.5 pr-3 font-medium whitespace-nowrap">Cache Write 1h</th>
+                  <th className="py-1.5 text-right font-medium whitespace-nowrap">操作</th>
                 </tr>
               </thead>
               <tbody className="yd-tbody tabular-nums">
                 {builtinPrices.map((p) => (
                   <tr key={`builtin-${p.model_pattern}`}>
-                    <td className="py-1.5 pr-3 font-mono">{p.model_pattern}</td>
-                    <td className="py-1.5 pr-3">${p.input_per_m}</td>
-                    <td className="py-1.5 pr-3">${p.output_per_m}</td>
-                    <td className="py-1.5 pr-3">${p.cache_read_per_m}</td>
-                    <td className="py-1.5 pr-3">${p.cache_write_per_m}</td>
-                    <td className="py-1.5 pr-3">${p.cache_write_1h_per_m}</td>
-                    <td className="py-1.5 text-right">
+                    <td className="py-1.5 pr-3 font-mono whitespace-nowrap">{p.model_pattern}</td>
+                    <td className="py-1.5 pr-3 whitespace-nowrap">${p.input_per_m}</td>
+                    <td className="py-1.5 pr-3 whitespace-nowrap">${p.output_per_m}</td>
+                    <td className="py-1.5 pr-3 whitespace-nowrap">${p.cache_read_per_m}</td>
+                    <td className="py-1.5 pr-3 whitespace-nowrap">${p.cache_write_per_m}</td>
+                    <td className="py-1.5 pr-3 whitespace-nowrap">${p.cache_write_1h_per_m}</td>
+                    <td className="py-1.5 text-right whitespace-nowrap">
                       <button
                         type="button"
                         onClick={() => openPriceModal(p, false)}
@@ -515,7 +691,7 @@ export default function AIUsageSettingsPanel() {
       </section>
 
       {/* 4. Collector quick reference */}
-      <section className="yd-card p-6 space-y-2.5 text-[13px] text-zinc-500">
+      <section className="yd-card p-4 sm:p-6 space-y-2.5 text-[13px] text-zinc-500">
         <h2 className="text-[15px] font-semibold text-zinc-800">探针接入</h2>
         <p>
           先在 API Keys 签发 <code className="yd-code">ai-usage:ingest</code> 密钥，然后在开发机执行：
@@ -530,15 +706,15 @@ yukideck-collector sync --all`}
       {/* Alias Config Modal */}
       {aliasModalOpen && (
         <div
-          className="fixed inset-0 z-50 bg-slate-900/20 backdrop-blur-[2px] flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-slate-900/20 backdrop-blur-[2px] flex items-end sm:items-center justify-center p-0 sm:p-4"
           onClick={() => setAliasModalOpen(false)}
         >
           <form
             onSubmit={handleAliasSubmit}
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-md rounded-2xl border border-zinc-200/80 bg-white shadow-2xl overflow-hidden"
+            className="w-full max-w-md max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] flex flex-col rounded-t-2xl sm:rounded-2xl border border-zinc-200/80 bg-white shadow-2xl overflow-hidden"
           >
-            <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-100">
+            <div className="flex shrink-0 items-center justify-between px-4 sm:px-5 py-3.5 sm:py-4 border-b border-zinc-100">
               <h3 className="text-sm font-semibold text-zinc-900">
                 {aliasEditing ? '编辑模型别名规则' : '添加模型别名规则'}
               </h3>
@@ -551,7 +727,7 @@ yukideck-collector sync --all`}
               </button>
             </div>
 
-            <div className="p-5 space-y-4">
+            <div className="p-4 sm:p-5 space-y-4 overflow-y-auto">
               <label className="block space-y-1.5">
                 <span className="yd-label">匹配模式</span>
                 <input
@@ -592,7 +768,7 @@ yukideck-collector sync --all`}
               </label>
             </div>
 
-            <div className="flex justify-end gap-2 px-5 py-3.5 border-t border-zinc-100 bg-zinc-50/50">
+            <div className="flex shrink-0 justify-end gap-2 px-4 sm:px-5 py-3.5 pb-[max(0.875rem,env(safe-area-inset-bottom))] sm:pb-3.5 border-t border-zinc-100 bg-zinc-50/50">
               <button
                 type="button"
                 onClick={() => setAliasModalOpen(false)}
@@ -615,15 +791,15 @@ yukideck-collector sync --all`}
       {/* Price Config Modal */}
       {priceModalOpen && (
         <div
-          className="fixed inset-0 z-50 bg-slate-900/20 backdrop-blur-[2px] flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-slate-900/20 backdrop-blur-[2px] flex items-end sm:items-center justify-center p-0 sm:p-4"
           onClick={() => setPriceModalOpen(false)}
         >
           <form
             onSubmit={handlePriceSubmit}
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-lg rounded-2xl border border-zinc-200/80 bg-white shadow-2xl overflow-hidden"
+            className="w-full max-w-lg max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] flex flex-col rounded-t-2xl sm:rounded-2xl border border-zinc-200/80 bg-white shadow-2xl overflow-hidden"
           >
-            <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-100">
+            <div className="flex shrink-0 items-center justify-between px-4 sm:px-5 py-3.5 sm:py-4 border-b border-zinc-100">
               <h3 className="text-sm font-semibold text-zinc-900">
                 {priceEditing ? '编辑模型单价' : '添加模型单价'}
               </h3>
@@ -636,7 +812,7 @@ yukideck-collector sync --all`}
               </button>
             </div>
 
-            <div className="p-5 space-y-4">
+            <div className="p-4 sm:p-5 space-y-4 overflow-y-auto">
               <label className="block space-y-1.5">
                 <span className="yd-label">模型模式</span>
                 <input
@@ -711,7 +887,7 @@ yukideck-collector sync --all`}
               </div>
             </div>
 
-            <div className="flex justify-end gap-2 px-5 py-3.5 border-t border-zinc-100 bg-zinc-50/50">
+            <div className="flex shrink-0 justify-end gap-2 px-4 sm:px-5 py-3.5 pb-[max(0.875rem,env(safe-area-inset-bottom))] sm:pb-3.5 border-t border-zinc-100 bg-zinc-50/50">
               <button
                 type="button"
                 onClick={() => setPriceModalOpen(false)}

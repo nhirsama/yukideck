@@ -135,7 +135,7 @@ export function InfoTooltip({
               bottom: coords?.bottom,
               visibility: coords ? 'visible' : 'hidden',
             }}
-            className="z-[70] max-w-[360px] rounded-xl border border-zinc-200/90 bg-white px-3.5 py-2.5 text-xs leading-relaxed text-zinc-700 shadow-[0_8px_24px_rgba(15,23,42,0.10)]"
+            className="z-[70] max-w-[min(360px,calc(100vw-20px))] rounded-xl border border-zinc-200/90 bg-white px-3.5 py-2.5 text-xs leading-relaxed text-zinc-700 shadow-[0_8px_24px_rgba(15,23,42,0.10)]"
           >
             {content}
           </div>,

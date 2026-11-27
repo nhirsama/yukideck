@@ -196,7 +196,7 @@ export function APIKeysPanel() {
       {/* Toolbar (Cloudflare DNS style) */}
       <div className="space-y-2.5">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="relative flex-1 min-w-[220px] max-w-sm">
+          <div className="relative w-full sm:w-auto sm:flex-1 sm:min-w-[220px] sm:max-w-sm">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
             <input
               type="text"
@@ -261,14 +261,14 @@ export function APIKeysPanel() {
               <X className="h-3.5 w-3.5" />
             </button>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
             <code className="flex-1 rounded-lg bg-white border border-emerald-200/80 px-3 py-2 font-mono text-xs text-zinc-800 break-all select-all">
               {revealedKey.key}
             </code>
             <button
               type="button"
               onClick={() => void copyRevealed()}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-600 transition-colors shrink-0"
+              className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-600 transition-colors shrink-0"
             >
               {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
               {copied ? '已复制' : '复制密钥'}
@@ -342,9 +342,18 @@ export function APIKeysPanel() {
                   >
                     {/* Name & Prefix */}
                     <div className="min-w-0 space-y-1">
-                      <div className="flex items-center gap-2 min-w-0">
+                      <div className="flex items-center justify-between md:justify-start gap-2 min-w-0">
                         <span className="text-[13px] font-medium text-zinc-900 truncate">
                           {item.name}
+                        </span>
+                        <span className="md:hidden shrink-0">
+                          {!item.enabled ? (
+                            <span className="yd-badge yd-badge-amber">已停用</span>
+                          ) : isExpired ? (
+                            <span className="yd-badge yd-badge-red">已过期</span>
+                          ) : (
+                            <span className="yd-badge yd-badge-emerald">启用中</span>
+                          )}
                         </span>
                       </div>
                       <div className="font-mono text-[11px] text-zinc-400">
@@ -376,8 +385,8 @@ export function APIKeysPanel() {
                       })}
                     </div>
 
-                    {/* Status */}
-                    <div className="flex items-center gap-1.5">
+                    {/* Status (desktop column; mobile shows inline next to name) */}
+                    <div className="hidden md:flex items-center gap-1.5">
                       {!item.enabled ? (
                         <span className="yd-badge yd-badge-amber">已停用</span>
                       ) : isExpired ? (

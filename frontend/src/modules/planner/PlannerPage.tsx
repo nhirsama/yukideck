@@ -309,7 +309,7 @@ export default function PlannerPage() {
           </form>
 
           {/* Filter pills */}
-          <div className="yd-segment">
+          <div className="yd-segment-scroll">
             {(
               [
                 ['pending', '全部'],
@@ -350,7 +350,7 @@ export default function PlannerPage() {
                 return (
                   <div
                     key={it.id}
-                    className={`group yd-card p-4 flex items-start justify-between gap-4 transition-colors hover:border-zinc-300 ${
+                    className={`group yd-card p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-start justify-between gap-2.5 sm:gap-4 transition-colors hover:border-zinc-300 ${
                       overdue && !it.paused ? 'border-red-200/80' : ''
                     }`}
                   >
@@ -435,7 +435,7 @@ export default function PlannerPage() {
                     </div>
 
                     {/* Right action bar: [Check] [Bell?] [Pause/Resume?] [Edit?] [More...] */}
-                    <div className="flex items-center gap-0.5 shrink-0">
+                    <div className="flex items-center justify-end sm:justify-start gap-0.5 shrink-0 pt-2 border-t border-zinc-100 sm:pt-0 sm:border-0">
                       {!isDone && (
                         <Tooltip
                           content={
@@ -597,7 +597,7 @@ export default function PlannerPage() {
 
       {/* TAB 2: FullCalendar with Solar + Lunar Display */}
       {tab === 'calendar' && (
-        <div className="yd-card p-5">
+        <div className="yd-card p-3 sm:p-5 overflow-x-auto">
           <FullCalendar
             plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
             initialView="dayGridMonth"
@@ -621,7 +621,7 @@ export default function PlannerPage() {
             dayCellContent={(arg) => {
               const lunar = getLunarDayBadge(arg.date);
               return (
-                <div className="w-full flex items-center justify-between gap-1">
+                <div className="w-full flex flex-col sm:flex-row items-center justify-between gap-0.5 sm:gap-1">
                   <span
                     className={`text-xs tabular-nums ${
                       arg.isToday
@@ -633,7 +633,7 @@ export default function PlannerPage() {
                   </span>
                   {lunar.text && (
                     <span
-                      className={`text-[10px] ${
+                      className={`text-[9px] sm:text-[10px] leading-tight truncate max-w-full ${
                         lunar.highlight ? 'text-sky-600 font-medium' : 'text-zinc-400'
                       }`}
                     >
@@ -658,7 +658,7 @@ export default function PlannerPage() {
       {/* TAB 3: Push & Diagnostic Logs */}
       {tab === 'logs' && (
         <div className="space-y-4">
-          <div className="yd-segment">
+          <div className="yd-segment-scroll">
             {(
               [
                 ['', '全部'],
@@ -696,7 +696,7 @@ export default function PlannerPage() {
                   return (
                     <div
                       key={log.id}
-                      className="px-4 py-3 flex items-start justify-between gap-4 text-xs"
+                      className="px-3.5 sm:px-4 py-3 flex flex-col sm:flex-row sm:items-start justify-between gap-1.5 sm:gap-4 text-xs"
                     >
                       <div className="min-w-0 space-y-1">
                         <div className="flex flex-wrap items-center gap-1.5">

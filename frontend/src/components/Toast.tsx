@@ -82,7 +82,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         createPortal(
           <div
             aria-live="polite"
-            className="fixed top-5 right-5 z-[60] pointer-events-none flex flex-col items-end gap-2 max-w-[calc(100vw-2.5rem)]"
+            className="fixed top-[4.25rem] left-3 right-3 sm:left-auto sm:right-5 lg:top-5 z-[60] pointer-events-none flex flex-col items-end gap-2 max-w-[calc(100vw-1.5rem)] sm:max-w-[calc(100vw-2.5rem)]"
           >
             {progressEntries.map(([key, text]) => (
               <div

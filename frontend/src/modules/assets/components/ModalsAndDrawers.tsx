@@ -94,7 +94,7 @@ export function RetireModal({
   return (
     <div
       onClick={onClose}
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/15 p-4 backdrop-blur-[2px]"
+      className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-slate-900/15 p-0 sm:p-4 backdrop-blur-[2px]"
     >
       <form
         onClick={(e) => e.stopPropagation()}
@@ -108,17 +108,17 @@ export function RetireModal({
             retire_note: note.trim(),
           });
         }}
-        className="flex w-full max-w-md flex-col overflow-hidden rounded-2xl border border-zinc-200/90 bg-white shadow-xl"
+        className="flex max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] w-full max-w-md flex-col overflow-hidden rounded-t-2xl sm:rounded-2xl border border-zinc-200/90 bg-white shadow-xl"
       >
-        <div className="flex items-center justify-between border-b border-zinc-100 px-6 py-4">
+        <div className="flex shrink-0 items-center justify-between border-b border-zinc-100 px-4 sm:px-6 py-3.5 sm:py-4">
           <h3 className="text-sm font-semibold text-zinc-900">{title}</h3>
           <button type="button" onClick={onClose} className="yd-btn-icon">
             <X className="h-4 w-4" />
           </button>
         </div>
 
-        <div className="space-y-4 p-6">
-          <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-4 overflow-y-auto p-4 sm:p-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="block space-y-1.5">
               <span className="yd-label">退役日期</span>
               <input
@@ -183,7 +183,7 @@ export function RetireModal({
           </label>
         </div>
 
-        <div className="flex justify-end gap-2 border-t border-zinc-100 bg-zinc-50/50 px-6 py-3.5">
+        <div className="flex shrink-0 justify-end gap-2 border-t border-zinc-100 bg-zinc-50/50 px-4 sm:px-6 py-3.5 pb-[max(0.875rem,env(safe-area-inset-bottom))] sm:pb-3.5">
           <button type="button" onClick={onClose} className="yd-btn-secondary">
             取消
           </button>
@@ -503,16 +503,16 @@ export function ItemModal({
     <>
       <div
         onClick={onClose}
-        className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/15 p-4 backdrop-blur-[2px]"
+        className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/15 p-0 sm:p-4 backdrop-blur-[2px]"
       >
         <div
           onClick={(e) => e.stopPropagation()}
-          className={`flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden rounded-2xl border border-zinc-200/90 bg-white shadow-xl transition-all ${
+          className={`flex max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] w-full flex-col overflow-hidden rounded-t-2xl sm:rounded-2xl border border-zinc-200/90 bg-white shadow-xl transition-all ${
             showMore || isEdit ? 'max-w-2xl' : 'max-w-xl'
           }`}
         >
           {/* Header */}
-          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-zinc-100 px-6 py-4">
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-zinc-100 px-4 sm:px-6 py-3.5 sm:py-4">
             <div className="flex min-w-0 items-center gap-2.5">
               {isEdit && (
                 <AssetVisual icon={icon} imageUrl={imageUrl} name={name || '物品'} size="sm" />
@@ -522,7 +522,7 @@ export function ItemModal({
                   {isEdit ? detail?.item.name || '编辑物品' : '新建物品'}
                 </h3>
                 {isEdit && detail?.item && (
-                  <p className="font-mono text-[11px] text-zinc-400">
+                  <p className="hidden sm:block font-mono text-[11px] text-zinc-400">
                     投入 {formatMoney(detail.item.total_invested, defaultCurrency, hideAmounts)} ·
                     回收 {formatMoney(detail.item.total_recovered, defaultCurrency, hideAmounts)} ·
                     净支出 {formatMoney(detail.item.net_spent, defaultCurrency, hideAmounts)}
@@ -576,11 +576,18 @@ export function ItemModal({
           </div>
 
           {/* Body */}
-          <div className="flex-1 space-y-5 overflow-y-auto p-6">
+          <div className="flex-1 space-y-5 overflow-y-auto p-4 sm:p-6">
             {isEdit && isLoading ? (
               <LoadingState label="正在加载模块..." variant="compact" />
             ) : (
               <>
+                {isEdit && detail?.item && (
+                  <div className="sm:hidden flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-lg bg-[#f8fafc] px-3 py-2 font-mono text-[11px] text-zinc-500">
+                    <span>投入 {formatMoney(detail.item.total_invested, defaultCurrency, hideAmounts)}</span>
+                    <span>回收 {formatMoney(detail.item.total_recovered, defaultCurrency, hideAmounts)}</span>
+                    <span>净支出 {formatMoney(detail.item.net_spent, defaultCurrency, hideAmounts)}</span>
+                  </div>
+                )}
                 {errMsg && <div className="yd-notice-error">{errMsg}</div>}
 
                 {/* Retired Banner */}
@@ -1170,7 +1177,7 @@ export function ItemModal({
           </div>
 
           {/* Footer */}
-          <div className="flex shrink-0 items-center justify-end gap-2 border-t border-zinc-100 bg-zinc-50/50 px-6 py-3.5">
+          <div className="flex shrink-0 items-center justify-end gap-2 border-t border-zinc-100 bg-zinc-50/50 px-4 sm:px-6 py-3.5 pb-[max(0.875rem,env(safe-area-inset-bottom))] sm:pb-3.5">
             <button type="button" onClick={onClose} className="yd-btn-secondary">
               取消
             </button>
@@ -1347,20 +1354,20 @@ export function MetaManagerModal({
   return (
     <div
       onClick={onClose}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/15 p-4 backdrop-blur-[2px]"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/15 p-0 sm:p-4 backdrop-blur-[2px]"
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-zinc-200/90 bg-white shadow-xl"
+        className="flex max-h-[92dvh] sm:max-h-[85vh] w-full max-w-xl flex-col overflow-hidden rounded-t-2xl sm:rounded-2xl border border-zinc-200/90 bg-white shadow-xl"
       >
-        <div className="flex items-center justify-between border-b border-zinc-100 px-6 py-4">
+        <div className="flex shrink-0 items-center justify-between border-b border-zinc-100 px-4 sm:px-6 py-3.5 sm:py-4">
           <h3 className="text-sm font-semibold text-zinc-900">分类与属性管理</h3>
           <button type="button" onClick={onClose} className="yd-btn-icon">
             <X className="h-4 w-4" />
           </button>
         </div>
 
-        <div className="yd-tabs px-6">
+        <div className="yd-tabs shrink-0 px-4 sm:px-6">
           {(
             [
               ['categories', `两级分类 (${categories.length})`],
@@ -1383,7 +1390,7 @@ export function MetaManagerModal({
           ))}
         </div>
 
-        <div className="flex-1 space-y-4 overflow-y-auto p-6">
+        <div className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-6 pb-[max(1rem,env(safe-area-inset-bottom))] sm:pb-6">
           {errMsg && <div className="yd-notice-error">{errMsg}</div>}
 
           {/* Categories Tab */}

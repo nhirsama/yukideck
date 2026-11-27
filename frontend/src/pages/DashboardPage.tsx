@@ -28,8 +28,8 @@ export function DashboardPage() {
       <h1 className="yd-page-title">工作台</h1>
 
       {/* Platform Core Summary */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <Link to="/messenger" className="yd-card-interactive p-5 block">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
+        <Link to="/messenger" className="yd-card-interactive p-4 sm:p-5 block">
           <div className="flex items-center justify-between text-zinc-500 text-xs">
             <span>消息渠道</span>
             <Bell className="h-3.5 w-3.5 text-zinc-400" />
@@ -49,7 +49,7 @@ export function DashboardPage() {
           </div>
         </Link>
 
-        <Link to="/messenger" className="yd-card-interactive p-5 block">
+        <Link to="/messenger" className="yd-card-interactive p-4 sm:p-5 block">
           <div className="flex items-center justify-between text-zinc-500 text-xs">
             <span>推送终结点</span>
             <Link2 className="h-3.5 w-3.5 text-zinc-400" />
@@ -62,7 +62,7 @@ export function DashboardPage() {
           </div>
         </Link>
 
-        <div className="yd-card p-5">
+        <div className="yd-card p-4 sm:p-5">
           <div className="flex items-center justify-between text-zinc-500 text-xs">
             <span>已启用模块</span>
             <Puzzle className="h-3.5 w-3.5 text-zinc-400" />
@@ -89,14 +89,14 @@ export function DashboardPage() {
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
             {modules.map((mod) => {
               const Icon = mod.icon;
               return (
                 <Link
                   key={mod.id}
                   to={mod.basePath}
-                  className="group yd-card-interactive p-5 flex flex-col justify-between"
+                  className="group yd-card-interactive p-4 sm:p-5 flex flex-col justify-between"
                 >
                   <div>
                     <div className="flex items-center justify-between">

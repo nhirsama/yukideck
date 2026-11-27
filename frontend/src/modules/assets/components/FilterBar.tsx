@@ -182,7 +182,7 @@ export function FilterBar({
       {/* Row 1: Search + Sort + View Mode + Actions */}
       <div className="flex flex-wrap items-center gap-2">
         {/* Search box with history */}
-        <div ref={searchWrapRef} className="relative min-w-[200px] flex-1">
+        <div ref={searchWrapRef} className="relative w-full sm:w-auto sm:min-w-[200px] sm:flex-1">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
           <input
             type="text"
@@ -283,7 +283,7 @@ export function FilterBar({
         </div>
 
         {/* View switcher */}
-        <div className="yd-segment text-xs">
+        <div className="yd-segment-scroll text-xs">
           <button
             type="button"
             onClick={() => onChangeView('card')}
@@ -366,7 +366,7 @@ export function FilterBar({
           />
         )}
 
-        <div className="yd-segment text-xs">
+        <div className="yd-segment-scroll text-xs">
           {(
             [
               ['', '全部状态'],
@@ -451,7 +451,7 @@ export function FilterBar({
 
             {/* Daily cost range */}
             <div className="space-y-1">
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-1.5 sm:gap-2">
                 <span className="font-medium text-zinc-600">日均价格区间</span>
                 <div className="flex gap-1 text-[11px]">
                   {[
@@ -496,7 +496,7 @@ export function FilterBar({
 
             {/* Purchase date range */}
             <div className="space-y-1">
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-1.5 sm:gap-2">
                 <span className="font-medium text-zinc-600">购买日期区间</span>
                 <div className="flex gap-1 text-[11px]">
                   {[

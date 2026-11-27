@@ -268,14 +268,14 @@ export function ItemModal({
   return (
     <div
       onClick={onClose}
-      className="fixed inset-0 z-50 bg-slate-900/15 backdrop-blur-[2px] flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 bg-slate-900/15 backdrop-blur-[2px] flex items-end sm:items-center justify-center p-0 sm:p-4"
     >
       <form
         onClick={(e) => e.stopPropagation()}
         onSubmit={handleSubmit}
-        className="w-full max-w-xl max-h-[calc(100vh-2rem)] flex flex-col rounded-2xl border border-zinc-200/90 bg-white shadow-xl overflow-hidden"
+        className="w-full max-w-xl max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] flex flex-col rounded-t-2xl sm:rounded-2xl border border-zinc-200/90 bg-white shadow-xl overflow-hidden"
       >
-        <div className="px-6 py-4 border-b border-zinc-100 flex items-center justify-between shrink-0">
+        <div className="px-4 sm:px-6 py-3.5 sm:py-4 border-b border-zinc-100 flex items-center justify-between shrink-0">
           <h3 className="text-sm font-semibold text-zinc-900">
             {isEditing ? '编辑事项' : '新建事项'}
           </h3>
@@ -284,7 +284,7 @@ export function ItemModal({
           </button>
         </div>
 
-        <div className="p-6 space-y-5 overflow-y-auto">
+        <div className="p-4 sm:p-6 space-y-5 overflow-y-auto">
           {error && <div className="yd-notice-error">{error}</div>}
 
           {/* Only Title is required */}
@@ -509,7 +509,7 @@ export function ItemModal({
           </div>
         </div>
 
-        <div className="px-6 py-3.5 border-t border-zinc-100 bg-zinc-50/50 flex justify-end gap-2 shrink-0">
+        <div className="px-4 sm:px-6 py-3.5 pb-[max(0.875rem,env(safe-area-inset-bottom))] sm:pb-3.5 border-t border-zinc-100 bg-zinc-50/50 flex justify-end gap-2 shrink-0">
           <button type="button" onClick={onClose} className="yd-btn-secondary">
             取消
           </button>

@@ -151,7 +151,7 @@ export function IconPicker({
 
   return (
     <div className="space-y-2">
-      <div className="grid max-h-40 grid-cols-8 gap-1 overflow-y-auto rounded-lg border border-zinc-200/80 bg-[#f8fafc] p-2">
+      <div className="grid max-h-40 grid-cols-6 sm:grid-cols-8 gap-1 overflow-y-auto rounded-lg border border-zinc-200/80 bg-[#f8fafc] p-2">
         {ICON_CATALOG.map(({ key, label, icon: Icon }) => {
           const active = value === key;
           return (

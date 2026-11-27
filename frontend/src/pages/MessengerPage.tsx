@@ -172,7 +172,7 @@ function ChannelsSection() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-1.5 shrink-0">
+              <div className="flex items-center justify-end sm:justify-start gap-1.5 shrink-0 pt-2.5 border-t border-zinc-100 sm:pt-0 sm:border-0">
                 {ch.enable_outbound && (
                   <button
                     type="button"
@@ -269,7 +269,7 @@ function ChannelForm({
   };
 
   return (
-    <form onSubmit={handleSubmit} className="yd-card p-5 space-y-4">
+    <form onSubmit={handleSubmit} className="yd-card p-4 sm:p-5 space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium text-zinc-800">
           {initial ? '编辑渠道' : '新增渠道'}
@@ -502,11 +502,11 @@ function PushEndpointsSection() {
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[#f7f9fc] border border-zinc-200/65 px-3 py-2">
+                <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-2 rounded-lg bg-[#f7f9fc] border border-zinc-200/65 px-3 py-2">
                   <span className="font-mono text-xs text-zinc-600 break-all select-all">
                     {ep.push_url}
                   </span>
-                  <div className="flex items-center gap-1 shrink-0">
+                  <div className="flex items-center justify-end sm:justify-start gap-1 shrink-0 pt-1 border-t border-zinc-200/60 sm:pt-0 sm:border-0">
                     <button
                       type="button"
                       onClick={() => void copyText(`url-${ep.id}`, ep.push_url)}
@@ -598,7 +598,7 @@ function PushEndpointForm({
   };
 
   return (
-    <form onSubmit={handleSubmit} className="yd-card p-5 space-y-4">
+    <form onSubmit={handleSubmit} className="yd-card p-4 sm:p-5 space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium text-zinc-800">
           {initial ? '编辑推送终结点' : '新建推送终结点'}

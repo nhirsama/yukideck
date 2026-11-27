@@ -87,7 +87,7 @@ export default function StorageSettingsPanel() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="yd-card p-6 space-y-5">
+    <form onSubmit={handleSubmit} className="yd-card p-4 sm:p-6 space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 className="text-sm font-semibold text-zinc-800">对象存储（S3 / Cloudflare R2）</h2>
@@ -190,7 +190,7 @@ export default function StorageSettingsPanel() {
           />
         </label>
 
-        <label className="inline-flex items-center gap-2 text-xs text-zinc-700 pt-5 cursor-pointer">
+        <label className="inline-flex items-center gap-2 text-xs text-zinc-700 sm:pt-5 cursor-pointer">
           <input
             type="checkbox"
             checked={forcePathStyle}

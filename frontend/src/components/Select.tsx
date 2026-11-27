@@ -103,7 +103,7 @@ export function Select({
     const idx = filteredOptions.findIndex((o) => o.value === value);
     setActiveIdx(idx >= 0 ? idx : 0);
 
-    if (enableSearch) {
+    if (enableSearch && !window.matchMedia?.('(pointer: coarse)').matches) {
       requestAnimationFrame(() => searchRef.current?.focus());
     }
   }, [open, enableSearch]);
@@ -158,11 +158,13 @@ export function Select({
     document.addEventListener('keydown', onKeyDown);
     window.addEventListener('resize', onScrollOrResize);
     window.addEventListener('scroll', onScrollOrResize, true);
+    window.visualViewport?.addEventListener('resize', onScrollOrResize);
     return () => {
       document.removeEventListener('mousedown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('resize', onScrollOrResize);
       window.removeEventListener('scroll', onScrollOrResize, true);
+      window.visualViewport?.removeEventListener('resize', onScrollOrResize);
     };
   }, [open, filteredOptions, activeIdx, onChange]);
 

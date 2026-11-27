@@ -38,6 +38,7 @@ export interface LunarDateValue {
 
 interface PopoverCoords {
   left: number;
+  width: number;
   top?: number;
   bottom?: number;
 }
@@ -135,18 +136,18 @@ export function DateTimePicker({
     if (!btn) return;
     const rect = btn.getBoundingClientRect();
     const gap = 6;
-    const popWidth = 312;
-    const popHeight = 356;
     const viewportW = window.innerWidth;
     const viewportH = window.innerHeight;
+    const popWidth = Math.min(312, viewportW - 16);
+    const popHeight = 356;
     const spaceBelow = viewportH - rect.bottom - gap - 10;
     const spaceAbove = rect.top - gap - 10;
     const openUpward = spaceBelow < popHeight && spaceAbove > spaceBelow;
     const left = Math.min(Math.max(8, rect.left), viewportW - popWidth - 8);
     if (openUpward) {
-      setCoords({ left, bottom: viewportH - rect.top + gap });
+      setCoords({ left, width: popWidth, bottom: viewportH - rect.top + gap });
     } else {
-      setCoords({ left, top: rect.bottom + gap });
+      setCoords({ left, width: popWidth, top: rect.bottom + gap });
     }
   };
 
@@ -423,7 +424,7 @@ export function DateTimePicker({
   return (
     <div className="space-y-1.5">
       <span className="yd-label">{calendarType === 'solar' ? '目标时间' : '目标时间（农历）'}</span>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
         <button
           ref={triggerRef}
           type="button"
@@ -444,7 +445,7 @@ export function DateTimePicker({
           value={time}
           onChange={(e) => onTimeChange(e.target.value)}
           aria-label="选择时刻"
-          className="yd-input w-[112px] shrink-0"
+          className="yd-input w-full sm:w-[112px] shrink-0"
         />
       </div>
 
@@ -465,9 +466,9 @@ export function DateTimePicker({
               left: coords.left,
               top: coords.top,
               bottom: coords.bottom,
-              width: 312,
+              width: coords.width,
             }}
-            className="z-[75] rounded-2xl border border-zinc-200/90 bg-white p-3 shadow-[0_12px_32px_rgba(15,23,42,0.12)] select-none"
+            className="z-[75] max-h-[calc(100dvh-16px)] overflow-y-auto rounded-2xl border border-zinc-200/90 bg-white p-3 shadow-[0_12px_32px_rgba(15,23,42,0.12)] select-none"
           >
             {/* Header */}
             <div className="flex items-center justify-between gap-1 pb-2.5 border-b border-zinc-100">

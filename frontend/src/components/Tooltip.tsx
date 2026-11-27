@@ -128,6 +128,9 @@ export function Tooltip({
       childProps['aria-label'] ?? (typeof content === 'string' ? content : undefined),
     onMouseEnter: (e: MouseEvent<HTMLElement>) => {
       childProps.onMouseEnter?.(e);
+      if (typeof window !== 'undefined' && window.matchMedia?.('(hover: none)').matches) {
+        return;
+      }
       triggerElRef.current = e.currentTarget;
       clearTimer();
       timerRef.current = window.setTimeout(() => {

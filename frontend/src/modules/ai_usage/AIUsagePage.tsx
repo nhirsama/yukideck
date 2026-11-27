@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { BarChart3, ChevronLeft, ChevronRight, Cpu, Layers, Settings, Terminal, X } from 'lucide-react';
@@ -6,6 +6,7 @@ import { InfoTooltip } from '@/components/InfoTooltip';
 import { LoadingState } from '@/components/LoadingState';
 import { Select } from '@/components/Select';
 import { Tooltip } from '@/components/Tooltip';
+import { isTouchPrimary } from '@/core/responsive';
 import { aiUsageApi, type BreakdownItem, type HeatmapDay } from './api';
 import {
   buildAxisScale,
@@ -57,6 +58,10 @@ export default function AIUsagePage() {
 
   const [page, setPage] = useState(1);
   const [selectedSession, setSelectedSession] = useState<{ sessionId: string; deviceId: string } | null>(null);
+  const [activeTrendBucket, setActiveTrendBucket] = useState<string | null>(null);
+  const [activeHeatmapDate, setActiveHeatmapDate] = useState<string | null>(null);
+  const [activeHourBucket, setActiveHourBucket] = useState<string | null>(null);
+  const heatmapScrollRef = useRef<HTMLDivElement>(null);
 
   const applyPreset = (p: RangePreset) => {
     setPreset(p);
@@ -262,6 +267,33 @@ export default function AIUsagePage() {
 
   const hasActiveFilters = Boolean(agent || model || deviceId || project);
 
+  useEffect(() => {
+    const el = heatmapScrollRef.current;
+    if (!el) return;
+    if (el.scrollWidth > el.clientWidth) {
+      el.scrollLeft = el.scrollWidth;
+    }
+  }, [heatmapGrid.length]);
+
+  const activeTrendPoint = useMemo(
+    () => (activeTrendBucket ? trendPoints.find((pt) => pt.bucket === activeTrendBucket) ?? null : null),
+    [activeTrendBucket, trendPoints],
+  );
+
+  const activeHeatmapCell = useMemo(() => {
+    if (!activeHeatmapDate) return null;
+    for (const week of heatmapGrid) {
+      const hit = week.find((c) => c.date === activeHeatmapDate);
+      if (hit) return hit;
+    }
+    return null;
+  }, [activeHeatmapDate, heatmapGrid]);
+
+  const activeHourItem = useMemo(
+    () => (activeHourBucket ? hourItems.find((h) => h.bucket === activeHourBucket) ?? null : null),
+    [activeHourBucket, hourItems],
+  );
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -276,7 +308,7 @@ export default function AIUsagePage() {
       {/* Filters */}
       <div className="yd-card p-3.5 space-y-2.5">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="yd-segment">
+          <div className="yd-segment-scroll">
             {(['7d', '30d', '90d', '365d'] as RangePreset[]).map((p) => (
               <button
                 key={p}
@@ -289,7 +321,7 @@ export default function AIUsagePage() {
             ))}
           </div>
 
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="grid w-full grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:flex sm:w-auto sm:flex-wrap items-center gap-1.5">
             <input
               type="date"
               value={startDate}
@@ -297,9 +329,9 @@ export default function AIUsagePage() {
                 setStartDate(e.target.value);
                 setPage(1);
               }}
-              className="yd-input-sm tabular-nums"
+              className="yd-input-sm w-full sm:w-auto min-w-0 tabular-nums"
             />
-            <span className="text-xs text-zinc-400">~</span>
+            <span className="text-xs text-zinc-400 text-center">~</span>
             <input
               type="date"
               value={endDate}
@@ -307,7 +339,7 @@ export default function AIUsagePage() {
                 setEndDate(e.target.value);
                 setPage(1);
               }}
-              className="yd-input-sm tabular-nums"
+              className="yd-input-sm w-full sm:w-auto min-w-0 tabular-nums"
             />
           </div>
         </div>
@@ -389,68 +421,68 @@ export default function AIUsagePage() {
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="yd-card p-4">
-          <div className="flex items-center justify-between text-[13px] text-zinc-500">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <div className="yd-card p-3.5 sm:p-4">
+          <div className="flex items-center justify-between text-xs sm:text-[13px] text-zinc-500">
             <span>总 Token 消耗</span>
-            <Layers className="h-4 w-4 text-zinc-400" />
+            <Layers className="h-4 w-4 text-zinc-400 shrink-0" />
           </div>
-          <div className="mt-2.5 font-mono text-[26px] leading-tight font-semibold tracking-tight text-zinc-900 tabular-nums">
+          <div className="mt-2 sm:mt-2.5 font-mono text-xl sm:text-[26px] leading-tight font-semibold tracking-tight text-zinc-900 tabular-nums">
             {loadingSummary ? '—' : formatTokens(summary?.tokens.total_tokens ?? 0)}
           </div>
-          <div className="mt-1.5 text-xs text-zinc-400 tabular-nums">
+          <div className="mt-1.5 text-[11px] sm:text-xs text-zinc-400 tabular-nums leading-relaxed">
             输入 {formatTokens(summary?.tokens.input_tokens ?? 0)} · 输出{' '}
             {formatTokens(summary?.tokens.output_tokens ?? 0)} · 缓存读{' '}
             {formatTokens(summary?.tokens.cache_read_tokens ?? 0)}
           </div>
         </div>
 
-        <div className="yd-card p-4">
-          <div className="flex items-center justify-between text-[13px] text-zinc-500">
+        <div className="yd-card p-3.5 sm:p-4">
+          <div className="flex items-center justify-between text-xs sm:text-[13px] text-zinc-500">
             <span>等效 API 费用</span>
-            <BarChart3 className="h-4 w-4 text-zinc-400" />
+            <BarChart3 className="h-4 w-4 text-zinc-400 shrink-0" />
           </div>
-          <div className="mt-2.5 font-mono text-[26px] leading-tight font-semibold tracking-tight text-zinc-900 tabular-nums">
+          <div className="mt-2 sm:mt-2.5 font-mono text-xl sm:text-[26px] leading-tight font-semibold tracking-tight text-zinc-900 tabular-nums">
             {loadingSummary ? '—' : formatUSD(summary?.cost_usd ?? 0)}
           </div>
-          <div className="mt-1.5 text-xs text-emerald-700 tabular-nums">
+          <div className="mt-1.5 text-[11px] sm:text-xs text-emerald-700 tabular-nums leading-relaxed">
             缓存命中率 {formatPercent(summary?.cache_hit_rate ?? 0)} · 节省{' '}
             {formatUSD(summary?.cache_savings_usd ?? 0)}
           </div>
         </div>
 
-        <div className="yd-card p-4">
-          <div className="flex items-center justify-between text-[13px] text-zinc-500">
+        <div className="yd-card p-3.5 sm:p-4">
+          <div className="flex items-center justify-between text-xs sm:text-[13px] text-zinc-500">
             <span>会话 / 请求轮次</span>
-            <Cpu className="h-4 w-4 text-zinc-400" />
+            <Cpu className="h-4 w-4 text-zinc-400 shrink-0" />
           </div>
-          <div className="mt-2.5 font-mono text-[26px] leading-tight font-semibold tracking-tight text-zinc-900 tabular-nums">
+          <div className="mt-2 sm:mt-2.5 font-mono text-xl sm:text-[26px] leading-tight font-semibold tracking-tight text-zinc-900 tabular-nums">
             {summary?.session_count ?? 0}
-            <span className="text-[13px] font-normal text-zinc-400 ml-1.5">
+            <span className="text-xs sm:text-[13px] font-normal text-zinc-400 ml-1 sm:ml-1.5">
               / {summary?.request_count ?? 0} 轮
             </span>
           </div>
-          <div className="mt-1.5 text-xs text-zinc-400 tabular-nums">
+          <div className="mt-1.5 text-[11px] sm:text-xs text-zinc-400 tabular-nums leading-relaxed">
             活跃 {summary?.active_days ?? 0} 天 · 子代理 {formatTokens(summary?.subagent_tokens ?? 0)}
           </div>
         </div>
 
-        <div className="yd-card p-4">
-          <div className="flex items-center justify-between text-[13px] text-zinc-500">
+        <div className="yd-card p-3.5 sm:p-4">
+          <div className="flex items-center justify-between text-xs sm:text-[13px] text-zinc-500">
             <span>工具调用 / 峰值上下文</span>
-            <Terminal className="h-4 w-4 text-zinc-400" />
+            <Terminal className="h-4 w-4 text-zinc-400 shrink-0" />
           </div>
-          <div className="mt-2.5 font-mono text-[26px] leading-tight font-semibold tracking-tight text-zinc-900 tabular-nums">
+          <div className="mt-2 sm:mt-2.5 font-mono text-xl sm:text-[26px] leading-tight font-semibold tracking-tight text-zinc-900 tabular-nums">
             {summary?.tool_call_count ?? 0}
           </div>
-          <div className="mt-1.5 text-xs text-zinc-400 tabular-nums">
+          <div className="mt-1.5 text-[11px] sm:text-xs text-zinc-400 tabular-nums leading-relaxed">
             单轮最大上下文 {formatTokens(summary?.max_context_tokens ?? 0)}
           </div>
         </div>
       </div>
 
       {/* Trends Chart */}
-      <section className="yd-card p-5 space-y-4">
+      <section className="yd-card p-4 sm:p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-[15px] font-medium text-zinc-900">用量趋势</h2>
           <div className="flex flex-wrap items-center gap-2 text-[13px]">
@@ -579,7 +611,14 @@ export default function AIUsagePage() {
                             delay={80}
                             content={`${pt.bucket}\nTokens: ${formatTokens(pt.total_tokens)}\n费用: ${formatUSD(pt.cost_usd)}\n请求: ${pt.request_count}`}
                           >
-                            <div className="flex-1 min-w-[10px] flex flex-col items-center h-full justify-end group">
+                            <div
+                              onClick={() => {
+                                if (isTouchPrimary()) {
+                                  setActiveTrendBucket((cur) => (cur === pt.bucket ? null : pt.bucket));
+                                }
+                              }}
+                              className="flex-1 min-w-[10px] flex flex-col items-center h-full justify-end group"
+                            >
                               <div
                                 className="w-full max-w-[26px] rounded-t-[4px] overflow-hidden flex flex-col-reverse transition-opacity group-hover:opacity-80"
                                 style={{ height: `${pct}%` }}
@@ -637,13 +676,22 @@ export default function AIUsagePage() {
                 </div>
               </div>
             </div>
+            {activeTrendPoint && (
+              <div className="sm:hidden flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[#f8fafc] border border-zinc-200/75 px-3 py-2 text-xs text-zinc-600 tabular-nums">
+                <span className="font-mono font-medium text-zinc-800">{activeTrendPoint.bucket}</span>
+                <span>
+                  {formatTokens(activeTrendPoint.total_tokens)} · {formatUSD(activeTrendPoint.cost_usd)} ·{' '}
+                  {activeTrendPoint.request_count} 轮
+                </span>
+              </div>
+            )}
           </>
         )}
       </section>
 
       {/* Heatmap + 24h Distribution */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <section className="lg:col-span-2 yd-card p-5 flex flex-col justify-between gap-3">
+        <section className="lg:col-span-2 yd-card p-4 sm:p-5 flex flex-col justify-between gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-[15px] font-medium text-zinc-800">年度活跃</h2>
             <div className="flex items-center gap-1 text-xs text-zinc-400">
@@ -654,59 +702,76 @@ export default function AIUsagePage() {
               <span>多</span>
             </div>
           </div>
-          <div className="space-y-1.5">
-            <div
-              className="grid w-full gap-[2px] sm:gap-[3px] h-4"
-              style={{ gridTemplateColumns: `repeat(${Math.max(heatmapGrid.length, 1)}, minmax(0, 1fr))` }}
-            >
-              {heatmapGrid.map((_, wi) => {
-                const label = heatmapMonthLabels.get(wi);
-                return (
-                  <div key={wi} className="relative min-w-0">
-                    {label ? (
-                      <span
-                        className={`absolute top-0 text-[11px] leading-none text-zinc-400 whitespace-nowrap select-none tabular-nums ${
-                          wi >= heatmapGrid.length - 2 ? 'right-0' : 'left-0'
-                        }`}
-                      >
-                        {label}
-                      </span>
-                    ) : null}
+          <div ref={heatmapScrollRef} className="overflow-x-auto pb-1 sm:overflow-visible sm:pb-0">
+            <div className="min-w-[640px] sm:min-w-0 space-y-1.5">
+              <div
+                className="grid w-full gap-[2px] sm:gap-[3px] h-4"
+                style={{ gridTemplateColumns: `repeat(${Math.max(heatmapGrid.length, 1)}, minmax(0, 1fr))` }}
+              >
+                {heatmapGrid.map((_, wi) => {
+                  const label = heatmapMonthLabels.get(wi);
+                  return (
+                    <div key={wi} className="relative min-w-0">
+                      {label ? (
+                        <span
+                          className={`absolute top-0 text-[11px] leading-none text-zinc-400 whitespace-nowrap select-none tabular-nums ${
+                            wi >= heatmapGrid.length - 2 ? 'right-0' : 'left-0'
+                          }`}
+                        >
+                          {label}
+                        </span>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+              <div
+                className="grid w-full gap-[2px] sm:gap-[3px]"
+                style={{ gridTemplateColumns: `repeat(${Math.max(heatmapGrid.length, 1)}, minmax(0, 1fr))` }}
+              >
+                {heatmapGrid.map((week, wi) => (
+                  <div key={wi} className="grid grid-rows-7 gap-[2px] sm:gap-[3px]">
+                    {week.map((cell) => {
+                      const lvl = cell.day?.level ?? 0;
+                      return (
+                        <Tooltip
+                          key={cell.date}
+                          delay={80}
+                          content={
+                            cell.day
+                              ? `${cell.date}: ${formatTokens(cell.day.total_tokens)} · ${formatUSD(cell.day.cost_usd)} · ${cell.day.session_count} 会话`
+                              : `${cell.date}: 无记录`
+                          }
+                        >
+                          <div
+                            onClick={() => {
+                              if (isTouchPrimary()) {
+                                setActiveHeatmapDate((cur) => (cur === cell.date ? null : cell.date));
+                              }
+                            }}
+                            className={`w-full aspect-square rounded-[2px] ring-1 ring-inset ring-black/[0.04] transition-opacity hover:opacity-75 ${HEATMAP_CLASSES[lvl] ?? HEATMAP_CLASSES[0]}`}
+                          />
+                        </Tooltip>
+                      );
+                    })}
                   </div>
-                );
-              })}
-            </div>
-            <div
-              className="grid w-full gap-[2px] sm:gap-[3px]"
-              style={{ gridTemplateColumns: `repeat(${Math.max(heatmapGrid.length, 1)}, minmax(0, 1fr))` }}
-            >
-              {heatmapGrid.map((week, wi) => (
-                <div key={wi} className="grid grid-rows-7 gap-[2px] sm:gap-[3px]">
-                  {week.map((cell) => {
-                    const lvl = cell.day?.level ?? 0;
-                    return (
-                      <Tooltip
-                        key={cell.date}
-                        delay={80}
-                        content={
-                          cell.day
-                            ? `${cell.date}: ${formatTokens(cell.day.total_tokens)} · ${formatUSD(cell.day.cost_usd)} · ${cell.day.session_count} 会话`
-                            : `${cell.date}: 无记录`
-                        }
-                      >
-                        <div
-                          className={`w-full aspect-square rounded-[2px] ring-1 ring-inset ring-black/[0.04] transition-opacity hover:opacity-75 ${HEATMAP_CLASSES[lvl] ?? HEATMAP_CLASSES[0]}`}
-                        />
-                      </Tooltip>
-                    );
-                  })}
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           </div>
+          {activeHeatmapCell && (
+            <div className="sm:hidden flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[#f8fafc] border border-zinc-200/75 px-3 py-1.5 text-xs text-zinc-600 tabular-nums">
+              <span className="font-mono font-medium text-zinc-800">{activeHeatmapCell.date}</span>
+              <span>
+                {activeHeatmapCell.day
+                  ? `${formatTokens(activeHeatmapCell.day.total_tokens)} · ${formatUSD(activeHeatmapCell.day.cost_usd)} · ${activeHeatmapCell.day.session_count} 会话`
+                  : '无记录'}
+              </span>
+            </div>
+          )}
         </section>
 
-        <section className="yd-card p-5 flex flex-col justify-between gap-3">
+        <section className="yd-card p-4 sm:p-5 flex flex-col justify-between gap-3">
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-[15px] font-medium text-zinc-800">时段分布</h2>
             <span className="text-xs text-zinc-400">近 24 小时</span>
@@ -738,7 +803,7 @@ export default function AIUsagePage() {
                     />
                   ) : null,
                 )}
-                <div className="relative z-10 grid grid-cols-[repeat(24,minmax(0,1fr))] gap-[3px] h-full items-end">
+                <div className="relative z-10 grid grid-cols-[repeat(24,minmax(0,1fr))] gap-[2px] sm:gap-[3px] h-full items-end">
                   {hourItems.map((h) => {
                     const pct = hourScale.toPct(h.total_tokens);
                     return (
@@ -747,7 +812,14 @@ export default function AIUsagePage() {
                         delay={80}
                         content={`${h.shortLabel} — ${formatTokens(h.total_tokens)} · ${formatUSD(h.cost_usd)}`}
                       >
-                        <div className="min-w-0 h-full flex items-end rounded-t hover:bg-zinc-100/70 transition-colors group">
+                        <div
+                          onClick={() => {
+                            if (isTouchPrimary()) {
+                              setActiveHourBucket((cur) => (cur === h.bucket ? null : h.bucket));
+                            }
+                          }}
+                          className="min-w-0 h-full flex items-end rounded-t hover:bg-zinc-100/70 transition-colors group"
+                        >
                           <div
                             className="w-full rounded-t-[2px] bg-sky-400 group-hover:bg-sky-500 transition-colors"
                             style={{ height: `${pct}%` }}
@@ -758,7 +830,7 @@ export default function AIUsagePage() {
                   })}
                 </div>
               </div>
-              <div className="grid grid-cols-[repeat(24,minmax(0,1fr))] gap-[3px] h-[20px] pt-1.5">
+              <div className="grid grid-cols-[repeat(24,minmax(0,1fr))] gap-[2px] sm:gap-[3px] h-[20px] pt-1.5">
                 {hourItems.map((h, idx) => (
                   <div key={h.bucket} className="relative min-w-0 h-full">
                     {h.hour % 4 === 0 ? (
@@ -779,12 +851,20 @@ export default function AIUsagePage() {
               </div>
             </div>
           </div>
+          {activeHourItem && (
+            <div className="sm:hidden flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[#f8fafc] border border-zinc-200/75 px-3 py-1.5 text-xs text-zinc-600 tabular-nums">
+              <span className="font-mono font-medium text-zinc-800">{activeHourItem.shortLabel}</span>
+              <span>
+                {formatTokens(activeHourItem.total_tokens)} · {formatUSD(activeHourItem.cost_usd)}
+              </span>
+            </div>
+          )}
         </section>
       </div>
 
       {/* Breakdown & Tools */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <section className="lg:col-span-2 yd-card p-5 space-y-3.5">
+        <section className="lg:col-span-2 yd-card p-4 sm:p-5 space-y-3.5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-[15px] font-medium text-zinc-900">多维分布</h2>
             <div className="yd-segment">
@@ -814,10 +894,10 @@ export default function AIUsagePage() {
               <thead className="yd-thead">
                 <tr>
                   <th className="py-2 pr-3 font-medium">名称</th>
-                  <th className="py-2 pr-3 font-medium text-right">总 Token</th>
-                  <th className="py-2 pr-3 font-medium text-right">费用</th>
-                  <th className="py-2 pr-3 font-medium text-right">轮次</th>
-                  <th className="py-2 font-medium text-right">会话</th>
+                  <th className="py-2 pr-3 font-medium text-right whitespace-nowrap">总 Token</th>
+                  <th className="py-2 sm:pr-3 font-medium text-right whitespace-nowrap">费用</th>
+                  <th className="hidden sm:table-cell py-2 pr-3 font-medium text-right">轮次</th>
+                  <th className="hidden sm:table-cell py-2 font-medium text-right">会话</th>
                 </tr>
               </thead>
               <tbody className="yd-tbody tabular-nums">
@@ -828,7 +908,7 @@ export default function AIUsagePage() {
                       : null;
                   return (
                     <tr key={item.key} className="hover:bg-zinc-50/70 transition-colors">
-                      <td className="py-2.5 pr-3 font-mono text-zinc-800">
+                      <td className="py-2.5 pr-3 font-mono text-zinc-800 max-w-[170px] sm:max-w-none">
                         <div className="inline-flex items-center gap-1.5 min-w-0 max-w-full">
                           <span className="truncate">{item.label}</span>
                           {merged && (
@@ -849,13 +929,22 @@ export default function AIUsagePage() {
                             />
                           )}
                         </div>
+                        <div className="sm:hidden mt-0.5 font-sans text-[11px] text-zinc-400">
+                          {item.request_count} 轮 · {item.session_count} 会话
+                        </div>
                       </td>
-                      <td className="py-2.5 pr-3 text-right text-zinc-700">
+                      <td className="py-2.5 pr-3 text-right text-zinc-700 whitespace-nowrap">
                         {formatTokens(item.total_tokens)}
                       </td>
-                      <td className="py-2.5 pr-3 text-right text-zinc-700">{formatUSD(item.cost_usd)}</td>
-                      <td className="py-2.5 pr-3 text-right text-zinc-500">{item.request_count}</td>
-                      <td className="py-2.5 text-right text-zinc-500">{item.session_count}</td>
+                      <td className="py-2.5 sm:pr-3 text-right text-zinc-700 whitespace-nowrap">
+                        {formatUSD(item.cost_usd)}
+                      </td>
+                      <td className="hidden sm:table-cell py-2.5 pr-3 text-right text-zinc-500">
+                        {item.request_count}
+                      </td>
+                      <td className="hidden sm:table-cell py-2.5 text-right text-zinc-500">
+                        {item.session_count}
+                      </td>
                     </tr>
                   );
                 })}
@@ -871,7 +960,7 @@ export default function AIUsagePage() {
           </div>
         </section>
 
-        <section className="yd-card p-5 space-y-3.5">
+        <section className="yd-card p-4 sm:p-5 space-y-3.5">
           <div className="flex items-center justify-between">
             <h2 className="text-[15px] font-medium text-zinc-900">工具调用排行</h2>
             <span className="text-xs text-zinc-400 tabular-nums">
@@ -903,7 +992,7 @@ export default function AIUsagePage() {
       </div>
 
       {/* Sessions Table */}
-      <section className="yd-card p-5 space-y-4">
+      <section className="yd-card p-4 sm:p-5 space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <h2 className="text-[15px] font-medium text-zinc-800">会话记录</h2>
@@ -939,7 +1028,69 @@ export default function AIUsagePage() {
         {loadingSessions || fetchingSessions ? (
           <LoadingState label="正在加载会话记录..." variant="section" />
         ) : (
-          <div className="overflow-x-auto">
+          <>
+            {/* Mobile Sessions Cards (< md) */}
+            <div className="md:hidden space-y-2.5">
+              {(sessionsRes?.sessions?.length ?? 0) === 0 ? (
+                <div className="py-8 text-center text-sm text-zinc-400">暂无会话记录</div>
+              ) : (
+                (sessionsRes?.sessions ?? []).map((s) => (
+                  <div
+                    key={`m-${s.device_id}-${s.agent}-${s.session_id}`}
+                    onClick={() => setSelectedSession({ sessionId: s.session_id, deviceId: s.device_id })}
+                    className="rounded-xl border border-zinc-200/75 bg-[#fafcff] p-3.5 space-y-2 active:bg-sky-50/40 transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div
+                          className={`text-[13px] truncate ${
+                            s.project ? 'font-medium text-zinc-900' : 'text-zinc-400'
+                          }`}
+                        >
+                          {s.project || '未标记项目'}
+                        </div>
+                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-400">
+                          <span className="font-mono">{s.session_id.slice(0, 14)}</span>
+                          <span>· {s.agent}</span>
+                          {s.device_name && <span>· {s.device_name}</span>}
+                          {s.subagent_count > 0 && (
+                            <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-600">
+                              +{s.subagent_count} 子代理
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-[11px] text-zinc-400 shrink-0 tabular-nums">
+                        {formatDateTime(s.last_event_at, tz)}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1">
+                      {s.models.map((m) => (
+                        <span
+                          key={m}
+                          className="rounded bg-white border border-zinc-200/75 px-1.5 py-0.5 font-mono text-[11px] text-zinc-700 break-all"
+                        >
+                          {m}
+                        </span>
+                      ))}
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-zinc-200/60 text-xs tabular-nums">
+                      <span className="font-mono font-medium text-zinc-800">
+                        {formatTokens(s.tokens.total_tokens)} · {formatUSD(s.cost_usd)}
+                      </span>
+                      <span className="text-[11px] text-zinc-400">
+                        峰值 {formatTokens(s.max_context_tokens)} · 工具 {s.tool_call_count}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Desktop Sessions Table (>= md, identical to original) */}
+            <div className="hidden md:block overflow-x-auto">
             <table className="yd-table">
               <thead className="yd-thead">
                 <tr>
@@ -1043,7 +1194,8 @@ export default function AIUsagePage() {
                 )}
               </tbody>
             </table>
-          </div>
+            </div>
+          </>
         )}
       </section>
 
@@ -1054,10 +1206,10 @@ export default function AIUsagePage() {
           onClick={() => setSelectedSession(null)}
         >
           <div
-            className="w-full max-w-2xl bg-white h-full overflow-y-auto p-6 shadow-2xl border-l border-zinc-200/80 space-y-5"
+            className="w-full max-w-2xl bg-white h-full overflow-y-auto p-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:p-6 shadow-2xl border-l border-zinc-200/80 space-y-5"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-start justify-between gap-2 pb-4 border-b border-zinc-100">
+            <div className="sticky -top-4 sm:static -mx-4 px-4 pt-4 sm:mx-0 sm:px-0 sm:pt-0 bg-white/95 sm:bg-transparent backdrop-blur-xs sm:backdrop-blur-none z-10 flex items-start justify-between gap-2 pb-3.5 sm:pb-4 border-b border-zinc-100">
               <div>
                 <h3 className="text-base font-semibold text-zinc-900">会话逐小时明细</h3>
                 <div className="text-xs font-mono text-zinc-400 mt-0.5 break-all">

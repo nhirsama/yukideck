@@ -9,6 +9,7 @@ import {
   Star,
 } from 'lucide-react';
 import { Tooltip } from '@/components/Tooltip';
+import { useIsTouchDevice } from '@/core/responsive';
 import {
   RETIRE_REASON_LABELS,
   formatMoney,
@@ -118,6 +119,8 @@ export function ItemCardView({
 }: CommonViewProps) {
   const [dragId, setDragId] = useState<number | null>(null);
   const [overId, setOverId] = useState<number | null>(null);
+  const isTouch = useIsTouchDevice();
+  const canDrag = draggable && !isTouch;
 
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -127,20 +130,20 @@ export function ItemCardView({
         return (
           <div
             key={item.id}
-            draggable={draggable}
+            draggable={canDrag}
             onDragStart={() => setDragId(item.id)}
             onDragEnd={() => {
               setDragId(null);
               setOverId(null);
             }}
             onDragOver={(e) => {
-              if (!draggable) return;
+              if (!canDrag) return;
               e.preventDefault();
               if (overId !== item.id) setOverId(item.id);
             }}
             onDrop={(e) => {
               e.preventDefault();
-              if (!draggable || dragId == null) return;
+              if (!canDrag || dragId == null) return;
               const next = reorderList(items, dragId, item.id);
               setDragId(null);
               setOverId(null);
@@ -164,7 +167,7 @@ export function ItemCardView({
                   />
                 </div>
               )}
-              {draggable && (
+              {canDrag && (
                 <Tooltip content="拖拽调整顺序">
                   <div
                     className="cursor-grab pt-2.5 text-zinc-300 hover:text-zinc-500 active:cursor-grabbing"
@@ -298,6 +301,8 @@ export function ItemListView({
 }: CommonViewProps) {
   const [dragId, setDragId] = useState<number | null>(null);
   const [overId, setOverId] = useState<number | null>(null);
+  const isTouch = useIsTouchDevice();
+  const canDrag = draggable && !isTouch;
   const showUsageColumn = items.some((it) => it.pricing_mode !== 'time');
 
   return (
@@ -305,13 +310,13 @@ export function ItemListView({
       <table className="yd-table">
         <thead className="yd-thead">
           <tr>
-            {(batchMode || draggable) && <th className="w-10 px-3 py-2.5" />}
-            <th className="px-3 py-2.5">物品</th>
-            <th className="px-3 py-2.5">分类 / 标签</th>
-            <th className="px-3 py-2.5 text-right">总投入</th>
-            <th className="px-3 py-2.5 text-right">均价 / 持有</th>
-            <th className="px-3 py-2.5">状态 / 保修</th>
-            {showUsageColumn && <th className="px-3 py-2.5 text-right">使用次数</th>}
+            {(batchMode || canDrag) && <th className="w-10 px-3 py-2.5" />}
+            <th className="px-3 py-2.5 whitespace-nowrap">物品</th>
+            <th className="px-3 py-2.5 whitespace-nowrap">分类 / 标签</th>
+            <th className="px-3 py-2.5 text-right whitespace-nowrap">总投入</th>
+            <th className="px-3 py-2.5 text-right whitespace-nowrap">均价 / 持有</th>
+            <th className="px-3 py-2.5 whitespace-nowrap">状态 / 保修</th>
+            {showUsageColumn && <th className="px-3 py-2.5 text-right whitespace-nowrap">使用次数</th>}
           </tr>
         </thead>
         <tbody className="yd-tbody">
@@ -321,20 +326,20 @@ export function ItemListView({
             return (
               <tr
                 key={item.id}
-                draggable={draggable}
+                draggable={canDrag}
                 onDragStart={() => setDragId(item.id)}
                 onDragEnd={() => {
                   setDragId(null);
                   setOverId(null);
                 }}
                 onDragOver={(e) => {
-                  if (!draggable) return;
+                  if (!canDrag) return;
                   e.preventDefault();
                   if (overId !== item.id) setOverId(item.id);
                 }}
                 onDrop={(e) => {
                   e.preventDefault();
-                  if (!draggable || dragId == null) return;
+                  if (!canDrag || dragId == null) return;
                   const next = reorderList(items, dragId, item.id);
                   setDragId(null);
                   setOverId(null);
@@ -345,7 +350,7 @@ export function ItemListView({
                   item.status === 'retired' ? 'opacity-70' : ''
                 } ${selected ? 'bg-sky-50/60' : ''} ${isOver ? 'bg-sky-100/60' : ''}`}
               >
-                {(batchMode || draggable) && (
+                {(batchMode || canDrag) && (
                   <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
                     {batchMode ? (
                       <input
@@ -607,24 +612,24 @@ export function FolderBrowserView({
               key={String(f.id)}
               type="button"
               onClick={() => onEnterFolder(f.id)}
-              className="yd-card-interactive flex items-center gap-3 p-3.5 text-left"
+              className="yd-card-interactive flex items-center gap-2.5 sm:gap-3 p-3 sm:p-3.5 text-left"
             >
               <div
-                className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
+                className={`flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-xl ${
                   f.id === 'uncategorized'
                     ? 'bg-zinc-100 text-zinc-500'
                     : 'bg-sky-50 text-sky-600'
                 }`}
               >
                 {f.id === 'uncategorized' ? (
-                  <Folder className="h-5 w-5" />
+                  <Folder className="h-4 w-4 sm:h-5 sm:w-5" />
                 ) : (
-                  <AssetIcon name={f.icon} className="h-5 w-5" />
+                  <AssetIcon name={f.icon} className="h-4 w-4 sm:h-5 sm:w-5" />
                 )}
               </div>
               <div className="min-w-0 flex-1">
                 <div className="truncate font-medium text-zinc-800">{f.name}</div>
-                <div className="mt-0.5 flex items-center justify-between gap-2 text-xs text-zinc-400">
+                <div className="mt-0.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-xs text-zinc-400">
                   <span>{f.count} 件</span>
                   <span className="font-mono text-zinc-600">
                     {formatMoney(f.total, currency, hideAmounts)}

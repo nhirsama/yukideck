@@ -1,9 +1,10 @@
 import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation } from 'react-router-dom';
-import { ArrowRight, Layers, Lock, LogIn, X } from 'lucide-react';
+import { ArrowRight, Lock, LogIn, X } from 'lucide-react';
 import { useAuth } from '@/core/auth';
 import { useAppMeta } from '@/core/module';
+import { YukiDeckLogo } from '@/components/YukiDeckLogo';
 
 function formatVersionBadge(raw?: string): string | null {
   const v = (raw || '').trim();
@@ -48,8 +49,8 @@ export function LoginCard({
         <div className="pointer-events-none absolute -top-16 left-1/2 h-36 w-52 -translate-x-1/2 rounded-full bg-sky-300/20 blur-2xl" />
 
         <div className="relative space-y-3">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-sky-200/80 bg-white text-sky-600 shadow-[0_8px_24px_rgba(14,165,233,0.14)]">
-            <Layers className="h-5 w-5" />
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-sky-200/80 bg-white shadow-[0_8px_24px_rgba(14,165,233,0.14)]">
+            <YukiDeckLogo className="h-9 w-9" />
           </div>
 
           <div className="space-y-1">

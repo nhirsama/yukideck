@@ -350,7 +350,7 @@ export default function AssetsPage() {
 
       {/* Floating Batch Action Bar */}
       {batchMode && (
-        <div className="fixed right-4 bottom-5 left-4 z-30 mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-sky-200 bg-white/95 px-4 py-3 shadow-xl backdrop-blur">
+        <div className="fixed right-3 bottom-[max(1rem,env(safe-area-inset-bottom))] left-3 sm:right-4 sm:bottom-5 sm:left-4 z-30 mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-2.5 sm:gap-3 rounded-xl border border-sky-200 bg-white/95 px-3.5 py-2.5 sm:px-4 sm:py-3 shadow-xl backdrop-blur">
           <div className="flex items-center gap-3 text-sm">
             <span className="font-medium text-zinc-800">
               已选 <strong className="text-sky-600">{selectedIds.size}</strong> 件
