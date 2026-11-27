@@ -347,6 +347,21 @@ func compileAliases(userAliases []ModelAlias) compiledAliasSet {
 	return compiledAliasSet{exact: exact, wildcard: wildcard}
 }
 
+// stripDisplaySpeedTag removes explicit colon speed-tier parameter tags (":fast", ":ultrafast")
+// for display grouping so e.g. "gpt-5.4:fast" merges with "gpt-5.4" in the UI while keeping
+// native hyphenated model names (e.g. "grok-4-fast", "gpt-6.1-sol-fast") untouched.
+func stripDisplaySpeedTag(s string) string {
+	for _, suffix := range []string{":ultrafast", ":fast"} {
+		if strings.HasSuffix(s, suffix) {
+			candidate := strings.TrimSuffix(s, suffix)
+			if candidate != "" {
+				return stripModelTagsAndDate(candidate)
+			}
+		}
+	}
+	return s
+}
+
 func (a compiledAliasSet) resolveDisplay(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -355,11 +370,13 @@ func (a compiledAliasSet) resolveDisplay(raw string) string {
 
 	stripped := stripChannelPrefixes(trimmed)
 	cleaned := stripModelTagsAndDate(stripped)
+	displayBase := stripDisplaySpeedTag(cleaned)
 
-	candidates := make([]string, 0, 3)
+	candidates := make([]string, 0, 4)
 	candidates = appendUniqueLower(candidates, trimmed)
 	candidates = appendUniqueLower(candidates, stripped)
 	candidates = appendUniqueLower(candidates, cleaned)
+	candidates = appendUniqueLower(candidates, displayBase)
 
 	// 1a. User exact aliases always take priority over any wildcard alias.
 	for _, c := range candidates {
@@ -378,7 +395,7 @@ func (a compiledAliasSet) resolveDisplay(raw string) string {
 		}
 	}
 
-	return applyBuiltinFamilyRules(cleaned)
+	return applyBuiltinFamilyRules(displayBase)
 }
 
 func applyBuiltinFamilyRules(cleaned string) string {
@@ -419,6 +436,9 @@ func extractStaticParameterTags(cleaned string, catalog *compiledCatalog) (base 
 		if strings.HasSuffix(base, rule.suffix) {
 			candidate := strings.TrimSuffix(base, rule.suffix)
 			if candidate != "" {
+				// Re-strip trailing date/tag suffixes exposed after removing the speed tag
+				// (e.g. "gpt-5.4-2026-03-05:fast" -> "gpt-5.4").
+				candidate = stripModelTagsAndDate(candidate)
 				base = candidate
 				tags = appendUniqueTag(tags, rule.tag)
 				break

@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::path::Path;
 use std::pin::pin;
@@ -189,6 +189,25 @@ pub fn aggregate_messages(
     aggregate_messages_with_stats(messages, cutoff, privacy, sidecar).0
 }
 
+fn is_synthetic_non_model(model: &str) -> bool {
+    model.eq_ignore_ascii_case("tools/summaries")
+}
+
+fn is_fast_service_tier(service_tier: Option<&str>) -> bool {
+    service_tier.is_some_and(|tier| {
+        let t = tier.trim();
+        t.eq_ignore_ascii_case("priority") || t.eq_ignore_ascii_case("fast")
+    })
+}
+
+fn has_speed_tier_suffix(model: &str) -> bool {
+    let lower = model.trim().to_ascii_lowercase();
+    lower.ends_with(":fast")
+        || lower.ends_with("-fast")
+        || lower.ends_with(":ultrafast")
+        || lower.ends_with("-ultrafast")
+}
+
 pub fn aggregate_messages_with_stats(
     messages: &[UnifiedMessage],
     cutoff: Option<DateTime<Utc>>,
@@ -199,6 +218,36 @@ pub fn aggregate_messages_with_stats(
     let mut map: BTreeMap<Key, IngestSlice> = BTreeMap::new();
     let mut attached_tools = std::collections::HashSet::<(String, String, DateTime<Utc>)>::new();
     let mut stats = AggregateStats::default();
+
+    // Build per-(agent, session_id) real-model timelines across all parsed messages (including
+    // those slightly before `cutoff`) so Pi's synthetic `tools/summaries` bucket (emitted by
+    // tokscale-core for model-less compactions, branch summaries, and toolResult usage) can be
+    // attributed to the session's active real model instead of showing up as a fake model.
+    let mut session_models: HashMap<(String, String), Vec<(i64, String, String)>> = HashMap::new();
+    for msg in messages {
+        let Some(ts) = timestamp_to_utc(msg.timestamp) else {
+            continue;
+        };
+        let agent = normalize_agent_id(msg.client.as_str());
+        let session_id = msg.session_id.trim();
+        let model = msg.model_id.trim();
+        if agent.is_empty()
+            || session_id.is_empty()
+            || model.is_empty()
+            || is_synthetic_non_model(model)
+            || model.eq_ignore_ascii_case("unknown")
+        {
+            continue;
+        }
+        let provider = msg.provider_id.trim().to_ascii_lowercase();
+        session_models
+            .entry((agent, session_id.to_string()))
+            .or_default()
+            .push((ts.timestamp_millis(), model.to_string(), provider));
+    }
+    for timeline in session_models.values_mut() {
+        timeline.sort_by_key(|(ts_ms, _, _)| *ts_ms);
+    }
 
     for msg in messages {
         let Some(ts) = timestamp_to_utc(msg.timestamp) else {
@@ -219,10 +268,34 @@ pub fn aggregate_messages_with_stats(
 
         let agent = normalize_agent_id(msg.client.as_str());
         let session_id = msg.session_id.trim().to_string();
-        let model = msg.model_id.trim().to_string();
+        let mut model = msg.model_id.trim().to_string();
         if agent.is_empty() || session_id.is_empty() || model.is_empty() {
             stats.dropped_missing_fields += 1;
             continue;
+        }
+
+        let mut provider = msg.provider_id.trim().to_ascii_lowercase();
+        if is_synthetic_non_model(&model) {
+            if let Some(timeline) = session_models.get(&(agent.clone(), session_id.clone())) {
+                let ts_ms = ts.timestamp_millis();
+                let idx = timeline.partition_point(|(t, _, _)| *t <= ts_ms);
+                let (_, resolved_model, resolved_provider) = if idx > 0 {
+                    &timeline[idx - 1]
+                } else {
+                    &timeline[0]
+                };
+                model = resolved_model.clone();
+                if (provider.is_empty() || provider == agent) && !resolved_provider.is_empty() {
+                    provider = resolved_provider.clone();
+                }
+            } else {
+                stats.dropped_missing_fields += 1;
+                continue;
+            }
+        }
+
+        if is_fast_service_tier(msg.service_tier.as_deref()) && !has_speed_tier_suffix(&model) {
+            model.push_str(":fast");
         }
 
         let (sidecar_sub, sidecar_parent) = sidecar
@@ -250,7 +323,6 @@ pub fn aggregate_messages_with_stats(
                 .map(|a| a.to_ascii_lowercase().contains("subagent"))
                 .unwrap_or(false);
 
-        let provider = msg.provider_id.trim().to_ascii_lowercase();
         let project = sanitize_project(
             msg.workspace_label
                 .as_deref()
@@ -578,5 +650,232 @@ mod tests {
         assert_eq!(primary.tool_calls.get("read"), Some(&1));
         assert_eq!(secondary.tool_call_count, 2);
         assert_eq!(secondary.tool_calls.get("edit"), Some(&2));
+    }
+
+    #[test]
+    fn test_pi_tools_summaries_attributed_to_session_model_and_orphan_dropped() {
+        let t_reply_1 = DateTime::parse_from_rfc3339("2026-11-26T10:10:00Z")
+            .unwrap()
+            .timestamp_millis();
+        let t_tool_1 = DateTime::parse_from_rfc3339("2026-11-26T10:20:00Z")
+            .unwrap()
+            .timestamp_millis();
+        let t_reply_2 = DateTime::parse_from_rfc3339("2026-11-26T10:30:00Z")
+            .unwrap()
+            .timestamp_millis();
+        let t_compact = DateTime::parse_from_rfc3339("2026-11-26T11:05:00Z")
+            .unwrap()
+            .timestamp_millis();
+        let cutoff = DateTime::parse_from_rfc3339("2026-11-26T11:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let reply_1 = UnifiedMessage::new(
+            "pi",
+            "claude-sonnet-4-6",
+            "anthropic",
+            "pi_sess_1",
+            t_reply_1,
+            TokenBreakdown {
+                input: 1000,
+                output: 200,
+                cache_read: 0,
+                cache_write: 0,
+                cache_write_1h: 0,
+                reasoning: 0,
+            },
+            0.0,
+        );
+        let mut tool_summary = UnifiedMessage::new(
+            "pi",
+            "tools/summaries",
+            "pi",
+            "pi_sess_1",
+            t_tool_1,
+            TokenBreakdown {
+                input: 500,
+                output: 100,
+                cache_read: 0,
+                cache_write: 0,
+                cache_write_1h: 0,
+                reasoning: 0,
+            },
+            0.02,
+        );
+        tool_summary.mark_provider_reported_cost();
+
+        let reply_2 = UnifiedMessage::new(
+            "pi",
+            "gpt-5.4",
+            "openai",
+            "pi_sess_1",
+            t_reply_2,
+            TokenBreakdown {
+                input: 2000,
+                output: 400,
+                cache_read: 0,
+                cache_write: 0,
+                cache_write_1h: 0,
+                reasoning: 0,
+            },
+            0.0,
+        );
+        let mut compaction = UnifiedMessage::new(
+            "pi",
+            "tools/summaries",
+            "pi",
+            "pi_sess_1",
+            t_compact,
+            TokenBreakdown {
+                input: 18000,
+                output: 600,
+                cache_read: 0,
+                cache_write: 0,
+                cache_write_1h: 0,
+                reasoning: 0,
+            },
+            0.05,
+        );
+        compaction.mark_provider_reported_cost();
+
+        // Session containing ONLY tools/summaries (no real model) should be dropped.
+        let orphan_summary = UnifiedMessage::new(
+            "pi",
+            "tools/summaries",
+            "pi",
+            "pi_sess_orphan",
+            t_compact,
+            TokenBreakdown {
+                input: 100,
+                output: 20,
+                cache_read: 0,
+                cache_write: 0,
+                cache_write_1h: 0,
+                reasoning: 0,
+            },
+            0.0,
+        );
+
+        let msgs = vec![reply_1, tool_summary, reply_2, compaction, orphan_summary];
+
+        // Full history: tool_summary folds into claude-sonnet-4-6, compaction attributes to gpt-5.4, orphan dropped.
+        let (slices, stats) =
+            aggregate_messages_with_stats(&msgs, None, ProjectPrivacy::Name, &ToolSidecar::default());
+        assert_eq!(stats.dropped_missing_fields, 1);
+        assert!(slices.iter().all(|s| s.model != "tools/summaries"));
+        assert_eq!(slices.len(), 3);
+
+        let sonnet = slices
+            .iter()
+            .find(|s| s.model == "claude-sonnet-4-6")
+            .expect("claude-sonnet-4-6 slice");
+        assert_eq!(sonnet.input_tokens, 1500);
+        assert_eq!(sonnet.output_tokens, 300);
+        assert_eq!(sonnet.request_count, 2);
+        assert!((sonnet.reported_cost_usd - 0.02).abs() < 1e-9);
+        assert_eq!(sonnet.provider, "anthropic");
+
+        let compact_slice = slices
+            .iter()
+            .find(|s| s.hour_bucket.to_rfc3339() == "2026-11-26T11:00:00+00:00")
+            .expect("compaction slice in 11:00 bucket");
+        assert_eq!(compact_slice.model, "gpt-5.4");
+        assert_eq!(compact_slice.provider, "openai");
+        assert_eq!(compact_slice.input_tokens, 18000);
+        assert!((compact_slice.reported_cost_usd - 0.05).abs() < 1e-9);
+
+        // Incremental cutoff at 11:00: reply_2 (at 10:30) is before cutoff, yet compaction at 11:05
+        // still resolves to gpt-5.4 from the pre-cutoff timeline.
+        let (inc_slices, inc_stats) = aggregate_messages_with_stats(
+            &msgs,
+            Some(cutoff),
+            ProjectPrivacy::Name,
+            &ToolSidecar::default(),
+        );
+        assert_eq!(inc_stats.dropped_cutoff, 3);
+        assert_eq!(inc_stats.dropped_missing_fields, 1);
+        assert_eq!(inc_slices.len(), 1);
+        assert_eq!(inc_slices[0].model, "gpt-5.4");
+        assert_eq!(inc_slices[0].provider, "openai");
+    }
+
+    #[test]
+    fn test_codex_fast_service_tier_splits_slice_with_fast_suffix() {
+        let t1 = DateTime::parse_from_rfc3339("2026-11-27T08:10:00Z")
+            .unwrap()
+            .timestamp_millis();
+        let t2 = DateTime::parse_from_rfc3339("2026-11-27T08:20:00Z")
+            .unwrap()
+            .timestamp_millis();
+        let t3 = DateTime::parse_from_rfc3339("2026-11-27T08:30:00Z")
+            .unwrap()
+            .timestamp_millis();
+
+        let std_msg = UnifiedMessage::new(
+            "codex",
+            "gpt-5.4",
+            "openai",
+            "rollout-1",
+            t1,
+            TokenBreakdown {
+                input: 1000,
+                output: 200,
+                cache_read: 0,
+                cache_write: 0,
+                cache_write_1h: 0,
+                reasoning: 0,
+            },
+            0.0,
+        );
+        let mut priority_msg = UnifiedMessage::new(
+            "codex",
+            "gpt-5.4",
+            "openai",
+            "rollout-1",
+            t2,
+            TokenBreakdown {
+                input: 3000,
+                output: 500,
+                cache_read: 0,
+                cache_write: 0,
+                cache_write_1h: 0,
+                reasoning: 0,
+            },
+            0.0,
+        );
+        priority_msg.service_tier = Some("priority".into());
+
+        // Already-suffixed model should not receive a duplicate `:fast` suffix.
+        let mut already_fast = UnifiedMessage::new(
+            "codex",
+            "gpt-5.4-fast",
+            "openai",
+            "rollout-1",
+            t3,
+            TokenBreakdown {
+                input: 400,
+                output: 100,
+                cache_read: 0,
+                cache_write: 0,
+                cache_write_1h: 0,
+                reasoning: 0,
+            },
+            0.0,
+        );
+        already_fast.service_tier = Some("fast".into());
+
+        let slices = aggregate_messages(
+            &[std_msg, priority_msg, already_fast],
+            None,
+            ProjectPrivacy::Name,
+            &ToolSidecar::default(),
+        );
+        assert_eq!(slices.len(), 3);
+        let s_std = slices.iter().find(|s| s.model == "gpt-5.4").expect("standard slice");
+        let s_fast = slices.iter().find(|s| s.model == "gpt-5.4:fast").expect("priority slice");
+        let s_named = slices.iter().find(|s| s.model == "gpt-5.4-fast").expect("already fast slice");
+        assert_eq!(s_std.input_tokens, 1000);
+        assert_eq!(s_fast.input_tokens, 3000);
+        assert_eq!(s_named.input_tokens, 400);
     }
 }

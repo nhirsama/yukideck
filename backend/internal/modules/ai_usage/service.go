@@ -35,6 +35,10 @@ func NewService(store Store) *Service {
 	return &Service{store: store}
 }
 
+func isSyntheticNonModel(model string) bool {
+	return strings.EqualFold(strings.TrimSpace(model), "tools/summaries")
+}
+
 func (s *Service) Ingest(ctx context.Context, userID int64, req IngestRequest) (*IngestResponse, error) {
 	devID := strings.TrimSpace(req.Device.DeviceID)
 	if devID == "" {
@@ -74,6 +78,9 @@ func (s *Service) Ingest(ctx context.Context, userID int64, req IngestRequest) (
 		model := strings.TrimSpace(sl.Model)
 		if agent == "" || sessionID == "" || model == "" {
 			return nil, httpx.BadRequest("切片缺少必填字段 agent / session_id / model")
+		}
+		if isSyntheticNonModel(model) {
+			continue
 		}
 		if sl.HourBucket.IsZero() {
 			return nil, httpx.BadRequest("切片缺少有效 hour_bucket")

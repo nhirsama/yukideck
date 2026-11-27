@@ -18,6 +18,7 @@ import (
 	"yukideck/internal/config"
 	"yukideck/internal/core/auth"
 	"yukideck/internal/core/crypto"
+	"yukideck/internal/core/db"
 )
 
 type memStore struct {
@@ -1371,6 +1372,179 @@ func TestImportedOfficialCatalogHistoryAndMultipliers(t *testing.T) {
 	})
 	if math.Abs(cGrok4Fast-0.70) > 1e-6 {
 		t.Fatalf("grok-4-fast cost=%.4f, want 0.70", cGrok4Fast)
+	}
+}
+
+func TestIngestSkipsPiToolsSummariesBucket(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store)
+	ctx := context.Background()
+	bucket := time.Date(2026, 11, 26, 10, 0, 0, 0, time.UTC)
+
+	resp, err := svc.Ingest(ctx, 1, IngestRequest{
+		Device: IngestDevice{DeviceID: "dev-pi", Name: "laptop"},
+		Slices: []IngestSlice{
+			{
+				Agent:        "pi",
+				SessionID:    "pi-sess-1",
+				HourBucket:   bucket,
+				Model:        "tools/summaries",
+				Provider:     "pi",
+				InputTokens:  5000,
+				OutputTokens: 200,
+				RequestCount: 1,
+				FirstEventAt: bucket.Add(5 * time.Minute),
+				LastEventAt:  bucket.Add(5 * time.Minute),
+			},
+			{
+				Agent:        "pi",
+				SessionID:    "pi-sess-1",
+				HourBucket:   bucket,
+				Model:        "claude-sonnet-4-6",
+				Provider:     "anthropic",
+				InputTokens:  1000,
+				OutputTokens: 300,
+				RequestCount: 2,
+				FirstEventAt: bucket.Add(1 * time.Minute),
+				LastEventAt:  bucket.Add(10 * time.Minute),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ingest failed: %v", err)
+	}
+	if resp.Accepted != 1 {
+		t.Fatalf("Accepted=%d, want 1", resp.Accepted)
+	}
+
+	summary, err := svc.Summary(ctx, 1, QueryFilter{
+		Start: bucket.Add(-time.Hour),
+		End:   bucket.Add(2 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("Summary failed: %v", err)
+	}
+	if len(summary.ByModel) != 1 || summary.ByModel[0].Key != "claude-sonnet-4.6" {
+		t.Fatalf("ByModel=%+v, want only claude-sonnet-4.6", summary.ByModel)
+	}
+
+	migs, err := db.ParseMigrations("ai-usage", migrationsFS)
+	if err != nil {
+		t.Fatalf("ParseMigrations failed: %v", err)
+	}
+	if len(migs) < 3 {
+		t.Fatalf("expected at least 3 migrations, got %d", len(migs))
+	}
+}
+
+func TestCodexFastMergesDisplayAndBillsAtFastMultiplier(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store)
+	ctx := context.Background()
+	bucket := time.Date(2026, 11, 27, 8, 0, 0, 0, time.UTC)
+
+	// Both standard and fast (priority) slices for gpt-5.4 in the same session/hour,
+	// plus a date-stamped fast variant and a native "-fast" model.
+	_, err := svc.Ingest(ctx, 1, IngestRequest{
+		Device: IngestDevice{DeviceID: "dev-codex", Name: "workstation"},
+		Slices: []IngestSlice{
+			{
+				Agent:        "codex",
+				SessionID:    "rollout-fast-1",
+				HourBucket:   bucket,
+				Model:        "gpt-5.4",
+				Provider:     "openai",
+				InputTokens:  1_000_000,
+				RequestCount: 1,
+				FirstEventAt: bucket.Add(1 * time.Minute),
+				LastEventAt:  bucket.Add(2 * time.Minute),
+			},
+			{
+				Agent:        "codex",
+				SessionID:    "rollout-fast-1",
+				HourBucket:   bucket,
+				Model:        "gpt-5.4:fast",
+				Provider:     "openai",
+				InputTokens:  1_000_000,
+				RequestCount: 1,
+				FirstEventAt: bucket.Add(3 * time.Minute),
+				LastEventAt:  bucket.Add(4 * time.Minute),
+			},
+			{
+				Agent:        "codex",
+				SessionID:    "rollout-fast-1",
+				HourBucket:   bucket,
+				Model:        "gpt-5.4-2026-03-05:fast",
+				Provider:     "openai",
+				InputTokens:  1_000_000,
+				RequestCount: 1,
+				FirstEventAt: bucket.Add(5 * time.Minute),
+				LastEventAt:  bucket.Add(6 * time.Minute),
+			},
+			{
+				Agent:        "opencode",
+				SessionID:    "sess-grok",
+				HourBucket:   bucket,
+				Model:        "x-ai/grok-4-fast",
+				Provider:     "xai",
+				InputTokens:  1_000_000,
+				RequestCount: 1,
+				FirstEventAt: bucket.Add(7 * time.Minute),
+				LastEventAt:  bucket.Add(8 * time.Minute),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ingest failed: %v", err)
+	}
+
+	summary, err := svc.Summary(ctx, 1, QueryFilter{
+		Start: bucket.Add(-time.Hour),
+		End:   bucket.Add(2 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("Summary failed: %v", err)
+	}
+
+	// Filters.Models and ByModel must merge gpt-5.4:fast and gpt-5.4-2026-03-05:fast into gpt-5.4,
+	// while preserving native grok-4-fast untouched.
+	if len(summary.Filters.Models) != 2 || summary.Filters.Models[0] != "gpt-5.4" || summary.Filters.Models[1] != "grok-4-fast" {
+		t.Fatalf("Filters.Models=%v, want [gpt-5.4 grok-4-fast]", summary.Filters.Models)
+	}
+	if len(summary.ByModel) != 2 {
+		t.Fatalf("ByModel=%+v, want 2 merged models", summary.ByModel)
+	}
+	gpt := summary.ByModel[0]
+	if gpt.Key != "gpt-5.4" || gpt.Label != "gpt-5.4" || gpt.TotalTokens != 3_000_000 {
+		t.Fatalf("unexpected merged gpt-5.4 item: %+v", gpt)
+	}
+	// gpt-5.4 base input = $2.50/M; fast = 2x ($5.00/M). Total = 2.50 + 5.00 + 5.00 = 12.50.
+	if math.Abs(gpt.CostUSD-12.50) > 1e-6 {
+		t.Fatalf("gpt-5.4 merged CostUSD=%.6f, want 12.50", gpt.CostUSD)
+	}
+
+	grok := summary.ByModel[1]
+	if grok.Key != "grok-4-fast" || math.Abs(grok.CostUSD-0.20) > 1e-6 {
+		t.Fatalf("native grok-4-fast altered unexpectedly: %+v", grok)
+	}
+
+	// Filtering by "gpt-5.4" should still include both standard and fast slices.
+	sessions, err := svc.Sessions(ctx, 1, QueryFilter{
+		Start: bucket.Add(-time.Hour),
+		End:   bucket.Add(2 * time.Hour),
+		Model: "gpt-5.4",
+	}, 1, 20)
+	if err != nil {
+		t.Fatalf("Sessions failed: %v", err)
+	}
+	if len(sessions.Sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions.Sessions))
+	}
+	if len(sessions.Sessions[0].Models) != 1 || sessions.Sessions[0].Models[0] != "gpt-5.4" {
+		t.Fatalf("session Models=%v, want [gpt-5.4]", sessions.Sessions[0].Models)
+	}
+	if math.Abs(sessions.Sessions[0].CostUSD-12.50) > 1e-6 {
+		t.Fatalf("session CostUSD=%.6f, want 12.50", sessions.Sessions[0].CostUSD)
 	}
 }
 
