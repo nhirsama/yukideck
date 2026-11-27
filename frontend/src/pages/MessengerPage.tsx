@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { LoadingState } from '@/components/LoadingState';
 import { Select } from '@/components/Select';
+import { useToast } from '@/components/Toast';
 import { Tooltip } from '@/components/Tooltip';
 import {
   coreApi,
@@ -59,9 +60,9 @@ export function MessengerPage() {
 
 function ChannelsSection() {
   const qc = useQueryClient();
+  const { showToast } = useToast();
   const [capFilter, setCapFilter] = useState<CapFilter>('all');
   const [editing, setEditing] = useState<Channel | 'new' | null>(null);
-  const [feedback, setFeedback] = useState<string>('');
 
   const { data: driversData } = useQuery({
     queryKey: ['messenger', 'drivers'],
@@ -77,13 +78,17 @@ function ChannelsSection() {
 
   const deleteMut = useMutation({
     mutationFn: (id: number) => coreApi.deleteChannel(id),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['messenger', 'channels'] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['messenger', 'channels'] });
+      showToast('渠道已删除');
+    },
+    onError: (err: Error) => showToast(`删除失败：${err.message}`, 'error'),
   });
 
   const testMut = useMutation({
     mutationFn: (id: number) => coreApi.testChannel(id),
-    onSuccess: () => setFeedback('测试消息已发送'),
-    onError: (err: Error) => setFeedback(`测试失败：${err.message}`),
+    onSuccess: () => showToast('测试消息已发送'),
+    onError: (err: Error) => showToast(`测试失败：${err.message}`, 'error'),
   });
 
   return (
@@ -110,18 +115,13 @@ function ChannelsSection() {
 
         <button
           type="button"
-          onClick={() => {
-            setFeedback('');
-            setEditing('new');
-          }}
+          onClick={() => setEditing('new')}
           className="yd-btn-primary"
         >
           <Plus className="h-3.5 w-3.5" />
           新增渠道
         </button>
       </div>
-
-      {feedback && <div className="yd-notice">{feedback}</div>}
 
       {editing && drivers.length > 0 && (
         <ChannelForm
@@ -130,7 +130,11 @@ function ChannelsSection() {
           onClose={() => setEditing(null)}
           onSaved={(ch) => {
             setEditing(null);
-            setFeedback(ch.webhook_warning ? `已保存（${ch.webhook_warning}）` : '渠道已保存');
+            if (ch.webhook_warning) {
+              showToast(`已保存（${ch.webhook_warning}）`, 'warning');
+            } else {
+              showToast('渠道已保存');
+            }
             void qc.invalidateQueries({ queryKey: ['messenger', 'channels'] });
           }}
         />
@@ -376,6 +380,7 @@ function ChannelForm({
 function PushEndpointsSection() {
   const qc = useQueryClient();
   const { user } = useAuth();
+  const { showToast } = useToast();
   const [editing, setEditing] = useState<PushEndpoint | 'new' | null>(null);
   const [copiedId, setCopiedId] = useState<string>('');
 
@@ -396,13 +401,20 @@ function PushEndpointsSection() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['messenger', 'push-endpoints'] });
       void qc.invalidateQueries({ queryKey: ['auth', 'api-keys', 'schema'] });
+      showToast('推送终结点已删除');
     },
+    onError: (err: Error) => showToast(`删除失败：${err.message}`, 'error'),
   });
 
   const copyText = async (key: string, text: string) => {
-    await navigator.clipboard.writeText(text);
-    setCopiedId(key);
-    setTimeout(() => setCopiedId(''), 1500);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedId(key);
+      setTimeout(() => setCopiedId(''), 1500);
+      showToast('已复制到剪贴板');
+    } catch {
+      showToast('复制失败，请手动复制', 'error');
+    }
   };
 
   return (
@@ -434,9 +446,11 @@ function PushEndpointsSection() {
           initial={editing === 'new' ? null : editing}
           onClose={() => setEditing(null)}
           onSaved={() => {
+            const isNew = editing === 'new';
             setEditing(null);
             void qc.invalidateQueries({ queryKey: ['messenger', 'push-endpoints'] });
             void qc.invalidateQueries({ queryKey: ['auth', 'api-keys', 'schema'] });
+            showToast(isNew ? '推送终结点已创建' : '推送终结点已保存');
           }}
         />
       )}

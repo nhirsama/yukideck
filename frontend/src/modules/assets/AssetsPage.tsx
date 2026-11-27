@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, Check, FolderInput, PackageOpen, Plus, Trash2 } from 'lucide-react';
+import { Archive, FolderInput, PackageOpen, Plus, Trash2 } from 'lucide-react';
 import { LoadingState } from '@/components/LoadingState';
 import { Select } from '@/components/Select';
+import { useToast } from '@/components/Toast';
 import {
   assetsApi,
   buildCategorySelectOptions,
@@ -50,23 +51,7 @@ export default function AssetsPage() {
     itemId: null,
   });
   const [metaManagerOpen, setMetaManagerOpen] = useState(false);
-  const [toast, setToast] = useState<{ text: string; tone?: 'info' | 'error' } | null>(null);
-  const toastTimerRef = useRef<number | null>(null);
-
-  const showToast = useCallback((text: string, tone: 'info' | 'error' = 'info') => {
-    setToast({ text, tone });
-    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = window.setTimeout(() => {
-      setToast(null);
-      toastTimerRef.current = null;
-    }, 2200);
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
-    };
-  }, []);
+  const { showToast } = useToast();
 
   const invalidateAll = () => {
     void qc.invalidateQueries({ queryKey: ['assets'] });
@@ -262,22 +247,6 @@ export default function AssetsPage() {
         onCreateItem={() => setModalState({ open: true, itemId: null })}
         onFilterWarranty={(st) => setQuery((q) => ({ ...q, warranty_status: st }))}
       />
-
-      {/* Floating Toast (no layout shift, aligned with StoragePage) */}
-      {toast && (
-        <div className="fixed top-5 right-5 z-[60] pointer-events-none flex flex-col items-end gap-2">
-          <div
-            className={`pointer-events-auto flex items-center gap-2 rounded-xl border bg-white/95 backdrop-blur-md px-3.5 py-2 text-xs shadow-[0_8px_24px_rgba(15,23,42,0.08)] ${
-              toast.tone === 'error'
-                ? 'border-red-200 text-red-700'
-                : 'border-zinc-200/90 text-zinc-700'
-            }`}
-          >
-            {toast.tone !== 'error' && <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0" />}
-            <span>{toast.text}</span>
-          </div>
-        </div>
-      )}
 
       <FilterBar
         query={query}

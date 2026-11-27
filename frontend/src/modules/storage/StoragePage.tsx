@@ -20,6 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import { LoadingState } from '@/components/LoadingState';
+import { useToast } from '@/components/Toast';
 import { Tooltip } from '@/components/Tooltip';
 import {
   storageApi,
@@ -53,11 +54,10 @@ function useWaterfallColumns(): number {
 
 export default function StoragePage() {
   const qc = useQueryClient();
+  const { showToast, setProgress } = useToast();
   const [prefix, setPrefix] = useState('');
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Map<string, PathItem>>(new Map());
-  const [toast, setToast] = useState<{ text: string; tone?: 'info' | 'error' } | null>(null);
-  const [uploadingText, setUploadingText] = useState('');
   const [dragging, setDragging] = useState(false);
   const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
   const [moveModalOpen, setMoveModalOpen] = useState(false);
@@ -65,26 +65,16 @@ export default function StoragePage() {
   const [loadedUrls, setLoadedUrls] = useState<Record<string, true>>({});
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   const probedUrlsRef = useRef<Set<string>>(new Set());
-  const toastTimerRef = useRef<number | null>(null);
   const copiedTimerRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const colCount = useWaterfallColumns();
 
-  const showToast = useCallback((text: string, tone: 'info' | 'error' = 'info') => {
-    setToast({ text, tone });
-    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = window.setTimeout(() => {
-      setToast(null);
-      toastTimerRef.current = null;
-    }, 2200);
-  }, []);
-
   useEffect(() => {
     return () => {
-      if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+      setProgress('storage-upload', null);
       if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
     };
-  }, []);
+  }, [setProgress]);
 
   const { data: cfgData, isLoading: cfgLoading } = useQuery({
     queryKey: ['storage', 'config'],
@@ -212,7 +202,7 @@ export default function StoragePage() {
       let okCount = 0;
       let lastErr = '';
       for (let i = 0; i < arr.length; i++) {
-        setUploadingText(`正在上传 (${i + 1}/${arr.length})：${arr[i].name || '剪贴板文件'}`);
+        setProgress('storage-upload', `正在上传 (${i + 1}/${arr.length})：${arr[i].name || '剪贴板文件'}`);
         try {
           await storageApi.uploadFile(arr[i], prefix, cfg);
           okCount++;
@@ -220,7 +210,7 @@ export default function StoragePage() {
           lastErr = err instanceof Error ? err.message : '上传失败';
         }
       }
-      setUploadingText('');
+      setProgress('storage-upload', null);
       if (okCount > 0) {
         setDimsMap(loadCachedDimensions());
         void refetch();
@@ -232,7 +222,7 @@ export default function StoragePage() {
         showToast(lastErr, 'error');
       }
     },
-    [cfg, prefix, refetch, showToast],
+    [cfg, prefix, refetch, setProgress, showToast],
   );
 
   // Global Ctrl+V paste upload (matching yukilink experience)
@@ -487,30 +477,6 @@ export default function StoragePage() {
           />
         </div>
       </div>
-
-      {/* Floating Toast & Upload Status (no layout shift) */}
-      {(uploadingText || toast) && (
-        <div className="fixed top-5 right-5 z-[60] pointer-events-none flex flex-col items-end gap-2">
-          {uploadingText && (
-            <div className="pointer-events-auto flex items-center gap-2 rounded-xl border border-sky-200/90 bg-white/95 backdrop-blur-md px-3.5 py-2 text-xs text-sky-700 shadow-[0_8px_24px_rgba(15,23,42,0.08)]">
-              <span className="h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse" />
-              <span>{uploadingText}</span>
-            </div>
-          )}
-          {toast && (
-            <div
-              className={`pointer-events-auto flex items-center gap-2 rounded-xl border bg-white/95 backdrop-blur-md px-3.5 py-2 text-xs shadow-[0_8px_24px_rgba(15,23,42,0.08)] ${
-                toast.tone === 'error'
-                  ? 'border-red-200 text-red-700'
-                  : 'border-zinc-200/90 text-zinc-700'
-              }`}
-            >
-              {toast.tone !== 'error' && <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0" />}
-              <span>{toast.text}</span>
-            </div>
-          )}
-        </div>
-      )}
 
       {listLoading ? (
         <LoadingState label="正在加载目录..." variant="section" />

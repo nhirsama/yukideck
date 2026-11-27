@@ -6,6 +6,7 @@ import { useEnabledModules } from '@/core/module';
 import { AppShell } from '@/core/layout/AppShell';
 import { LoadingState } from '@/components/LoadingState';
 import { LoginModal } from '@/components/LoginModal';
+import { ToastProvider } from '@/components/Toast';
 import { LoginPage } from '@/pages/LoginPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { MessengerPage } from '@/pages/MessengerPage';
@@ -58,9 +59,11 @@ export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <BrowserRouter>
-          <AppRoutes />
-        </BrowserRouter>
+        <ToastProvider>
+          <BrowserRouter>
+            <AppRoutes />
+          </BrowserRouter>
+        </ToastProvider>
       </AuthProvider>
     </QueryClientProvider>
   );

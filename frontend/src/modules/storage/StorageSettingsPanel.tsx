@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, Copy, PlugZap } from 'lucide-react';
 import { LoadingState } from '@/components/LoadingState';
+import { useToast } from '@/components/Toast';
 import { storageApi, type SaveStorageConfigPayload, type UploadMode } from './api';
 
 const CORS_SNIPPET = JSON.stringify(
@@ -19,6 +20,7 @@ const CORS_SNIPPET = JSON.stringify(
 
 export default function StorageSettingsPanel() {
   const qc = useQueryClient();
+  const { showToast } = useToast();
   const { data, isLoading } = useQuery({
     queryKey: ['storage', 'config'],
     queryFn: storageApi.getConfig,
@@ -34,7 +36,6 @@ export default function StorageSettingsPanel() {
   const [hashLength, setHashLength] = useState(16);
   const [forcePathStyle, setForcePathStyle] = useState(false);
   const [uploadMode, setUploadMode] = useState<UploadMode>('direct');
-  const [message, setMessage] = useState('');
   const [copiedCors, setCopiedCors] = useState(false);
 
   useEffect(() => {
@@ -54,21 +55,20 @@ export default function StorageSettingsPanel() {
     mutationFn: (payload: SaveStorageConfigPayload) => storageApi.saveConfig(payload),
     onSuccess: () => {
       setSecretKey('');
-      setMessage('图床存储配置已保存');
+      showToast('图床存储配置已保存');
       void qc.invalidateQueries({ queryKey: ['storage'] });
     },
-    onError: (err: Error) => setMessage(`保存失败：${err.message}`),
+    onError: (err: Error) => showToast(`保存失败：${err.message}`, 'error'),
   });
 
   const testMut = useMutation({
     mutationFn: storageApi.testConfig,
-    onSuccess: () => setMessage('存储桶连通性测试成功'),
-    onError: (err: Error) => setMessage(`连通性测试失败：${err.message}`),
+    onSuccess: () => showToast('存储桶连通性测试成功'),
+    onError: (err: Error) => showToast(`连通性测试失败：${err.message}`, 'error'),
   });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setMessage('');
     saveMut.mutate({
       endpoint,
       region,
@@ -107,8 +107,6 @@ export default function StorageSettingsPanel() {
           </button>
         )}
       </div>
-
-      {message && <div className="yd-notice">{message}</div>}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <label className="block space-y-1.5">

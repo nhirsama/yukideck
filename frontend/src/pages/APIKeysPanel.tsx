@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { LoadingState } from '@/components/LoadingState';
 import { Select } from '@/components/Select';
+import { useToast } from '@/components/Toast';
 import { Tooltip } from '@/components/Tooltip';
 import {
   coreApi,
@@ -68,6 +69,7 @@ function nextRowUid(): string {
 
 export function APIKeysPanel() {
   const qc = useQueryClient();
+  const { showToast } = useToast();
   const [editing, setEditing] = useState<APIKey | 'new' | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [openMenuId, setOpenMenuId] = useState<number | null>(null);
@@ -154,7 +156,9 @@ export function APIKeysPanel() {
     onSuccess: (res) => {
       setEditing((cur) => (cur && cur !== 'new' && cur.id === res.api_key.id ? null : cur));
       void qc.invalidateQueries({ queryKey: ['auth', 'api-keys'] });
+      showToast(res.api_key.enabled ? 'API Key 已启用' : 'API Key 已停用');
     },
+    onError: (err: Error) => showToast(`操作失败：${err.message}`, 'error'),
   });
 
   const rotateMut = useMutation({
@@ -163,7 +167,9 @@ export function APIKeysPanel() {
       setRevealedKey({ name: res.api_key.name, key: res.plain_key });
       setCopied(false);
       void qc.invalidateQueries({ queryKey: ['auth', 'api-keys'] });
+      showToast('密钥已轮换');
     },
+    onError: (err: Error) => showToast(`轮换失败：${err.message}`, 'error'),
   });
 
   const deleteMut = useMutation({
@@ -171,7 +177,9 @@ export function APIKeysPanel() {
     onSuccess: (_, id) => {
       setEditing((cur) => (cur && cur !== 'new' && cur.id === id ? null : cur));
       void qc.invalidateQueries({ queryKey: ['auth', 'api-keys'] });
+      showToast('API Key 已删除');
     },
+    onError: (err: Error) => showToast(`删除失败：${err.message}`, 'error'),
   });
 
   const copyRevealed = async () => {
@@ -289,6 +297,7 @@ export function APIKeysPanel() {
             onUpdated={() => {
               setEditing(null);
               void qc.invalidateQueries({ queryKey: ['auth', 'api-keys'] });
+              showToast('API Key 已保存');
             }}
           />
         </div>
@@ -509,6 +518,7 @@ export function APIKeysPanel() {
                         onUpdated={() => {
                           setEditing(null);
                           void qc.invalidateQueries({ queryKey: ['auth', 'api-keys'] });
+                          showToast('API Key 已保存');
                         }}
                       />
                     </div>

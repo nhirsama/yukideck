@@ -26,6 +26,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { LoadingState } from '@/components/LoadingState';
+import { useToast } from '@/components/Toast';
 import { Tooltip } from '@/components/Tooltip';
 import {
   formatLogReason,
@@ -98,8 +99,7 @@ export default function PlannerPage() {
     const end = new Date(now.getFullYear(), now.getMonth() + 2, 0);
     return { start: start.toISOString(), end: end.toISOString() };
   });
-  const [toast, setToast] = useState<{ text: string; tone?: 'info' | 'error' } | null>(null);
-  const toastTimerRef = useRef<number | null>(null);
+  const { showToast } = useToast();
 
   useEffect(() => {
     if (openMenuId === null) return;
@@ -117,21 +117,6 @@ export default function PlannerPage() {
       document.removeEventListener('keydown', onKeyDown);
     };
   }, [openMenuId]);
-
-  const showToast = (text: string, tone: 'info' | 'error' = 'info') => {
-    setToast({ text, tone });
-    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = window.setTimeout(() => {
-      setToast(null);
-      toastTimerRef.current = null;
-    }, 2200);
-  };
-
-  useEffect(() => {
-    return () => {
-      if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
-    };
-  }, []);
 
   const invalidateAll = () => {
     void qc.invalidateQueries({ queryKey: ['planner'] });
@@ -293,22 +278,6 @@ export default function PlannerPage() {
           </button>
         ))}
       </div>
-
-      {/* Floating Toast (no layout shift, aligned with StoragePage) */}
-      {toast && (
-        <div className="fixed top-5 right-5 z-[60] pointer-events-none flex flex-col items-end gap-2">
-          <div
-            className={`pointer-events-auto flex items-center gap-2 rounded-xl border bg-white/95 backdrop-blur-md px-3.5 py-2 text-xs shadow-[0_8px_24px_rgba(15,23,42,0.08)] ${
-              toast.tone === 'error'
-                ? 'border-red-200 text-red-700'
-                : 'border-zinc-200/90 text-zinc-700'
-            }`}
-          >
-            {toast.tone !== 'error' && <Check className="h-3.5 w-3.5 text-emerald-500 shrink-0" />}
-            <span>{toast.text}</span>
-          </div>
-        </div>
-      )}
 
       {/* TAB 1: Unified Todo & Schedule List */}
       {tab === 'list' && (

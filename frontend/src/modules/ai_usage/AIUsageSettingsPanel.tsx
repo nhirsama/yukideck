@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Eye, EyeOff, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { LoadingState } from '@/components/LoadingState';
+import { useToast } from '@/components/Toast';
 import { Tooltip } from '@/components/Tooltip';
 import { aiUsageApi, type Device, type ModelAlias, type ModelPrice } from './api';
 import { formatDateTime } from './format';
 
 export default function AIUsageSettingsPanel() {
   const qc = useQueryClient();
-  const [notice, setNotice] = useState('');
+  const { showToast } = useToast();
 
   const { data: devicesRes, isLoading: loadingDevices } = useQuery({
     queryKey: ['ai-usage', 'devices'],
@@ -101,19 +102,19 @@ export default function AIUsageSettingsPanel() {
     mutationFn: ({ deviceId, name, hidden }: { deviceId: string; name: string; hidden: boolean }) =>
       aiUsageApi.updateDevice(deviceId, { name, hidden }),
     onSuccess: () => {
-      setNotice('设备信息已更新');
+      showToast('设备信息已更新');
       invalidateAll();
     },
-    onError: (err: Error) => setNotice(`更新失败：${err.message}`),
+    onError: (err: Error) => showToast(`更新失败：${err.message}`, 'error'),
   });
 
   const deleteDevMut = useMutation({
     mutationFn: (deviceId: string) => aiUsageApi.deleteDevice(deviceId),
     onSuccess: () => {
-      setNotice('设备记录已删除');
+      showToast('设备记录已删除');
       invalidateAll();
     },
-    onError: (err: Error) => setNotice(`删除失败：${err.message}`),
+    onError: (err: Error) => showToast(`删除失败：${err.message}`, 'error'),
   });
 
   const saveAliasMut = useMutation({
@@ -123,19 +124,19 @@ export default function AIUsageSettingsPanel() {
       setAliasPattern('');
       setAliasCanonical('');
       setAliasPriority(100);
-      setNotice('模型别名规则已保存');
+      showToast('模型别名规则已保存');
       invalidateAll();
     },
-    onError: (err: Error) => setNotice(`保存别名失败：${err.message}`),
+    onError: (err: Error) => showToast(`保存别名失败：${err.message}`, 'error'),
   });
 
   const deleteAliasMut = useMutation({
     mutationFn: aiUsageApi.deleteAlias,
     onSuccess: () => {
-      setNotice('模型别名已删除');
+      showToast('模型别名已删除');
       invalidateAll();
     },
-    onError: (err: Error) => setNotice(`删除别名失败：${err.message}`),
+    onError: (err: Error) => showToast(`删除别名失败：${err.message}`, 'error'),
   });
 
   const savePriceMut = useMutation({
@@ -143,19 +144,19 @@ export default function AIUsageSettingsPanel() {
     onSuccess: () => {
       setPriceModalOpen(false);
       setPricePattern('');
-      setNotice('自定义单价已保存');
+      showToast('自定义单价已保存');
       invalidateAll();
     },
-    onError: (err: Error) => setNotice(`保存单价失败：${err.message}`),
+    onError: (err: Error) => showToast(`保存单价失败：${err.message}`, 'error'),
   });
 
   const deletePriceMut = useMutation({
     mutationFn: aiUsageApi.deletePrice,
     onSuccess: () => {
-      setNotice('自定义单价已删除');
+      showToast('自定义单价已删除');
       invalidateAll();
     },
-    onError: (err: Error) => setNotice(`删除单价失败：${err.message}`),
+    onError: (err: Error) => showToast(`删除单价失败：${err.message}`, 'error'),
   });
 
   const devices = devicesRes?.devices ?? [];
@@ -181,7 +182,6 @@ export default function AIUsageSettingsPanel() {
 
   const handleAliasSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setNotice('');
     saveAliasMut.mutate({
       match_pattern: aliasPattern.trim(),
       canonical_model: aliasCanonical.trim(),
@@ -191,7 +191,6 @@ export default function AIUsageSettingsPanel() {
 
   const handlePriceSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setNotice('');
     savePriceMut.mutate({
       model_pattern: pricePattern.trim(),
       input_per_m: Number(inputPerM) || 0,
@@ -206,8 +205,6 @@ export default function AIUsageSettingsPanel() {
 
   return (
     <div className="space-y-6">
-      {notice && <div className="yd-notice">{notice}</div>}
-
       {/* 1. Devices */}
       <section className="yd-card p-6 space-y-4">
         <div>
