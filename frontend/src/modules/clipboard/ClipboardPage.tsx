@@ -24,6 +24,7 @@ import { Select } from '@/components/Select';
 import { Tooltip } from '@/components/Tooltip';
 import { useToast } from '@/components/Toast';
 import { useIsTouchDevice } from '@/core/responsive';
+import { renderDragOverlay, useLiveReorder, useSerialReorder } from '@/core/useLiveReorder';
 import {
   DEFAULT_MAX_BYTES,
   SORT_OPTIONS,
@@ -111,15 +112,23 @@ function estimateCardWeight(item: ClipboardItem): number {
   return 4 + Math.max(1, visualLines);
 }
 
-function reorderList(items: ClipboardItem[], fromId: number, toId: number): number[] | null {
-  if (fromId === toId) return null;
-  const ids = items.map((x) => x.id);
-  const fromIdx = ids.indexOf(fromId);
-  const toIdx = ids.indexOf(toId);
-  if (fromIdx === -1 || toIdx === -1) return null;
-  ids.splice(fromIdx, 1);
-  ids.splice(toIdx, 0, fromId);
-  return ids;
+/**
+ * Horizontal shortest-column-first waterfall distribution (left-to-right across the top,
+ * matching natural reading order). Used on initial load / re-entry / filter or column changes.
+ */
+function distributeWaterfallHorizontal(items: ClipboardItem[], colCount: number): ClipboardItem[][] {
+  const cols: ClipboardItem[][] = Array.from({ length: colCount }, () => []);
+  const heights: number[] = Array.from({ length: colCount }, () => 0);
+
+  for (const item of items) {
+    let minIdx = 0;
+    for (let i = 1; i < colCount; i++) {
+      if (heights[i] < heights[minIdx]) minIdx = i;
+    }
+    cols[minIdx].push(item);
+    heights[minIdx] += estimateCardWeight(item);
+  }
+  return cols;
 }
 
 function sortItemsLocal(items: ClipboardItem[], query: ClipboardItemQuery): ClipboardItem[] {
@@ -161,8 +170,9 @@ export default function ClipboardPage() {
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [openMenuId, setOpenMenuId] = useState<number | null>(null);
   const [expiryTarget, setExpiryTarget] = useState<ClipboardItem | null>(null);
-  const [dragId, setDragId] = useState<number | null>(null);
-  const [overId, setOverId] = useState<number | null>(null);
+  // Session-pinned column assignment after drag-drop so cards stay right where dropped
+  // without forced cross-column rebalancing until the user re-enters or changes view/sort/filter.
+  const [pinnedColIds, setPinnedColIds] = useState<number[][] | null>(null);
 
   const searchWrapRef = useRef<HTMLDivElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -340,6 +350,9 @@ export default function ClipboardPage() {
         });
       }
 
+      if (patch.starred !== undefined) {
+        setPinnedColIds(null);
+      }
       if (patch.expires_at) {
         setExpiryTarget(null);
       }
@@ -395,40 +408,34 @@ export default function ClipboardPage() {
     },
   });
 
-  const reorderMut = useMutation({
-    mutationFn: (ids: number[]) => clipboardApi.reorderItems(ids),
-    onMutate: async (ids) => {
-      await qc.cancelQueries({ queryKey: ['clipboard', 'items'] });
-      const previous = qc.getQueriesData<ListItemsResponse>({ queryKey: ['clipboard', 'items'] });
-      const orderMap = new Map<number, number>(ids.map((id, idx) => [id, idx]));
-      for (const [key, data] of previous) {
-        if (!data) continue;
-        const q = (key[2] as ClipboardItemQuery | undefined) ?? {};
-        const nextItems = sortItemsLocal(
-          data.items.map((it) =>
-            orderMap.has(it.id) ? { ...it, sort_order: orderMap.get(it.id)! } : it,
-          ),
-          q,
-        );
-        qc.setQueryData<ListItemsResponse>(key, {
-          items: nextItems,
-          total: nextItems.length,
-        });
-      }
-      return { previous };
-    },
-    onError: (err: Error, _ids, ctx) => {
-      if (ctx?.previous) {
-        for (const [key, data] of ctx.previous) {
-          qc.setQueryData(key, data);
+  const handleReorder = useSerialReorder(
+    (ids: number[]) => clipboardApi.reorderItems(ids),
+    {
+      onOptimistic: (ids) => {
+        void qc.cancelQueries({ queryKey: ['clipboard', 'items'] });
+        const orderMap = new Map<number, number>(ids.map((id, idx) => [id, idx]));
+        const queries = qc.getQueriesData<ListItemsResponse>({ queryKey: ['clipboard', 'items'] });
+        for (const [key, data] of queries) {
+          if (!data) continue;
+          const q = (key[2] as ClipboardItemQuery | undefined) ?? {};
+          const nextItems = sortItemsLocal(
+            data.items.map((it) =>
+              orderMap.has(it.id) ? { ...it, sort_order: orderMap.get(it.id)! } : it,
+            ),
+            q,
+          );
+          qc.setQueryData<ListItemsResponse>(key, {
+            items: nextItems,
+            total: nextItems.length,
+          });
         }
-      }
-      showToast(err.message, 'error');
+      },
+      onError: (err) => showToast(err.message, 'error'),
+      onDrained: () => {
+        void qc.invalidateQueries({ queryKey: ['clipboard', 'items'] });
+      },
     },
-    onSettled: () => {
-      void qc.invalidateQueries({ queryKey: ['clipboard', 'items'] });
-    },
-  });
+  );
 
   // Global Ctrl/Cmd+V quick create when not typing in an input.
   useEffect(() => {
@@ -565,36 +572,103 @@ export default function ClipboardPage() {
 
   const hasFilters = Boolean(query.q) || Boolean(query.starred);
 
-  // Balanced N-column waterfall distribution (shortest column next, matching storage module)
-  const waterfallColumns = useMemo(() => {
-    const cols: ClipboardItem[][] = Array.from({ length: colCount }, () => []);
-    const heights: number[] = Array.from({ length: colCount }, () => 0);
+  // Reset pinned columns whenever filter, sort, or responsive column count changes.
+  useEffect(() => {
+    setPinnedColIds(null);
+  }, [query.q, query.starred, query.sort_by, query.sort_dir, colCount]);
 
-    for (const item of items) {
-      let minIdx = 0;
-      for (let i = 1; i < colCount; i++) {
-        if (heights[i] < heights[minIdx]) minIdx = i;
+  // Base waterfall columns: canonical horizontal shortest-column-first initially, or
+  // session-pinned columns after manual drag-drop (reconciling any newly added/removed items).
+  const baseWaterfallColumns = useMemo(() => {
+    if (!pinnedColIds || pinnedColIds.length !== colCount) {
+      return distributeWaterfallHorizontal(items, colCount);
+    }
+    const byId = new Map(items.map((it) => [it.id, it]));
+    const seen = new Set<number>();
+    const cols: ClipboardItem[][] = pinnedColIds.map((colIds) => {
+      const col: ClipboardItem[] = [];
+      for (const id of colIds) {
+        const it = byId.get(id);
+        if (it) {
+          col.push(it);
+          seen.add(id);
+        }
       }
-      cols[minIdx].push(item);
-      heights[minIdx] += estimateCardWeight(item);
+      return col;
+    });
+    // Place any newly created items (e.g. Ctrl+V / SSE) at the top of the first column
+    // (after starred items if normal) without disturbing existing column assignments.
+    const extras = items.filter((it) => !seen.has(it.id));
+    if (extras.length > 0 && cols.length > 0) {
+      for (const extra of extras.reverse()) {
+        if (extra.starred) {
+          cols[0].unshift(extra);
+        } else {
+          const insertAt = cols[0].findIndex((c) => !c.starred);
+          if (insertAt === -1) cols[0].push(extra);
+          else cols[0].splice(insertAt, 0, extra);
+        }
+      }
     }
     return cols;
-  }, [items, colCount]);
+  }, [items, colCount, pinnedColIds]);
 
-  const handleDropReorder = (targetId: number) => {
-    if (!canDrag || dragId == null || dragId <= 0 || targetId <= 0) return;
-    const fromItem = items.find((x) => x.id === dragId);
-    const toItem = items.find((x) => x.id === targetId);
-    setDragId(null);
-    setOverId(null);
-    if (!fromItem || !toItem || fromItem.id === toItem.id) return;
-    if (fromItem.starred !== toItem.starred) {
-      showToast('星标项始终置顶，请在同组内拖拽调整顺序', 'info');
-      return;
-    }
-    const next = reorderList(items, fromItem.id, toItem.id);
-    if (next) reorderMut.mutate(next);
-  };
+  // Exact inverse of horizontal shortest-column-first: sort by (starred DESC, cumulative Y ASC, colIdx ASC).
+  const serializeHorizontalWaterfall = useCallback(
+    (cols: number[][]): number[] => {
+      const byId = new Map(items.map((it) => [it.id, it]));
+      const entries: Array<{
+        id: number;
+        starred: boolean;
+        y: number;
+        colIdx: number;
+        rowIdx: number;
+      }> = [];
+      for (let colIdx = 0; colIdx < cols.length; colIdx++) {
+        let y = 0;
+        const col = cols[colIdx];
+        for (let rowIdx = 0; rowIdx < col.length; rowIdx++) {
+          const id = col[rowIdx];
+          const item = byId.get(id);
+          if (!item) continue;
+          entries.push({ id, starred: item.starred, y, colIdx, rowIdx });
+          y += estimateCardWeight(item);
+        }
+      }
+      entries.sort((a, b) => {
+        if (a.starred !== b.starred) return a.starred ? -1 : 1;
+        if (a.y !== b.y) return a.y - b.y;
+        if (a.colIdx !== b.colIdx) return a.colIdx - b.colIdx;
+        return a.rowIdx - b.rowIdx;
+      });
+      return entries.map((e) => e.id);
+    },
+    [items],
+  );
+
+  const handleCommitWaterfall = useCallback(
+    (cols: number[][], orderedIds: number[], orderChanged: boolean) => {
+      setPinnedColIds(cols);
+      if (orderChanged) {
+        handleReorder(orderedIds);
+      }
+    },
+    [handleReorder],
+  );
+
+  const reorder = useLiveReorder({
+    items,
+    enabled: canDrag,
+    layout: viewMode === 'card' ? 'waterfall' : 'list',
+    columns: baseWaterfallColumns,
+    serializeColumns: serializeHorizontalWaterfall,
+    onCommitColumns: handleCommitWaterfall,
+    getGroup: (item) => item.starred,
+    canDragItem: (item) => item.id > 0,
+    onCommit: handleReorder,
+  });
+
+  const waterfallColumns = reorder.orderedColumns;
 
   const renderActionBar = (item: ClipboardItem, compact = false) => {
     const menuOpen = openMenuId === item.id;
@@ -938,72 +1012,70 @@ export default function ClipboardPage() {
       ) : viewMode === 'card' ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 items-start">
           {waterfallColumns.map((colItems, colIdx) => (
-            <div key={colIdx} className="flex flex-col gap-3 min-w-0">
+            <div
+              key={colIdx}
+              {...reorder.getColumnProps(colIdx)}
+              className="flex flex-col gap-3 min-w-0 min-h-[120px]"
+            >
               {colItems.map((item) => {
-                const isDragging = dragId === item.id;
-                const isOver = overId === item.id && dragId !== item.id;
+                const isPlaceholder = reorder.activeId === item.id;
+                const isOtherGroup =
+                  reorder.isDragging &&
+                  reorder.activeGroup !== null &&
+                  item.starred !== reorder.activeGroup;
                 return (
                   <div
                     key={item.id}
-                    draggable={canDrag}
-                    onDragStart={(e) => {
-                      if (!canDrag) return;
-                      e.dataTransfer.effectAllowed = 'move';
-                      e.dataTransfer.setData('text/plain', String(item.id));
-                      setDragId(item.id);
-                    }}
-                    onDragEnd={() => {
-                      setDragId(null);
-                      setOverId(null);
-                    }}
-                    onDragOver={(e) => {
-                      if (!canDrag) return;
-                      e.preventDefault();
-                      e.dataTransfer.dropEffect = 'move';
-                      if (overId !== item.id) setOverId(item.id);
-                    }}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      handleDropReorder(item.id);
-                    }}
+                    {...reorder.getItemProps(item)}
                     onClick={() => handleOpenEditor(item.id)}
-                    className={`yd-card-interactive relative flex cursor-pointer flex-col justify-between gap-3 p-4 ${
-                      isDragging ? 'opacity-50' : ''
-                    } ${isOver ? 'border-sky-400 ring-2 ring-sky-200' : ''}`}
+                    className={`relative flex flex-col justify-between gap-3 p-4 ${
+                      isPlaceholder
+                        ? 'rounded-xl border-2 border-dashed border-sky-300 bg-sky-50/50 shadow-none'
+                        : `${reorder.isDragging ? 'yd-card' : 'yd-card-interactive'} cursor-pointer ${
+                            isOtherGroup ? 'opacity-55' : ''
+                          }`
+                    }`}
                   >
-                    {/* Preview Body */}
-                    <div className="space-y-2 min-w-0">
-                      <div className="flex items-center justify-between gap-2 text-[11px] text-zinc-400">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          {canDrag && (
-                            <Tooltip content="拖拽调整顺序">
-                              <div
-                                className="cursor-grab text-zinc-300 hover:text-zinc-500 active:cursor-grabbing shrink-0"
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                <GripVertical className="h-3.5 w-3.5" />
-                              </div>
-                            </Tooltip>
-                          )}
-                          {item.starred && (
-                            <span className="yd-badge yd-badge-amber">星标</span>
-                          )}
-                          <span className="truncate">{formatRelativeTime(item.updated_at)}</span>
+                    <div
+                      className={`flex flex-col justify-between gap-3 ${
+                        isPlaceholder ? 'pointer-events-none select-none opacity-20' : ''
+                      }`}
+                    >
+                      {/* Preview Body */}
+                      <div className="space-y-2 min-w-0">
+                        <div className="flex items-center justify-between gap-2 text-[11px] text-zinc-400">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            {canDrag && (
+                              <Tooltip content="拖拽调整顺序" disabled={reorder.isDragging}>
+                                <div
+                                  data-drag-handle="true"
+                                  className="cursor-grab text-zinc-300 hover:text-zinc-500 active:cursor-grabbing shrink-0"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <GripVertical className="h-3.5 w-3.5" />
+                                </div>
+                              </Tooltip>
+                            )}
+                            {item.starred && (
+                              <span className="yd-badge yd-badge-amber">星标</span>
+                            )}
+                            <span className="truncate">{formatRelativeTime(item.updated_at)}</span>
+                          </div>
+                          <span className="font-mono shrink-0">
+                            {item.char_count} 字 · {formatBytes(item.byte_size)}
+                          </span>
                         </div>
-                        <span className="font-mono shrink-0">
-                          {item.char_count} 字 · {formatBytes(item.byte_size)}
-                        </span>
+
+                        <pre className="line-clamp-10 whitespace-pre-wrap break-words font-mono text-[13px] leading-relaxed text-zinc-800">
+                          {item.preview || '（空白文本）'}
+                        </pre>
                       </div>
 
-                      <pre className="line-clamp-10 whitespace-pre-wrap break-words font-mono text-[13px] leading-relaxed text-zinc-800">
-                        {item.preview || '（空白文本）'}
-                      </pre>
-                    </div>
-
-                    {/* Card Footer */}
-                    <div className="flex items-center justify-between gap-2 border-t border-zinc-100 pt-2.5">
-                      {renderExpiryBadge(item.expires_at)}
-                      {renderActionBar(item)}
+                      {/* Card Footer */}
+                      <div className="flex items-center justify-between gap-2 border-t border-zinc-100 pt-2.5">
+                        {renderExpiryBadge(item.expires_at)}
+                        {renderActionBar(item)}
+                      </div>
                     </div>
                   </div>
                 );
@@ -1013,43 +1085,35 @@ export default function ClipboardPage() {
         </div>
       ) : (
         <div className="space-y-2">
-          {items.map((item) => {
-            const isDragging = dragId === item.id;
-            const isOver = overId === item.id && dragId !== item.id;
+          {reorder.orderedItems.map((item) => {
+            const isPlaceholder = reorder.activeId === item.id;
+            const isOtherGroup =
+              reorder.isDragging &&
+              reorder.activeGroup !== null &&
+              item.starred !== reorder.activeGroup;
             return (
               <div
                 key={item.id}
-                draggable={canDrag}
-                onDragStart={(e) => {
-                  if (!canDrag) return;
-                  e.dataTransfer.effectAllowed = 'move';
-                  e.dataTransfer.setData('text/plain', String(item.id));
-                  setDragId(item.id);
-                }}
-                onDragEnd={() => {
-                  setDragId(null);
-                  setOverId(null);
-                }}
-                onDragOver={(e) => {
-                  if (!canDrag) return;
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = 'move';
-                  if (overId !== item.id) setOverId(item.id);
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  handleDropReorder(item.id);
-                }}
+                {...reorder.getItemProps(item)}
                 onClick={() => handleOpenEditor(item.id)}
-                className={`yd-card-interactive cursor-pointer p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-start justify-between gap-2.5 sm:gap-4 ${
-                  isDragging ? 'opacity-50' : ''
-                } ${isOver ? 'border-sky-400 ring-2 ring-sky-200' : ''}`}
+                className={`p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-start justify-between gap-2.5 sm:gap-4 ${
+                  isPlaceholder
+                    ? 'rounded-xl border-2 border-dashed border-sky-300 bg-sky-50/50 shadow-none'
+                    : `${reorder.isDragging ? 'yd-card' : 'yd-card-interactive'} cursor-pointer ${
+                        isOtherGroup ? 'opacity-55' : ''
+                      }`
+                }`}
               >
-                <div className="min-w-0 flex-1 space-y-1.5">
+                <div
+                  className={`min-w-0 flex-1 space-y-1.5 ${
+                    isPlaceholder ? 'pointer-events-none select-none opacity-20' : ''
+                  }`}
+                >
                   <div className="flex items-start gap-2">
                     {canDrag && (
-                      <Tooltip content="拖拽调整顺序">
+                      <Tooltip content="拖拽调整顺序" disabled={reorder.isDragging}>
                         <div
+                          data-drag-handle="true"
                           className="mt-0.5 cursor-grab text-zinc-300 hover:text-zinc-500 active:cursor-grabbing shrink-0"
                           onClick={(e) => e.stopPropagation()}
                         >
@@ -1073,13 +1137,63 @@ export default function ClipboardPage() {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-end sm:justify-start shrink-0 pt-2 border-t border-zinc-100 sm:pt-0 sm:border-0">
+                <div
+                  className={`flex items-center justify-end sm:justify-start shrink-0 pt-2 border-t border-zinc-100 sm:pt-0 sm:border-0 ${
+                    isPlaceholder ? 'pointer-events-none select-none opacity-20' : ''
+                  }`}
+                >
                   {renderActionBar(item, true)}
                 </div>
               </div>
             );
           })}
         </div>
+      )}
+
+      {/* Live Drag Overlay */}
+      {renderDragOverlay(reorder.overlay, reorder.overlayRef, (item) =>
+        viewMode === 'card' ? (
+          <div className="flex flex-col justify-between gap-3 rounded-xl border border-sky-300 bg-white p-4 shadow-[0_14px_34px_rgba(14,165,233,0.18)] ring-2 ring-sky-200/80 scale-[1.015]">
+            <div className="space-y-2 min-w-0">
+              <div className="flex items-center justify-between gap-2 text-[11px] text-zinc-400">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <GripVertical className="h-3.5 w-3.5 shrink-0 text-sky-500" />
+                  {item.starred && <span className="yd-badge yd-badge-amber">星标</span>}
+                  <span className="truncate">{formatRelativeTime(item.updated_at)}</span>
+                </div>
+                <span className="font-mono shrink-0">
+                  {item.char_count} 字 · {formatBytes(item.byte_size)}
+                </span>
+              </div>
+              <pre className="line-clamp-10 whitespace-pre-wrap break-words font-mono text-[13px] leading-relaxed text-zinc-800">
+                {item.preview || '（空白文本）'}
+              </pre>
+            </div>
+            <div className="flex items-center justify-between gap-2 border-t border-zinc-100 pt-2.5">
+              {renderExpiryBadge(item.expires_at)}
+              <span className="text-[11px] font-medium text-sky-500">松手放置</span>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-start justify-between gap-4 rounded-xl border border-sky-300 bg-white/95 p-3.5 sm:p-4 shadow-[0_14px_34px_rgba(14,165,233,0.18)] ring-2 ring-sky-200/80 backdrop-blur scale-[1.01]">
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <div className="flex items-start gap-2">
+                <GripVertical className="mt-0.5 h-4 w-4 shrink-0 text-sky-500" />
+                <pre className="line-clamp-3 whitespace-pre-wrap break-words font-mono text-[13px] leading-relaxed text-zinc-800 flex-1 min-w-0">
+                  {item.preview || '（空白文本）'}
+                </pre>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
+                {item.starred && <span className="yd-badge yd-badge-amber">星标</span>}
+                {renderExpiryBadge(item.expires_at)}
+                <span className="yd-badge yd-badge-neutral font-mono">
+                  {item.char_count} 字 · {formatBytes(item.byte_size)}
+                </span>
+              </div>
+            </div>
+            <span className="shrink-0 text-[11px] font-medium text-sky-500">松手放置</span>
+          </div>
+        ),
       )}
 
       {/* Expiry Modal */}

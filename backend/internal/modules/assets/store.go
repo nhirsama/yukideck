@@ -1,8 +1,10 @@
 package assets
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -232,18 +234,44 @@ func (s *PGStore) UpdateCategory(ctx context.Context, userID, id int64, parentID
 	return row, nil
 }
 
+type reorderEntry struct {
+	id    int64
+	order int32
+}
+
+func buildSortedReorderEntries(ids []int64) []reorderEntry {
+	seen := make(map[int64]struct{}, len(ids))
+	entries := make([]reorderEntry, 0, len(ids))
+	for idx, id := range ids {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		entries = append(entries, reorderEntry{id: id, order: int32(idx)})
+	}
+	// Acquire row locks in ascending primary-key order to avoid AB-BA deadlocks (SQLSTATE 40P01).
+	slices.SortFunc(entries, func(a, b reorderEntry) int {
+		return cmp.Compare(a.id, b.id)
+	})
+	return entries
+}
+
 func (s *PGStore) ReorderCategories(ctx context.Context, userID int64, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	entries := buildSortedReorderEntries(ids)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return httpx.Internal("开启排序事务失败", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := s.q.WithTx(tx)
-	for idx, id := range ids {
+	for _, entry := range entries {
 		if err := qtx.UpdateCategorySortOrder(ctx, sqlcgen.UpdateCategorySortOrderParams{
 			UserID:    userID,
-			ID:        id,
-			SortOrder: int32(idx),
+			ID:        entry.id,
+			SortOrder: entry.order,
 		}); err != nil {
 			return httpx.Internal("更新分类排序失败", err)
 		}
@@ -510,17 +538,21 @@ func (s *PGStore) UnretireItem(ctx context.Context, userID, id int64) (sqlcgen.A
 }
 
 func (s *PGStore) ReorderItems(ctx context.Context, userID int64, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	entries := buildSortedReorderEntries(ids)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return httpx.Internal("开启排序事务失败", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := s.q.WithTx(tx)
-	for idx, id := range ids {
+	for _, entry := range entries {
 		if err := qtx.UpdateItemSortOrder(ctx, sqlcgen.UpdateItemSortOrderParams{
 			UserID:    userID,
-			ID:        id,
-			SortOrder: int32(idx),
+			ID:        entry.id,
+			SortOrder: entry.order,
 		}); err != nil {
 			return httpx.Internal("更新物品排序失败", err)
 		}

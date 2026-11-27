@@ -1,8 +1,10 @@
 package clipboard
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -167,6 +169,29 @@ func (s *PGStore) DeleteItem(ctx context.Context, userID, id int64) (bool, error
 }
 
 func (s *PGStore) ReorderItems(ctx context.Context, userID int64, ids []int64, now time.Time) error {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	type sortEntry struct {
+		id    int64
+		order int32
+	}
+	seen := make(map[int64]struct{}, len(ids))
+	entries := make([]sortEntry, 0, len(ids))
+	for i, id := range ids {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		entries = append(entries, sortEntry{id: id, order: int32(i)})
+	}
+	// Always acquire row locks in deterministic ascending primary-key order to prevent
+	// AB-BA deadlocks (SQLSTATE 40P01) when concurrent reorder requests overlap.
+	slices.SortFunc(entries, func(a, b sortEntry) int {
+		return cmp.Compare(a.id, b.id)
+	})
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -174,11 +199,11 @@ func (s *PGStore) ReorderItems(ctx context.Context, userID int64, ids []int64, n
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	qtx := s.q.WithTx(tx)
-	for i, id := range ids {
+	for _, entry := range entries {
 		if err := qtx.UpdateItemSortOrder(ctx, sqlcgen.UpdateItemSortOrderParams{
-			ID:        id,
+			ID:        entry.id,
 			UserID:    userID,
-			SortOrder: int32(i),
+			SortOrder: entry.order,
 			ExpiresAt: now,
 		}); err != nil {
 			return err

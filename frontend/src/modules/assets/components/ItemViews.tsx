@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import {
   ChevronRight,
   Folder,
@@ -10,6 +9,7 @@ import {
 } from 'lucide-react';
 import { Tooltip } from '@/components/Tooltip';
 import { useIsTouchDevice } from '@/core/responsive';
+import { renderDragOverlay, useLiveReorder } from '@/core/useLiveReorder';
 import {
   RETIRE_REASON_LABELS,
   formatMoney,
@@ -91,17 +91,6 @@ function CostTag({
   return <span className="text-xs text-zinc-400">不计价</span>;
 }
 
-function reorderList(items: AssetItem[], fromId: number, toId: number): number[] | null {
-  if (fromId === toId) return null;
-  const ids = items.map((x) => x.id);
-  const fromIdx = ids.indexOf(fromId);
-  const toIdx = ids.indexOf(toId);
-  if (fromIdx === -1 || toIdx === -1) return null;
-  ids.splice(fromIdx, 1);
-  ids.splice(toIdx, 0, fromId);
-  return ids;
-}
-
 // --- 1. Card Grid View ---
 
 export function ItemCardView({
@@ -117,170 +106,193 @@ export function ItemCardView({
   onToggleFavorite,
   onReorder,
 }: CommonViewProps) {
-  const [dragId, setDragId] = useState<number | null>(null);
-  const [overId, setOverId] = useState<number | null>(null);
   const isTouch = useIsTouchDevice();
   const canDrag = draggable && !isTouch;
 
-  return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-      {items.map((item) => {
-        const selected = selectedIds.has(item.id);
-        const isOver = overId === item.id && dragId !== item.id;
-        return (
-          <div
-            key={item.id}
-            draggable={canDrag}
-            onDragStart={() => setDragId(item.id)}
-            onDragEnd={() => {
-              setDragId(null);
-              setOverId(null);
-            }}
-            onDragOver={(e) => {
-              if (!canDrag) return;
-              e.preventDefault();
-              if (overId !== item.id) setOverId(item.id);
-            }}
-            onDrop={(e) => {
-              e.preventDefault();
-              if (!canDrag || dragId == null) return;
-              const next = reorderList(items, dragId, item.id);
-              setDragId(null);
-              setOverId(null);
-              if (next) onReorder(next);
-            }}
-            onClick={() => (batchMode ? onToggleSelect(item.id) : onOpenItem(item.id))}
-            className={`yd-card-interactive relative flex cursor-pointer flex-col justify-between gap-3 p-4 ${
-              item.status === 'retired' ? 'opacity-75' : ''
-            } ${selected ? 'border-sky-400 bg-sky-50/30 ring-1 ring-sky-300' : ''} ${
-              isOver ? 'border-sky-400 ring-2 ring-sky-200' : ''
-            }`}
-          >
-            {/* Top Row */}
-            <div className="flex items-start gap-3">
-              {batchMode && (
-                <div className="pt-1" onClick={(e) => e.stopPropagation()}>
-                  <input
-                    type="checkbox"
-                    checked={selected}
-                    onChange={() => onToggleSelect(item.id)}
-                  />
-                </div>
-              )}
-              {canDrag && (
-                <Tooltip content="拖拽调整顺序">
-                  <div
-                    className="cursor-grab pt-2.5 text-zinc-300 hover:text-zinc-500 active:cursor-grabbing"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <GripVertical className="h-4 w-4" />
-                  </div>
-                </Tooltip>
-              )}
-              <AssetVisual icon={item.icon} imageUrl={item.image_url} name={item.name} />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-start justify-between gap-2">
-                  <h3 className="truncate text-[15px] font-semibold text-zinc-800">{item.name}</h3>
-                  {!batchMode && item.status !== 'retired' && (
-                    <Tooltip content={item.status === 'favorite' ? '取消收藏' : '设为收藏'}>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onToggleFavorite(item);
-                        }}
-                        className="shrink-0 rounded p-0.5 text-zinc-300 transition-colors hover:text-amber-500"
-                      >
-                        <Star
-                          className={`h-4 w-4 ${
-                            item.status === 'favorite' ? 'fill-amber-400 text-amber-400' : ''
-                          }`}
-                        />
-                      </button>
-                    </Tooltip>
-                  )}
-                </div>
+  const reorder = useLiveReorder({
+    items,
+    enabled: canDrag,
+    layout: 'grid',
+    onCommit: onReorder,
+  });
 
-                <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-zinc-500">
-                  {item.category_name && (
-                    <span className="truncate max-w-[160px]">{item.category_name}</span>
-                  )}
-                  {item.parent_name && (
-                    <span className="yd-badge yd-badge-sky text-[11px]">
-                      隶属：{item.parent_name}
-                    </span>
-                  )}
-                </div>
-              </div>
+  const renderCardBody = (item: AssetItem, isOverlay = false) => {
+    const selected = selectedIds.has(item.id);
+    return (
+      <>
+        {/* Top Row */}
+        <div className="flex items-start gap-3">
+          {batchMode && (
+            <div className="pt-1" onClick={(e) => e.stopPropagation()}>
+              <input
+                type="checkbox"
+                checked={selected}
+                onChange={() => onToggleSelect(item.id)}
+                readOnly={isOverlay}
+              />
             </div>
-
-            {/* Price & Cost Row */}
-            <div className="flex items-end justify-between gap-2 rounded-lg bg-[#f8fafc] px-3 py-2">
-              <div>
-                <div className="font-mono text-base font-semibold text-zinc-900">
-                  {formatMoney(item.total_invested, currency, hideAmounts)}
-                </div>
-                {item.currency !== currency && (
-                  <div className="font-mono text-[11px] text-zinc-400">
-                    原价 {formatMoney(item.price, item.currency, hideAmounts)}
-                  </div>
-                )}
+          )}
+          {canDrag && (
+            <Tooltip content="拖拽调整顺序" disabled={isOverlay || reorder.isDragging}>
+              <div
+                data-drag-handle="true"
+                className={`pt-2.5 text-zinc-300 hover:text-zinc-500 ${
+                  isOverlay ? 'cursor-grabbing text-sky-500' : 'cursor-grab active:cursor-grabbing'
+                }`}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <GripVertical className="h-4 w-4" />
               </div>
-              <div className="text-right">
-                <CostTag item={item} currency={currency} hideAmounts={hideAmounts} />
-                <div className="mt-0.5 text-[11px] text-zinc-400">
-                  持有 {item.holding_days} 天
-                </div>
-              </div>
-            </div>
-
-            {/* Badges & Quick Footer */}
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <StatusBadge item={item} />
-                <WarrantyBadge item={item} />
-                {item.children_count > 0 && (
-                  <span className="yd-badge yd-badge-sky">
-                    <Layers className="h-3 w-3" />
-                    {item.children_count} 件子物品
-                  </span>
-                )}
-                {item.tags.slice(0, 2).map((tag) => (
-                  <span key={tag.id} className="yd-badge yd-badge-neutral">
-                    {tag.color && (
-                      <span
-                        className="h-1.5 w-1.5 rounded-full"
-                        style={{ backgroundColor: tag.color }}
-                      />
-                    )}
-                    {tag.name}
-                  </span>
-                ))}
-                {item.tags.length > 2 && (
-                  <span className="text-[11px] text-zinc-400">+{item.tags.length - 2}</span>
-                )}
-              </div>
-
-              {!batchMode && item.pricing_mode !== 'time' && (
-                <Tooltip content="记录使用次数 +1">
+            </Tooltip>
+          )}
+          <AssetVisual icon={item.icon} imageUrl={item.image_url} name={item.name} />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-2">
+              <h3 className="truncate text-[15px] font-semibold text-zinc-800">{item.name}</h3>
+              {!batchMode && item.status !== 'retired' && (
+                <Tooltip
+                  content={item.status === 'favorite' ? '取消收藏' : '设为收藏'}
+                  disabled={isOverlay || reorder.isDragging}
+                >
                   <button
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      onUseItem(item.id);
+                      if (!isOverlay) onToggleFavorite(item);
                     }}
-                    className="inline-flex items-center gap-1 rounded-md border border-zinc-200/80 bg-white px-2 py-0.5 font-mono text-xs text-zinc-600 transition-colors hover:border-sky-300 hover:bg-sky-50 hover:text-sky-700"
+                    className="shrink-0 rounded p-0.5 text-zinc-300 transition-colors hover:text-amber-500"
                   >
-                    <Plus className="h-3 w-3" />
-                    {item.usage_count}次
+                    <Star
+                      className={`h-4 w-4 ${
+                        item.status === 'favorite' ? 'fill-amber-400 text-amber-400' : ''
+                      }`}
+                    />
                   </button>
                 </Tooltip>
               )}
             </div>
+
+            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-zinc-500">
+              {item.category_name && (
+                <span className="truncate max-w-[160px]">{item.category_name}</span>
+              )}
+              {item.parent_name && (
+                <span className="yd-badge yd-badge-sky text-[11px]">
+                  隶属：{item.parent_name}
+                </span>
+              )}
+            </div>
           </div>
-        );
-      })}
-    </div>
+        </div>
+
+        {/* Price & Cost Row */}
+        <div className="flex items-end justify-between gap-2 rounded-lg bg-[#f8fafc] px-3 py-2">
+          <div>
+            <div className="font-mono text-base font-semibold text-zinc-900">
+              {formatMoney(item.total_invested, currency, hideAmounts)}
+            </div>
+            {item.currency !== currency && (
+              <div className="font-mono text-[11px] text-zinc-400">
+                原价 {formatMoney(item.price, item.currency, hideAmounts)}
+              </div>
+            )}
+          </div>
+          <div className="text-right">
+            <CostTag item={item} currency={currency} hideAmounts={hideAmounts} />
+            <div className="mt-0.5 text-[11px] text-zinc-400">
+              持有 {item.holding_days} 天
+            </div>
+          </div>
+        </div>
+
+        {/* Badges & Quick Footer */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <StatusBadge item={item} />
+            <WarrantyBadge item={item} />
+            {item.children_count > 0 && (
+              <span className="yd-badge yd-badge-sky">
+                <Layers className="h-3 w-3" />
+                {item.children_count} 件子物品
+              </span>
+            )}
+            {item.tags.slice(0, 2).map((tag) => (
+              <span key={tag.id} className="yd-badge yd-badge-neutral">
+                {tag.color && (
+                  <span
+                    className="h-1.5 w-1.5 rounded-full"
+                    style={{ backgroundColor: tag.color }}
+                  />
+                )}
+                {tag.name}
+              </span>
+            ))}
+            {item.tags.length > 2 && (
+              <span className="text-[11px] text-zinc-400">+{item.tags.length - 2}</span>
+            )}
+          </div>
+
+          {!batchMode && item.pricing_mode !== 'time' && (
+            <Tooltip content="记录使用次数 +1" disabled={isOverlay || reorder.isDragging}>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!isOverlay) onUseItem(item.id);
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-zinc-200/80 bg-white px-2 py-0.5 font-mono text-xs text-zinc-600 transition-colors hover:border-sky-300 hover:bg-sky-50 hover:text-sky-700"
+              >
+                <Plus className="h-3 w-3" />
+                {item.usage_count}次
+              </button>
+            </Tooltip>
+          )}
+        </div>
+      </>
+    );
+  };
+
+  return (
+    <>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {reorder.orderedItems.map((item) => {
+          const selected = selectedIds.has(item.id);
+          const isPlaceholder = reorder.activeId === item.id;
+          return (
+            <div
+              key={item.id}
+              {...reorder.getItemProps(item)}
+              onClick={() => (batchMode ? onToggleSelect(item.id) : onOpenItem(item.id))}
+              className={`relative flex flex-col justify-between gap-3 p-4 ${
+                isPlaceholder
+                  ? 'rounded-xl border-2 border-dashed border-sky-300 bg-sky-50/50 shadow-none'
+                  : `${reorder.isDragging ? 'yd-card' : 'yd-card-interactive'} cursor-pointer ${
+                      item.status === 'retired' ? 'opacity-75' : ''
+                    } ${selected ? 'border-sky-400 bg-sky-50/30 ring-1 ring-sky-300' : ''}`
+              }`}
+            >
+              <div
+                className={`flex flex-1 flex-col justify-between gap-3 ${
+                  isPlaceholder ? 'pointer-events-none select-none opacity-20' : ''
+                }`}
+              >
+                {renderCardBody(item)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {renderDragOverlay(reorder.overlay, reorder.overlayRef, (item) => (
+        <div
+          className={`flex h-full flex-col justify-between gap-3 rounded-xl border border-sky-300 bg-white p-4 shadow-[0_14px_34px_rgba(14,165,233,0.18)] ring-2 ring-sky-200/80 scale-[1.015] ${
+            item.status === 'retired' ? 'opacity-90' : ''
+          }`}
+        >
+          {renderCardBody(item, true)}
+        </div>
+      ))}
+    </>
   );
 }
 
@@ -299,166 +311,191 @@ export function ItemListView({
   onToggleFavorite,
   onReorder,
 }: CommonViewProps) {
-  const [dragId, setDragId] = useState<number | null>(null);
-  const [overId, setOverId] = useState<number | null>(null);
   const isTouch = useIsTouchDevice();
   const canDrag = draggable && !isTouch;
   const showUsageColumn = items.some((it) => it.pricing_mode !== 'time');
 
+  const reorder = useLiveReorder({
+    items,
+    enabled: canDrag,
+    layout: 'list',
+    onCommit: onReorder,
+  });
+
   return (
-    <div className="yd-card overflow-x-auto">
-      <table className="yd-table">
-        <thead className="yd-thead">
-          <tr>
-            {(batchMode || canDrag) && <th className="w-10 px-3 py-2.5" />}
-            <th className="px-3 py-2.5 whitespace-nowrap">物品</th>
-            <th className="px-3 py-2.5 whitespace-nowrap">分类 / 标签</th>
-            <th className="px-3 py-2.5 text-right whitespace-nowrap">总投入</th>
-            <th className="px-3 py-2.5 text-right whitespace-nowrap">均价 / 持有</th>
-            <th className="px-3 py-2.5 whitespace-nowrap">状态 / 保修</th>
-            {showUsageColumn && <th className="px-3 py-2.5 text-right whitespace-nowrap">使用次数</th>}
-          </tr>
-        </thead>
-        <tbody className="yd-tbody">
-          {items.map((item) => {
-            const selected = selectedIds.has(item.id);
-            const isOver = overId === item.id && dragId !== item.id;
-            return (
-              <tr
-                key={item.id}
-                draggable={canDrag}
-                onDragStart={() => setDragId(item.id)}
-                onDragEnd={() => {
-                  setDragId(null);
-                  setOverId(null);
-                }}
-                onDragOver={(e) => {
-                  if (!canDrag) return;
-                  e.preventDefault();
-                  if (overId !== item.id) setOverId(item.id);
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  if (!canDrag || dragId == null) return;
-                  const next = reorderList(items, dragId, item.id);
-                  setDragId(null);
-                  setOverId(null);
-                  if (next) onReorder(next);
-                }}
-                onClick={() => (batchMode ? onToggleSelect(item.id) : onOpenItem(item.id))}
-                className={`cursor-pointer transition-colors hover:bg-sky-50/40 ${
-                  item.status === 'retired' ? 'opacity-70' : ''
-                } ${selected ? 'bg-sky-50/60' : ''} ${isOver ? 'bg-sky-100/60' : ''}`}
-              >
-                {(batchMode || canDrag) && (
-                  <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
-                    {batchMode ? (
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        onChange={() => onToggleSelect(item.id)}
+    <>
+      <div className="yd-card overflow-x-auto">
+        <table className="yd-table">
+          <thead className="yd-thead">
+            <tr>
+              {(batchMode || canDrag) && <th className="w-10 px-3 py-2.5" />}
+              <th className="px-3 py-2.5 whitespace-nowrap">物品</th>
+              <th className="px-3 py-2.5 whitespace-nowrap">分类 / 标签</th>
+              <th className="px-3 py-2.5 text-right whitespace-nowrap">总投入</th>
+              <th className="px-3 py-2.5 text-right whitespace-nowrap">均价 / 持有</th>
+              <th className="px-3 py-2.5 whitespace-nowrap">状态 / 保修</th>
+              {showUsageColumn && <th className="px-3 py-2.5 text-right whitespace-nowrap">使用次数</th>}
+            </tr>
+          </thead>
+          <tbody className="yd-tbody">
+            {reorder.orderedItems.map((item) => {
+              const selected = selectedIds.has(item.id);
+              const isPlaceholder = reorder.activeId === item.id;
+              return (
+                <tr
+                  key={item.id}
+                  {...reorder.getItemProps(item)}
+                  onClick={() => (batchMode ? onToggleSelect(item.id) : onOpenItem(item.id))}
+                  className={
+                    isPlaceholder
+                      ? 'bg-sky-50/75 outline-2 -outline-offset-2 outline-dashed outline-sky-300 [&>td]:pointer-events-none [&>td]:select-none [&>td]:opacity-20'
+                      : `cursor-pointer ${
+                          reorder.isDragging ? '' : 'transition-colors hover:bg-sky-50/40'
+                        } ${item.status === 'retired' ? 'opacity-70' : ''} ${
+                          selected ? 'bg-sky-50/60' : ''
+                        }`
+                  }
+                >
+                  {(batchMode || canDrag) && (
+                    <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                      {batchMode ? (
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={() => onToggleSelect(item.id)}
+                        />
+                      ) : (
+                        <div
+                          data-drag-handle="true"
+                          className="inline-flex cursor-grab text-zinc-300 hover:text-zinc-500 active:cursor-grabbing"
+                        >
+                          <GripVertical className="h-4 w-4" />
+                        </div>
+                      )}
+                    </td>
+                  )}
+                  <td className="px-3 py-2.5">
+                    <div className="flex items-center gap-2.5">
+                      <AssetVisual
+                        icon={item.icon}
+                        imageUrl={item.image_url}
+                        name={item.name}
+                        size="sm"
                       />
-                    ) : (
-                      <GripVertical className="h-4 w-4 cursor-grab text-zinc-300 hover:text-zinc-500" />
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate font-medium text-zinc-800">{item.name}</span>
+                          {!batchMode && item.status !== 'retired' && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onToggleFavorite(item);
+                              }}
+                              className="text-zinc-300 hover:text-amber-500"
+                            >
+                              <Star
+                                className={`h-3.5 w-3.5 ${
+                                  item.status === 'favorite' ? 'fill-amber-400 text-amber-400' : ''
+                                }`}
+                              />
+                            </button>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-400">
+                          <span>{item.purchased_at}</span>
+                          {item.parent_name && <span>· 隶属 {item.parent_name}</span>}
+                          {item.children_count > 0 && (
+                            <span className="text-sky-600">· {item.children_count} 子物品</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <div className="text-xs text-zinc-600">{item.category_name || '未分类'}</div>
+                    {item.tags.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {item.tags.slice(0, 3).map((t) => (
+                          <span key={t.id} className="yd-badge yd-badge-neutral text-[11px]">
+                            {t.name}
+                          </span>
+                        ))}
+                      </div>
                     )}
                   </td>
-                )}
-                <td className="px-3 py-2.5">
-                  <div className="flex items-center gap-2.5">
-                    <AssetVisual
-                      icon={item.icon}
-                      imageUrl={item.image_url}
-                      name={item.name}
-                      size="sm"
-                    />
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="truncate font-medium text-zinc-800">{item.name}</span>
-                        {!batchMode && item.status !== 'retired' && (
+                  <td className="px-3 py-2.5 text-right font-mono">
+                    <div className="font-medium text-zinc-800">
+                      {formatMoney(item.total_invested, currency, hideAmounts)}
+                    </div>
+                    {item.currency !== currency && (
+                      <div className="text-[11px] text-zinc-400">
+                        {formatMoney(item.price, item.currency, hideAmounts)}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5 text-right">
+                    <div>
+                      <CostTag item={item} currency={currency} hideAmounts={hideAmounts} />
+                    </div>
+                    <div className="text-[11px] text-zinc-400">{item.holding_days} 天</div>
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <div className="flex flex-wrap gap-1">
+                      <StatusBadge item={item} />
+                      <WarrantyBadge item={item} />
+                    </div>
+                  </td>
+                  {showUsageColumn && (
+                    <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
+                      {item.pricing_mode !== 'time' ? (
+                        <Tooltip content="记录使用次数 +1" disabled={reorder.isDragging}>
                           <button
                             type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onToggleFavorite(item);
-                            }}
-                            className="text-zinc-300 hover:text-amber-500"
+                            onClick={() => onUseItem(item.id)}
+                            className="inline-flex items-center gap-1 rounded-md border border-zinc-200/80 bg-white px-2 py-0.5 font-mono text-xs text-zinc-600 hover:border-sky-300 hover:bg-sky-50 hover:text-sky-700"
                           >
-                            <Star
-                              className={`h-3.5 w-3.5 ${
-                                item.status === 'favorite' ? 'fill-amber-400 text-amber-400' : ''
-                              }`}
-                            />
+                            <Plus className="h-3 w-3" />
+                            {item.usage_count}
                           </button>
-                        )}
-                      </div>
-                      <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-400">
-                        <span>{item.purchased_at}</span>
-                        {item.parent_name && <span>· 隶属 {item.parent_name}</span>}
-                        {item.children_count > 0 && (
-                          <span className="text-sky-600">· {item.children_count} 子物品</span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </td>
-                <td className="px-3 py-2.5">
-                  <div className="text-xs text-zinc-600">{item.category_name || '未分类'}</div>
-                  {item.tags.length > 0 && (
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {item.tags.slice(0, 3).map((t) => (
-                        <span key={t.id} className="yd-badge yd-badge-neutral text-[11px]">
-                          {t.name}
-                        </span>
-                      ))}
-                    </div>
+                        </Tooltip>
+                      ) : (
+                        <span className="text-xs text-zinc-300">—</span>
+                      )}
+                    </td>
                   )}
-                </td>
-                <td className="px-3 py-2.5 text-right font-mono">
-                  <div className="font-medium text-zinc-800">
-                    {formatMoney(item.total_invested, currency, hideAmounts)}
-                  </div>
-                  {item.currency !== currency && (
-                    <div className="text-[11px] text-zinc-400">
-                      {formatMoney(item.price, item.currency, hideAmounts)}
-                    </div>
-                  )}
-                </td>
-                <td className="px-3 py-2.5 text-right">
-                  <div>
-                    <CostTag item={item} currency={currency} hideAmounts={hideAmounts} />
-                  </div>
-                  <div className="text-[11px] text-zinc-400">{item.holding_days} 天</div>
-                </td>
-                <td className="px-3 py-2.5">
-                  <div className="flex flex-wrap gap-1">
-                    <StatusBadge item={item} />
-                    <WarrantyBadge item={item} />
-                  </div>
-                </td>
-                {showUsageColumn && (
-                  <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
-                    {item.pricing_mode !== 'time' ? (
-                      <Tooltip content="记录使用次数 +1">
-                        <button
-                          type="button"
-                          onClick={() => onUseItem(item.id)}
-                          className="inline-flex items-center gap-1 rounded-md border border-zinc-200/80 bg-white px-2 py-0.5 font-mono text-xs text-zinc-600 hover:border-sky-300 hover:bg-sky-50 hover:text-sky-700"
-                        >
-                          <Plus className="h-3 w-3" />
-                          {item.usage_count}
-                        </button>
-                      </Tooltip>
-                    ) : (
-                      <span className="text-xs text-zinc-300">—</span>
-                    )}
-                  </td>
-                )}
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {renderDragOverlay(reorder.overlay, reorder.overlayRef, (item) => (
+        <div className="flex items-center justify-between gap-4 rounded-xl border border-sky-300 bg-white/95 px-3.5 py-2.5 shadow-[0_14px_34px_rgba(14,165,233,0.18)] ring-2 ring-sky-200/80 backdrop-blur">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <GripVertical className="h-4 w-4 shrink-0 text-sky-500" />
+            <AssetVisual icon={item.icon} imageUrl={item.image_url} name={item.name} size="sm" />
+            <div className="min-w-0">
+              <div className="truncate text-sm font-medium text-zinc-800">{item.name}</div>
+              <div className="flex items-center gap-1.5 text-[11px] text-zinc-400">
+                <span>{item.category_name || '未分类'}</span>
+                <span>· {item.purchased_at}</span>
+              </div>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-4">
+            <div className="text-right font-mono">
+              <div className="text-sm font-medium text-zinc-800">
+                {formatMoney(item.total_invested, currency, hideAmounts)}
+              </div>
+              <div className="text-[11px] text-zinc-400">{item.holding_days} 天</div>
+            </div>
+            <StatusBadge item={item} />
+          </div>
+        </div>
+      ))}
+    </>
   );
 }
 

@@ -4,11 +4,13 @@ import { Archive, FolderInput, PackageOpen, Plus, Trash2 } from 'lucide-react';
 import { LoadingState } from '@/components/LoadingState';
 import { Select } from '@/components/Select';
 import { useToast } from '@/components/Toast';
+import { useSerialReorder } from '@/core/useLiveReorder';
 import {
   assetsApi,
   buildCategorySelectOptions,
   type AssetItem,
   type AssetItemQuery,
+  type AssetItemsResponse,
   type AssetSettings,
   type BatchItemInput,
   type RetireItemInput,
@@ -168,13 +170,42 @@ export default function AssetsPage() {
     onError: (err: Error) => showToast(err.message, 'error'),
   });
 
-  const reorderMut = useMutation({
-    mutationFn: (ids: number[]) => assetsApi.reorderItems(ids),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['assets', 'items'] });
+  const handleReorder = useSerialReorder(
+    (ids: number[]) => assetsApi.reorderItems(ids),
+    {
+      onOptimistic: (ids) => {
+        void qc.cancelQueries({ queryKey: ['assets', 'items'] });
+        const orderMap = new Map<number, number>(ids.map((id, idx) => [id, idx]));
+        const queries = qc.getQueriesData<AssetItemsResponse>({ queryKey: ['assets', 'items'] });
+        for (const [key, data] of queries) {
+          if (!data) continue;
+          const q = (key[2] as AssetItemQuery | undefined) ?? {};
+          const isManualAsc = (q.sort_by ?? 'manual') === 'manual' && (q.sort_dir ?? 'asc') === 'asc';
+          const updated = data.items.map((it) =>
+            orderMap.has(it.id) ? { ...it, sort_order: orderMap.get(it.id)! } : it,
+          );
+          const nextItems = isManualAsc
+            ? [...updated].sort((a, b) => {
+                const oa = orderMap.get(a.id);
+                const ob = orderMap.get(b.id);
+                if (oa !== undefined && ob !== undefined) return oa - ob;
+                if (oa !== undefined) return -1;
+                if (ob !== undefined) return 1;
+                return a.sort_order - b.sort_order || a.id - b.id;
+              })
+            : updated;
+          qc.setQueryData<AssetItemsResponse>(key, {
+            ...data,
+            items: nextItems,
+          });
+        }
+      },
+      onError: (err) => showToast(err.message, 'error'),
+      onDrained: () => {
+        void qc.invalidateQueries({ queryKey: ['assets', 'items'] });
+      },
     },
-    onError: (err: Error) => showToast(err.message, 'error'),
-  });
+  );
 
   const batchMut = useMutation({
     mutationFn: (payload: BatchItemInput) => assetsApi.batchItems(payload),
@@ -316,7 +347,7 @@ export default function AssetsPage() {
           onOpenItem={(id) => setModalState({ open: true, itemId: id })}
           onUseItem={(id) => useItemMut.mutate(id)}
           onToggleFavorite={(it) => toggleFavoriteMut.mutate(it)}
-          onReorder={(ids) => reorderMut.mutate(ids)}
+          onReorder={handleReorder}
         />
       ) : viewMode === 'list' ? (
         <ItemListView
@@ -330,7 +361,7 @@ export default function AssetsPage() {
           onOpenItem={(id) => setModalState({ open: true, itemId: id })}
           onUseItem={(id) => useItemMut.mutate(id)}
           onToggleFavorite={(it) => toggleFavoriteMut.mutate(it)}
-          onReorder={(ids) => reorderMut.mutate(ids)}
+          onReorder={handleReorder}
         />
       ) : (
         <ItemCardView
@@ -344,7 +375,7 @@ export default function AssetsPage() {
           onOpenItem={(id) => setModalState({ open: true, itemId: id })}
           onUseItem={(id) => useItemMut.mutate(id)}
           onToggleFavorite={(it) => toggleFavoriteMut.mutate(it)}
-          onReorder={(ids) => reorderMut.mutate(ids)}
+          onReorder={handleReorder}
         />
       )}
 
