@@ -3,15 +3,12 @@ import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Check,
-  ChevronLeft,
-  ChevronRight,
-  File as FileIcon,
   Folder,
   FolderInput,
   FolderPlus,
   Image as ImageIcon,
+  Layers,
   Link2,
-  MoreHorizontal,
   Pencil,
   Search,
   Settings,
@@ -26,10 +23,20 @@ import { Tooltip } from '@/components/Tooltip';
 import {
   storageApi,
   type FileEntry,
-  type FolderEntry,
+  type ObjectDimensionInput,
   type PathItem,
+  type PrefixGroup,
 } from './api';
+import { PathNavigatorContent } from './components/PathNavigator';
+import { PrefixSection } from './components/PrefixSection';
+import { StorageLightbox } from './components/StorageLightbox';
+import {
+  buildPathTree,
+  formatPrefixLabel,
+  getFileDimensions,
+} from './justifiedLayout';
 import { loadCachedDimensions, saveCachedDimensionsBatch } from './metadata';
+import { useStoragePointerMove } from './useStoragePointerMove';
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -37,46 +44,73 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
-function useWaterfallColumns(): number {
-  const getCols = () => {
-    if (typeof window === 'undefined') return 3;
-    if (window.innerWidth >= 1024) return 3;
-    return 2;
-  };
-  const [cols, setCols] = useState(getCols);
-  useEffect(() => {
-    const onResize = () => setCols(getCols());
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, []);
-  return cols;
+function getKeyParentPrefix(key: string): string {
+  const idx = key.lastIndexOf('/');
+  return idx >= 0 ? key.slice(0, idx + 1) : '';
 }
 
 export default function StoragePage() {
   const qc = useQueryClient();
   const { showToast, setProgress } = useToast();
-  const [prefix, setPrefix] = useState('');
+
   const [search, setSearch] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [focusedPrefix, setFocusedPrefix] = useState<string | null>(null);
+  const [activePrefix, setActivePrefix] = useState<string>('');
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
   const [selected, setSelected] = useState<Map<string, PathItem>>(new Map());
   const [dragging, setDragging] = useState(false);
-  const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
+  const [lightboxKey, setLightboxKey] = useState<string | null>(null);
   const [moveModalOpen, setMoveModalOpen] = useState(false);
   const [mobileActionFile, setMobileActionFile] = useState<FileEntry | null>(null);
-  const [dimsMap, setDimsMap] = useState<Record<string, [number, number]>>(() => loadCachedDimensions());
+  const [dimsMap, setDimsMap] = useState<Record<string, [number, number]>>(() =>
+    loadCachedDimensions(),
+  );
   const [loadedUrls, setLoadedUrls] = useState<Record<string, true>>({});
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
-  const probedUrlsRef = useRef<Set<string>>(new Set());
+  const [galleryWidth, setGalleryWidth] = useState<number>(() =>
+    typeof window === 'undefined' ? 920 : Math.min(960, Math.max(320, window.innerWidth - 320)),
+  );
+  const [bottomSpacerHeight, setBottomSpacerHeight] = useState<number>(0);
+  const bottomSpacerRef = useRef<HTMLDivElement | null>(null);
+
+  const galleryHostRef = useRef<HTMLDivElement | null>(null);
+  const sectionRefsRef = useRef<Map<string, HTMLElement>>(new Map());
+  const sectionRefCallbacksRef = useRef<Map<string, (el: HTMLElement | null) => void>>(new Map());
+  const pendingDimsRef = useRef<Map<string, ObjectDimensionInput>>(new Map());
+  const dimsFlushTimerRef = useRef<number | null>(null);
   const copiedTimerRef = useRef<number | null>(null);
-  const lightboxTouchXRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const colCount = useWaterfallColumns();
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const pickerTargetPrefixRef = useRef<string>('');
+  const pendingScrollPrefixRef = useRef<string | null>(null);
+  const scrollSpyLockUntilRef = useRef<number>(0);
+  const manualFocusScrollYRef = useRef<number | null>(null);
+
+  // Active upload path always follows whichever section is highlighted / focused!
+  const effectiveUploadPrefix = focusedPrefix ?? activePrefix;
+
+  const flushPendingDims = useCallback(() => {
+    if (dimsFlushTimerRef.current !== null) {
+      window.clearTimeout(dimsFlushTimerRef.current);
+      dimsFlushTimerRef.current = null;
+    }
+    if (pendingDimsRef.current.size === 0) return;
+    const batch = Array.from(pendingDimsRef.current.values());
+    pendingDimsRef.current.clear();
+    void storageApi.saveDimensions(batch).catch(() => {
+      // Ephemeral cache write failure is non-fatal; will self-heal next load.
+    });
+  }, []);
 
   useEffect(() => {
     return () => {
+      flushPendingDims();
       setProgress('storage-upload', null);
       if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
     };
-  }, [setProgress]);
+  }, [flushPendingDims, setProgress]);
 
   const { data: cfgData, isLoading: cfgLoading } = useQuery({
     queryKey: ['storage', 'config'],
@@ -84,129 +118,247 @@ export default function StoragePage() {
   });
   const cfg = cfgData?.config;
 
-  const { data: listing, isLoading: listLoading, refetch } = useQuery({
-    queryKey: ['storage', 'list', prefix],
-    queryFn: () => storageApi.list(prefix),
+  const {
+    data: gallery,
+    isLoading: galleryLoading,
+    refetch,
+  } = useQuery({
+    queryKey: ['storage', 'gallery'],
+    queryFn: () => storageApi.gallery(),
     enabled: Boolean(cfg?.configured),
   });
 
-  const filteredFolders = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const list = listing?.folders ?? [];
-    if (!q) return list;
-    return list.filter((f) => f.name.toLowerCase().includes(q));
-  }, [listing?.folders, search]);
+  const allGroups = gallery?.groups ?? [];
 
-  const filteredFiles = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const list = listing?.files ?? [];
-    if (!q) return list;
-    return list.filter((f) => f.name.toLowerCase().includes(q));
-  }, [listing?.files, search]);
-
-  const imageFiles = useMemo(() => filteredFiles.filter((f) => f.is_image), [filteredFiles]);
-
-  // Pre-probe uncached image dimensions as soon as header bytes arrive (zero server proxy traffic)
+  // Measure main gallery column width dynamically for flush Justified Row layout.
   useEffect(() => {
-    const cached = loadCachedDimensions();
-    const missing = imageFiles.filter((f) => !cached[f.url] && !probedUrlsRef.current.has(f.url));
-    if (missing.length === 0) return;
-
-    let cancelled = false;
-    const pending: Record<string, [number, number]> = {};
-    let flushTimer: number | null = null;
-    const timers: number[] = [];
-
-    const flush = () => {
-      if (cancelled) return;
-      const keys = Object.keys(pending);
-      if (keys.length === 0) return;
-      const batch = { ...pending };
-      for (const k of keys) delete pending[k];
-      saveCachedDimensionsBatch(batch);
-      setDimsMap((prev) => ({ ...prev, ...batch }));
+    const el = galleryHostRef.current;
+    if (!el) return;
+    const update = () => {
+      const w = Math.floor(el.getBoundingClientRect().width);
+      if (w > 0) setGalleryWidth(w);
     };
+    update();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', update);
+      return () => window.removeEventListener('resize', update);
+    }
+    const ro = new ResizeObserver(() => update());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [cfg?.configured, galleryLoading]);
 
-    const record = (url: string, w: number, h: number) => {
-      if (cancelled || w <= 0 || h <= 0) return;
-      pending[url] = [w, h];
-      if (flushTimer === null) {
-        flushTimer = window.setTimeout(() => {
-          flushTimer = null;
-          flush();
-        }, 60);
-      }
-    };
+  const pathTreeNodes = useMemo(() => buildPathTree(allGroups), [allGroups]);
 
-    for (const f of missing) {
-      probedUrlsRef.current.add(f.url);
-      const probe = new Image();
-      let done = false;
-      const check = () => {
-        if (done || cancelled) return true;
-        if (probe.naturalWidth > 0 && probe.naturalHeight > 0) {
-          done = true;
-          record(f.url, probe.naturalWidth, probe.naturalHeight);
-          return true;
+  // Apply focus filter + global search across all prefixes.
+  const visibleGroups: PrefixGroup[] = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const out: PrefixGroup[] = [];
+
+    for (const g of allGroups) {
+      if (focusedPrefix !== null) {
+        if (focusedPrefix === '') {
+          if (g.prefix !== '') continue;
+        } else if (g.prefix !== focusedPrefix && !g.prefix.startsWith(focusedPrefix)) {
+          continue;
         }
-        return false;
-      };
-      probe.onload = () => {
-        check();
-      };
-      probe.onerror = () => {
-        done = true;
-      };
-      probe.src = f.url;
-      if (!check()) {
-        let attempts = 0;
-        const intervalId = window.setInterval(() => {
-          attempts++;
-          if (check() || attempts >= 50) {
-            window.clearInterval(intervalId);
-          }
-        }, 60);
-        timers.push(intervalId);
+      }
+
+      if (!q) {
+        out.push(g);
+        continue;
+      }
+
+      const prefixMatches = (g.prefix === '' ? '/' : `/${g.prefix.toLowerCase()}`).includes(q);
+      if (prefixMatches) {
+        out.push(g);
+        continue;
+      }
+
+      const matchedFiles = g.files.filter(
+        (f) => f.name.toLowerCase().includes(q) || f.key.toLowerCase().includes(q),
+      );
+      if (matchedFiles.length > 0) {
+        out.push({ prefix: g.prefix, files: matchedFiles });
       }
     }
 
-    return () => {
-      cancelled = true;
-      if (flushTimer !== null) window.clearTimeout(flushTimer);
-      for (const id of timers) window.clearInterval(id);
+    return out;
+  }, [allGroups, focusedPrefix, search]);
+
+  const allVisibleImages = useMemo(() => {
+    const imgs: FileEntry[] = [];
+    for (const g of visibleGroups) {
+      for (const f of g.files) {
+        if (f.is_image) imgs.push(f);
+      }
+    }
+    return imgs;
+  }, [visibleGroups]);
+
+  const lightboxIdx = useMemo(() => {
+    if (!lightboxKey) return null;
+    const idx = allVisibleImages.findIndex((f) => f.key === lightboxKey);
+    return idx >= 0 ? idx : null;
+  }, [allVisibleImages, lightboxKey]);
+
+  // Measure exact DOM span from the last section's top to the document bottom (excluding the spacer),
+  // then size the spacer so 100% bottom scroll stops at the exact pixel where the last section's
+  // breadcrumb reaches its sticky top offset (10px desktop / 64px mobile) — 0px overlap with images!
+  useEffect(() => {
+    if (visibleGroups.length <= 1) {
+      setBottomSpacerHeight(0);
+      return;
+    }
+    const lastPrefix = visibleGroups[visibleGroups.length - 1].prefix;
+    const recalc = () => {
+      const lastEl = sectionRefsRef.current.get(lastPrefix);
+      if (!lastEl) {
+        setBottomSpacerHeight(0);
+        return;
+      }
+      const stickyTop = window.innerWidth >= 1024 ? 10 : 64;
+      const curSpacerH = bottomSpacerRef.current?.getBoundingClientRect().height ?? 0;
+      const lastTopDoc = lastEl.getBoundingClientRect().top + window.scrollY;
+      const naturalSpan = document.documentElement.scrollHeight - lastTopDoc - curSpacerH;
+      const next = Math.max(0, Math.floor(window.innerHeight - stickyTop - naturalSpan));
+      setBottomSpacerHeight((prev) => (Math.abs(prev - next) <= 1 ? prev : next));
     };
-  }, [imageFiles]);
 
-  // Balanced N-column waterfall distribution (row-first order, shortest column next)
-  const waterfallColumns = useMemo(() => {
-    const cols: FileEntry[][] = Array.from({ length: colCount }, () => []);
-    const heights: number[] = Array.from({ length: colCount }, () => 0);
+    const rafId = window.requestAnimationFrame(recalc);
+    const lastEl = sectionRefsRef.current.get(lastPrefix);
+    const ro =
+      lastEl && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => recalc()) : null;
+    if (ro && lastEl) ro.observe(lastEl);
+    window.addEventListener('resize', recalc);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      ro?.disconnect();
+      window.removeEventListener('resize', recalc);
+    };
+  }, [visibleGroups, galleryWidth, dimsMap]);
 
-    for (const file of filteredFiles) {
-      let minIdx = 0;
-      for (let i = 1; i < colCount; i++) {
-        if (heights[i] < heights[minIdx]) minIdx = i;
-      }
-      cols[minIdx].push(file);
-      const dims = file.is_image ? dimsMap[file.url] : undefined;
-      const ratio = dims ? dims[1] / dims[0] : file.is_image ? 0.75 : 0.45;
-      heights[minIdx] += ratio + 0.08;
+  // Execute pending scroll after exiting focus mode.
+  useEffect(() => {
+    const target = pendingScrollPrefixRef.current;
+    if (target === null) return;
+    pendingScrollPrefixRef.current = null;
+    window.requestAnimationFrame(() => {
+      const el = sectionRefsRef.current.get(target);
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [visibleGroups]);
+
+  // Scroll-Spy: highlight the section scrolled into view -> automatically becomes the default upload path.
+  useEffect(() => {
+    if (visibleGroups.length === 0) {
+      setActivePrefix(focusedPrefix ?? '');
+      return;
     }
-    return cols;
-  }, [filteredFiles, colCount, dimsMap]);
+
+    let rafId: number | null = null;
+    const updateActive = () => {
+      rafId = null;
+      if (performance.now() < scrollSpyLockUntilRef.current) return;
+      if (manualFocusScrollYRef.current !== null) {
+        if (Math.abs(window.scrollY - manualFocusScrollYRef.current) < 24) return;
+        manualFocusScrollYRef.current = null;
+      }
+
+      // Anchor matches the sticky section breadcrumb bar position (top-0 on desktop, top-14 on mobile).
+      const anchorY = window.innerWidth >= 1024 ? 28 : 84;
+      let chosen: string = visibleGroups[0].prefix;
+      for (const g of visibleGroups) {
+        const el = sectionRefsRef.current.get(g.prefix);
+        if (!el) continue;
+        const top = el.getBoundingClientRect().top;
+        if (top <= anchorY) {
+          chosen = g.prefix;
+        } else {
+          break;
+        }
+      }
+      setActivePrefix((prev) => (prev === chosen ? prev : chosen));
+    };
+
+    const onScroll = () => {
+      if (rafId === null) {
+        rafId = window.requestAnimationFrame(updateActive);
+      }
+    };
+
+    updateActive();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+    };
+  }, [visibleGroups, focusedPrefix]);
+
+  const getSectionRefCallback = useCallback((prefix: string) => {
+    let cb = sectionRefCallbacksRef.current.get(prefix);
+    if (!cb) {
+      cb = (el: HTMLElement | null) => {
+        if (el) sectionRefsRef.current.set(prefix, el);
+        else sectionRefsRef.current.delete(prefix);
+      };
+      sectionRefCallbacksRef.current.set(prefix, cb);
+    }
+    return cb;
+  }, []);
+
+  const handleImageLoaded = useCallback(
+    (file: FileEntry, naturalWidth: number, naturalHeight: number) => {
+      setLoadedUrls((prev) => (prev[file.url] ? prev : { ...prev, [file.url]: true }));
+      if (naturalWidth <= 0 || naturalHeight <= 0) return;
+
+      const serverMatched = file.width === naturalWidth && file.height === naturalHeight;
+      setDimsMap((prev) => {
+        const existing = prev[file.key] ?? prev[file.url];
+        if (existing && existing[0] === naturalWidth && existing[1] === naturalHeight) {
+          return prev;
+        }
+        saveCachedDimensionsBatch({ [file.url]: [naturalWidth, naturalHeight] });
+        return {
+          ...prev,
+          [file.key]: [naturalWidth, naturalHeight],
+          [file.url]: [naturalWidth, naturalHeight],
+        };
+      });
+
+      if (!serverMatched) {
+        pendingDimsRef.current.set(file.key, {
+          key: file.key,
+          size: file.size,
+          width: naturalWidth,
+          height: naturalHeight,
+        });
+        if (pendingDimsRef.current.size >= 24) {
+          flushPendingDims();
+        } else if (dimsFlushTimerRef.current === null) {
+          dimsFlushTimerRef.current = window.setTimeout(flushPendingDims, 500);
+        }
+      }
+    },
+    [flushPendingDims],
+  );
 
   const handleUploadFiles = useCallback(
-    async (files: FileList | File[]) => {
+    async (files: FileList | File[], targetPrefix?: string) => {
       if (!cfg?.configured) return;
       const arr = Array.from(files);
       if (arr.length === 0) return;
+      const destPrefix = targetPrefix ?? effectiveUploadPrefix;
 
       let okCount = 0;
       let lastErr = '';
       for (let i = 0; i < arr.length; i++) {
-        setProgress('storage-upload', `正在上传 (${i + 1}/${arr.length})：${arr[i].name || '剪贴板文件'}`);
+        setProgress(
+          'storage-upload',
+          `正在上传至「${formatPrefixLabel(destPrefix)}」(${i + 1}/${arr.length})：${arr[i].name || '剪贴板文件'}`,
+        );
         try {
-          await storageApi.uploadFile(arr[i], prefix, cfg);
+          await storageApi.uploadFile(arr[i], destPrefix, cfg);
           okCount++;
         } catch (err) {
           lastErr = err instanceof Error ? err.message : '上传失败';
@@ -214,79 +366,145 @@ export default function StoragePage() {
       }
       setProgress('storage-upload', null);
       if (okCount > 0) {
-        setDimsMap(loadCachedDimensions());
+        setDimsMap((prev) => ({ ...prev, ...loadCachedDimensions() }));
         void refetch();
         showToast(
-          lastErr ? `成功 ${okCount} 个，部分失败：${lastErr}` : `已上传 ${okCount} 个文件`,
+          lastErr
+            ? `成功 ${okCount} 个，部分失败：${lastErr}`
+            : `已上传 ${okCount} 个文件至「${formatPrefixLabel(destPrefix)}」`,
           lastErr ? 'error' : 'info',
         );
       } else if (lastErr) {
         showToast(lastErr, 'error');
       }
     },
-    [cfg, prefix, refetch, setProgress, showToast],
+    [cfg, effectiveUploadPrefix, refetch, setProgress, showToast],
   );
 
-  // Global Ctrl+V paste upload (matching yukilink experience)
+  // Global "/" shortcut opens search cleanly when not typing in an input.
+  useEffect(() => {
+    if (!cfg?.configured) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+      ) {
+        return;
+      }
+      e.preventDefault();
+      setSearchOpen(true);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      window.setTimeout(() => searchInputRef.current?.focus(), 60);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [cfg?.configured]);
+
+  const handleOpenSearch = useCallback(() => {
+    setSearchOpen(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    window.setTimeout(() => searchInputRef.current?.focus(), 60);
+  }, []);
+
+  // Global Ctrl+V paste upload -> always targets current active/focused path!
   useEffect(() => {
     if (!cfg?.configured) return;
     const onPaste = (e: ClipboardEvent) => {
       const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+      if (
+        target &&
+        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+      ) {
+        return;
+      }
       const files = e.clipboardData?.files;
       if (files && files.length > 0) {
         e.preventDefault();
-        void handleUploadFiles(files);
+        void handleUploadFiles(files, effectiveUploadPrefix);
       }
     };
     window.addEventListener('paste', onPaste);
     return () => window.removeEventListener('paste', onPaste);
-  }, [cfg?.configured, handleUploadFiles]);
-
-  // Lightbox keyboard navigation
-  useEffect(() => {
-    if (lightboxIdx === null) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setLightboxIdx(null);
-      if (e.key === 'ArrowLeft') setLightboxIdx((i) => (i !== null && i > 0 ? i - 1 : i));
-      if (e.key === 'ArrowRight')
-        setLightboxIdx((i) => (i !== null && i < imageFiles.length - 1 ? i + 1 : i));
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [lightboxIdx, imageFiles.length]);
+  }, [cfg?.configured, handleUploadFiles, effectiveUploadPrefix]);
 
   const createFolderMut = useMutation({
-    mutationFn: (name: string) => storageApi.createFolder(`${prefix}${name}`),
-    onSuccess: () => {
+    mutationFn: (path: string) => storageApi.createFolder(path),
+    onSuccess: (res) => {
+      setActivePrefix(res.folder.prefix);
       void refetch();
-      showToast('文件夹已创建');
+      showToast(`已创建路径「${formatPrefixLabel(res.folder.prefix)}」`);
     },
     onError: (err: Error) => showToast(err.message, 'error'),
   });
 
+  const handlePromptCreateFolder = useCallback(() => {
+    const base = effectiveUploadPrefix;
+    const name = window.prompt('新建路径前缀（支持多级如 blog/2026）', base);
+    if (name && name.trim()) createFolderMut.mutate(name.trim());
+  }, [createFolderMut, effectiveUploadPrefix]);
+
   const renameMut = useMutation({
     mutationFn: (p: { type: 'file' | 'folder'; oldPath: string; newPath: string }) =>
       storageApi.rename(p.type, p.oldPath, p.newPath),
-    onSuccess: () => {
+    onSuccess: (_res, vars) => {
       setSelected(new Map());
+      if (vars.type === 'folder' && focusedPrefix === vars.oldPath) {
+        setFocusedPrefix(vars.newPath);
+      }
+      if (vars.type === 'folder' && activePrefix === vars.oldPath) {
+        setActivePrefix(vars.newPath);
+      }
       void refetch();
       showToast('已重命名');
     },
     onError: (err: Error) => showToast(err.message, 'error'),
   });
 
+  const dragMoveMut = useMutation({
+    mutationFn: ({ items, targetFolder }: { items: PathItem[]; targetFolder: string }) =>
+      storageApi.move(items, targetFolder),
+    onSuccess: (res, vars) => {
+      setSelected(new Map());
+      void qc.invalidateQueries({ queryKey: ['storage'] });
+      showToast(`已移动 ${res.movedCount} 个对象至「${formatPrefixLabel(vars.targetFolder)}」`);
+    },
+    onError: (err: Error) => showToast(err.message, 'error'),
+  });
+
   const deleteMut = useMutation({
     mutationFn: (items: PathItem[]) => storageApi.remove(items),
-    onSuccess: (res) => {
+    onSuccess: (res, items) => {
       setSelected(new Map());
+      if (
+        focusedPrefix &&
+        items.some((it) => it.type === 'folder' && it.path === focusedPrefix)
+      ) {
+        setFocusedPrefix(null);
+      }
       void refetch();
       showToast(`已删除 ${res.deletedCount} 个对象`);
     },
     onError: (err: Error) => showToast(err.message, 'error'),
   });
 
-  const toggleSelect = (item: PathItem) => {
+  const handlePointerDropMove = useCallback(
+    (targetPrefix: string, items: PathItem[]) => {
+      const movable = items.filter((it) => {
+        if (it.type === 'file') return getKeyParentPrefix(it.path) !== targetPrefix;
+        return it.path !== targetPrefix;
+      });
+      if (movable.length === 0) return;
+      dragMoveMut.mutate({ items: movable, targetFolder: targetPrefix });
+    },
+    [dragMoveMut],
+  );
+
+  // Pointer-event drag-to-move (supports both edge auto-scroll AND native mouse-wheel scrolling!)
+  const pointerMove = useStoragePointerMove(handlePointerDropMove);
+
+  const toggleSelect = useCallback((item: PathItem) => {
     const key = `${item.type}:${item.path}`;
     setSelected((prev) => {
       const next = new Map(prev);
@@ -294,43 +512,155 @@ export default function StoragePage() {
       else next.set(key, item);
       return next;
     });
-  };
+  }, []);
 
-  const copyLink = async (url: string) => {
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopiedUrl(url);
-      if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
-      copiedTimerRef.current = window.setTimeout(() => {
-        setCopiedUrl((cur) => (cur === url ? null : cur));
-        copiedTimerRef.current = null;
-      }, 1600);
-      showToast('已复制直链');
-    } catch {
-      showToast('复制失败，请手动复制', 'error');
-    }
-  };
+  const handleToggleSelectGroup = useCallback((prefix: string, files: FileEntry[]) => {
+    setSelected((prev) => {
+      const next = new Map(prev);
+      if (files.length === 0) {
+        if (prefix === '') return prev;
+        const folderKey = `folder:${prefix}`;
+        if (next.has(folderKey)) next.delete(folderKey);
+        else next.set(folderKey, { type: 'folder', path: prefix });
+        return next;
+      }
+      const allSelected = files.every((f) => next.has(`file:${f.key}`));
+      if (allSelected) {
+        for (const f of files) next.delete(`file:${f.key}`);
+      } else {
+        for (const f of files) {
+          next.set(`file:${f.key}`, { type: 'file', path: f.key });
+        }
+      }
+      return next;
+    });
+  }, []);
 
-  const handleRename = (type: 'file' | 'folder', currentPath: string, currentName: string) => {
-    const nextName = window.prompt(`重命名${type === 'folder' ? '文件夹' : '文件'}`, currentName);
-    if (!nextName || nextName.trim() === '' || nextName.trim() === currentName) return;
-    const cleanName = nextName.trim();
-    const newPath = type === 'folder' ? `${prefix}${cleanName}/` : `${prefix}${cleanName}`;
-    renameMut.mutate({ type, oldPath: currentPath, newPath });
-  };
+  const copyLink = useCallback(
+    async (url: string) => {
+      try {
+        await navigator.clipboard.writeText(url);
+        setCopiedUrl(url);
+        if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+        copiedTimerRef.current = window.setTimeout(() => {
+          setCopiedUrl((cur) => (cur === url ? null : cur));
+          copiedTimerRef.current = null;
+        }, 1600);
+        showToast('已复制直链');
+      } catch {
+        showToast('复制失败，请手动复制', 'error');
+      }
+    },
+    [showToast],
+  );
 
-  const breadcrumbs = useMemo(() => {
-    const parts = prefix.replace(/\/+$/, '').split('/').filter(Boolean);
-    const items: Array<{ label: string; prefix: string }> = [{ label: '根目录', prefix: '' }];
-    let acc = '';
-    for (const p of parts) {
-      acc += `${p}/`;
-      items.push({ label: p, prefix: acc });
-    }
-    return items;
-  }, [prefix]);
+  const handleRenameFile = useCallback(
+    (file: FileEntry) => {
+      const nextName = window.prompt('重命名文件', file.name);
+      if (!nextName || nextName.trim() === '' || nextName.trim() === file.name) return;
+      const cleanName = nextName.trim();
+      const dirPrefix = file.prefix ?? getKeyParentPrefix(file.key);
+      renameMut.mutate({ type: 'file', oldPath: file.key, newPath: `${dirPrefix}${cleanName}` });
+    },
+    [renameMut],
+  );
 
-  const isInitialLoad = cfgLoading || (Boolean(cfg?.configured) && listLoading && prefix === '' && !listing);
+  const handleRenamePrefix = useCallback(
+    (prefix: string) => {
+      const trimmed = prefix.replace(/\/+$/, '');
+      const nextPath = window.prompt('重命名路径前缀（支持多级如 blog/2026）', trimmed);
+      if (!nextPath || nextPath.trim() === '' || nextPath.trim().replace(/^\/+|\/+$/g, '') === trimmed) {
+        return;
+      }
+      const normalized = `${nextPath.trim().replace(/^\/+|\/+$/g, '')}/`;
+      renameMut.mutate({ type: 'folder', oldPath: prefix, newPath: normalized });
+    },
+    [renameMut],
+  );
+
+  const handleUploadToPrefix = useCallback((targetPrefix: string) => {
+    pickerTargetPrefixRef.current = targetPrefix;
+    fileInputRef.current?.click();
+  }, []);
+
+  const handleDropFilesToPrefix = useCallback(
+    (targetPrefix: string, files: FileList) => {
+      void handleUploadFiles(files, targetPrefix);
+    },
+    [handleUploadFiles],
+  );
+
+  const handleActivatePrefix = useCallback((prefix: string) => {
+    setActivePrefix(prefix);
+    manualFocusScrollYRef.current = window.scrollY;
+  }, []);
+
+  const handleToggleFocus = useCallback((prefix: string) => {
+    manualFocusScrollYRef.current = null;
+    setFocusedPrefix((prev) => {
+      const next = prev === prefix ? null : prefix;
+      if (next !== null) setActivePrefix(next);
+      return next;
+    });
+  }, []);
+
+  const handleJumpToPrefix = useCallback(
+    (prefix: string, hasSection: boolean) => {
+      manualFocusScrollYRef.current = null;
+      setActivePrefix(prefix);
+      scrollSpyLockUntilRef.current = performance.now() + 550;
+      setMobileNavOpen(false);
+
+      if (!hasSection) {
+        setFocusedPrefix(prefix);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
+
+      const isCurrentlyVisible =
+        focusedPrefix === null ||
+        (focusedPrefix === ''
+          ? prefix === ''
+          : prefix === focusedPrefix || prefix.startsWith(focusedPrefix));
+
+      if (!isCurrentlyVisible) {
+        pendingScrollPrefixRef.current = prefix;
+        setFocusedPrefix(null);
+        return;
+      }
+
+      const el = sectionRefsRef.current.get(prefix);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    },
+    [focusedPrefix],
+  );
+
+  const handleSelectBreadcrumb = useCallback(
+    (prefix: string) => {
+      if (prefix === '') {
+        setFocusedPrefix(null);
+        setActivePrefix('');
+        scrollSpyLockUntilRef.current = performance.now() + 550;
+        const rootEl = sectionRefsRef.current.get('');
+        if (rootEl) rootEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        else window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
+      const hasExact = allGroups.some((g) => g.prefix === prefix);
+      if (hasExact) {
+        handleJumpToPrefix(prefix, true);
+      } else {
+        setFocusedPrefix(prefix);
+        setActivePrefix(prefix);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    },
+    [allGroups, handleJumpToPrefix],
+  );
+
+  const isInitialLoad = cfgLoading || (Boolean(cfg?.configured) && galleryLoading && !gallery);
 
   if (isInitialLoad) {
     return <LoadingState label="正在加载模块..." variant="module" />;
@@ -361,12 +691,16 @@ export default function StoragePage() {
     );
   }
 
-  const activeLightbox = lightboxIdx !== null ? imageFiles[lightboxIdx] : null;
+  const activeLightbox = lightboxIdx !== null ? allVisibleImages[lightboxIdx] : null;
+  const activeLightboxDims = activeLightbox
+    ? getFileDimensions(activeLightbox, dimsMap)
+    : undefined;
 
   return (
     <div
-      className="space-y-6 relative min-h-[70vh]"
+      className="space-y-4 relative min-h-[70vh]"
       onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes('Files')) return;
         e.preventDefault();
         setDragging(true);
       }}
@@ -377,379 +711,293 @@ export default function StoragePage() {
         e.preventDefault();
         setDragging(false);
         if (e.dataTransfer.files.length > 0) {
-          void handleUploadFiles(e.dataTransfer.files);
+          void handleUploadFiles(e.dataTransfer.files, effectiveUploadPrefix);
         }
       }}
     >
-      {/* Drag overlay */}
+      {/* Page-level drag overlay (external OS file uploads outside a specific section) */}
       {dragging && (
         <div
           onDragLeave={() => setDragging(false)}
-          className="fixed inset-0 z-40 bg-sky-50/50 backdrop-blur-[3px] flex items-center justify-center p-6"
+          className="fixed inset-0 z-40 bg-sky-50/50 backdrop-blur-[3px] flex items-center justify-center p-6 pointer-events-none"
         >
           <div className="rounded-2xl border border-dashed border-sky-300 bg-white px-10 py-8 text-center shadow-lg">
             <Upload className="h-7 w-7 mx-auto text-sky-500" />
             <div className="mt-2.5 text-sm font-medium text-zinc-800">
-              松开上传至「{prefix || '根目录'}」
+              松开上传至「{formatPrefixLabel(effectiveUploadPrefix)}」
             </div>
-            <div className="text-xs text-zinc-500 mt-1">自动去除 EXIF 并按哈希命名</div>
+            <div className="text-xs text-zinc-500 mt-1">
+              也可直接拖放到任意路径分组上指定上传位置
+            </div>
           </div>
         </div>
       )}
 
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
-          <h1 className="yd-page-title">图床管理</h1>
+      {/* Hidden shared file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          if (e.target.files) {
+            void handleUploadFiles(e.target.files, pickerTargetPrefixRef.current);
+          }
+          e.target.value = '';
+        }}
+      />
+
+      {/* Compact Header Row (non-sticky — each prefix section pins its own breadcrumb at top as you scroll!) */}
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-zinc-200/70">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <h1 className="yd-page-title shrink-0">图床管理</h1>
           <Tooltip content="修改上传模式或存储桶配置">
             <Link
               to="/settings?tab=storage"
-              className="yd-badge yd-badge-neutral hover:bg-sky-50 hover:text-sky-700 transition-colors"
+              className="yd-badge yd-badge-neutral hover:bg-sky-50 hover:text-sky-700 transition-colors shrink-0"
             >
               {cfg.upload_mode === 'direct' ? '直传' : `中转 ≤${cfg.proxy_max_mb}MB`}
             </Link>
           </Tooltip>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              const name = window.prompt('新建文件夹名称（支持多级如 2026/trips）');
-              if (name && name.trim()) createFolderMut.mutate(name.trim());
-            }}
-            className="yd-btn-secondary"
-          >
-            <FolderPlus className="h-3.5 w-3.5" />
-            新建文件夹
-          </button>
-
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="yd-btn-primary py-1.5"
-          >
-            <Upload className="h-3.5 w-3.5" />
-            上传
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              if (e.target.files) void handleUploadFiles(e.target.files);
-              e.target.value = '';
-            }}
-          />
-        </div>
-      </div>
-
-      {/* Sub-toolbar: Breadcrumbs + Search */}
-      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-zinc-200/70">
-        <div className="flex items-center gap-1 overflow-x-auto max-w-full sm:flex-wrap sm:overflow-visible">
-          {breadcrumbs.map((b, i) => (
-            <div key={b.prefix} className="flex items-center gap-1 shrink-0">
-              {i > 0 && <span className="text-zinc-300 text-xs">/</span>}
+          {gallery && (
+            <span className="hidden md:inline text-xs text-zinc-400 tabular-nums shrink-0">
+              {gallery.total_files} 项 · {allGroups.length} 路径
+              {gallery.truncated ? '（已达单次展示上限）' : ''}
+            </span>
+          )}
+          {focusedPrefix !== null && (
+            <Tooltip content="点击退出聚焦，查看全桶">
               <button
                 type="button"
-                onClick={() => {
-                  setPrefix(b.prefix);
-                  setSelected(new Map());
-                }}
-                className={`rounded-md px-2 py-1 text-xs whitespace-nowrap transition-colors ${
-                  i === breadcrumbs.length - 1
-                    ? 'text-zinc-800 font-medium cursor-default'
-                    : 'text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800'
-                }`}
+                onClick={() => setFocusedPrefix(null)}
+                className="inline-flex items-center gap-1 rounded-full bg-sky-50 px-2.5 py-0.5 text-xs font-medium text-sky-700 ring-1 ring-inset ring-sky-200/80 hover:bg-sky-100 transition-colors max-w-[180px]"
               >
-                {b.label}
+                <span className="truncate font-mono">{formatPrefixLabel(focusedPrefix)}</span>
+                <X className="h-3 w-3 shrink-0" />
               </button>
-            </div>
-          ))}
+            </Tooltip>
+          )}
         </div>
 
-        <div className="w-full sm:w-auto flex items-center gap-1.5 rounded-lg border border-zinc-200/90 bg-white px-2.5 py-1.5 text-xs focus-within:border-sky-300 focus-within:ring-2 focus-within:ring-sky-500/12 transition-colors">
-          <Search className="h-3.5 w-3.5 text-zinc-400 shrink-0" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="筛选当前目录..."
-            className="flex-1 min-w-0 sm:flex-none sm:w-40 outline-none text-zinc-800 placeholder:text-zinc-400 bg-transparent"
-          />
+        <div className="flex items-center gap-1.5 shrink-0">
+          {searchOpen || search ? (
+            <div className="relative w-44 sm:w-56">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+              <input
+                ref={searchInputRef}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onBlur={() => {
+                  if (!search.trim()) setSearchOpen(false);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    setSearch('');
+                    setSearchOpen(false);
+                  }
+                }}
+                placeholder="搜索文件名或路径..."
+                className="yd-input-sm w-full pl-8 pr-7 bg-white"
+              />
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  setSearch('');
+                  setSearchOpen(false);
+                }}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-zinc-400 hover:text-zinc-600"
+                aria-label="关闭搜索"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          ) : (
+            <Tooltip content="搜索文件名或路径 (/)">
+              <button
+                type="button"
+                onClick={handleOpenSearch}
+                aria-label="搜索"
+                className="yd-btn-secondary px-2 py-1.5"
+              >
+                <Search className="h-3.5 w-3.5" />
+              </button>
+            </Tooltip>
+          )}
+
+          <button
+            type="button"
+            onClick={handlePromptCreateFolder}
+            className="yd-btn-secondary py-1.5 text-xs"
+          >
+            <FolderPlus className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">新建路径</span>
+          </button>
+
+          <Tooltip content={`上传至当前焦点路径「${formatPrefixLabel(effectiveUploadPrefix)}」（支持 Ctrl+V）`}>
+            <button
+              type="button"
+              onClick={() => handleUploadToPrefix(effectiveUploadPrefix)}
+              className="yd-btn-primary py-1.5 text-xs"
+            >
+              <Upload className="h-3.5 w-3.5" />
+              <span>上传</span>
+            </button>
+          </Tooltip>
+
+          <button
+            type="button"
+            onClick={() => setMobileNavOpen(true)}
+            className="lg:hidden yd-btn-secondary py-1.5 text-xs"
+          >
+            <Layers className="h-3.5 w-3.5 text-sky-500" />
+            路径
+          </button>
         </div>
       </div>
 
-      {listLoading ? (
-        <LoadingState label="正在加载目录..." variant="section" />
-      ) : (
-        <>
-          {/* Folders Grid */}
-          {filteredFolders.length > 0 && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-              {filteredFolders.map((folder: FolderEntry) => {
-                const isSel = selected.has(`folder:${folder.prefix}`);
-                return (
-                  <div
-                    key={folder.prefix}
-                    onClick={() => {
-                      setPrefix(folder.prefix);
-                      setSelected(new Map());
-                    }}
-                    className={`group flex items-center justify-between gap-2 rounded-xl border bg-white px-3.5 py-2.5 cursor-pointer transition-all ${
-                      isSel
-                        ? 'border-sky-400 ring-2 ring-sky-500/15'
-                        : 'border-zinc-200/75 shadow-[0_1px_2px_rgba(15,23,42,0.025)] hover:border-sky-200'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <Tooltip content={isSel ? '取消选择' : '选择文件夹'}>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleSelect({ type: 'folder', path: folder.prefix });
-                          }}
-                          className="relative h-4 w-4 shrink-0 flex items-center justify-center"
-                        >
-                          {isSel ? (
-                            <span className="h-4 w-4 rounded bg-sky-500 text-white flex items-center justify-center">
-                              <Check className="h-3 w-3" />
-                            </span>
-                          ) : (
-                            <>
-                              <Folder className="h-4 w-4 text-sky-400 group-hover:opacity-0 transition-opacity" />
-                              <span className="absolute inset-0 rounded border border-zinc-300 bg-white opacity-0 group-hover:opacity-100 transition-opacity" />
-                            </>
-                          )}
-                        </button>
-                      </Tooltip>
-                      <span className="text-[13px] text-zinc-800 truncate">{folder.name}</span>
-                    </div>
-                    <div className="flex items-center gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity shrink-0">
-                      <Tooltip content="重命名文件夹">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleRename('folder', folder.prefix, folder.name);
-                          }}
-                          className="yd-btn-icon p-1"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                      </Tooltip>
-                      <Tooltip content="删除文件夹">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (window.confirm(`确定递归删除文件夹「${folder.name}」及其下所有文件？`)) {
-                              deleteMut.mutate([{ type: 'folder', path: folder.prefix }]);
-                            }
-                          }}
-                          className="yd-btn-danger-icon p-1"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </Tooltip>
-                    </div>
-                  </div>
-                );
-              })}
+      {/* Main Two-Column Album Layout: Left Justified Sections + Right Minimal Sticky Path Rail */}
+      <div className="flex items-start gap-7 pt-1">
+        <div ref={galleryHostRef} className="min-w-0 flex-1 space-y-7">
+          {galleryLoading ? (
+            <LoadingState label="正在加载全桶相册..." variant="section" />
+          ) : visibleGroups.length === 0 ? (
+            <div className="yd-empty py-16 space-y-2">
+              <p className="text-sm font-medium text-zinc-700">
+                {search || focusedPrefix !== null ? '没有匹配当前筛选的文件或路径' : '存储桶为空'}
+              </p>
+              <p className="text-xs text-zinc-400">
+                {search || focusedPrefix !== null
+                  ? '试试清空搜索关键词或退出路径聚焦'
+                  : '支持拖拽、Ctrl+V 粘贴截图或点击上方上传'}
+              </p>
+              {(search || focusedPrefix !== null) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearch('');
+                    setFocusedPrefix(null);
+                  }}
+                  className="yd-btn-secondary mt-2"
+                >
+                  显示全部路径
+                </button>
+              )}
             </div>
-          )}
-
-          {/* Album Files Waterfall Masonry */}
-          {filteredFiles.length > 0 ? (
-            <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 items-start">
-              {waterfallColumns.map((colFiles, colIdx) => (
-                <div key={colIdx} className="flex flex-col gap-3 sm:gap-4 min-w-0">
-                  {colFiles.map((file: FileEntry) => {
-                    const isSel = selected.has(`file:${file.key}`);
-                    const imgIdx = file.is_image ? imageFiles.findIndex((x) => x.key === file.key) : -1;
-                    const dims = file.is_image ? dimsMap[file.url] : undefined;
-                    const isLoaded = Boolean(loadedUrls[file.url]);
-                    return (
-                      <div
-                        key={file.key}
-                        onClick={() => {
-                          if (file.is_image && imgIdx >= 0) setLightboxIdx(imgIdx);
-                          else window.open(file.url, '_blank', 'noopener');
-                        }}
-                        className={`group relative rounded-xl border bg-white overflow-hidden cursor-pointer transition-all ${
-                          isSel
-                            ? 'border-sky-400 ring-2 ring-sky-500/15'
-                            : 'border-zinc-200/75 shadow-[0_1px_2px_rgba(15,23,42,0.025)] hover:border-sky-200'
-                        }`}
-                      >
-                        {file.is_image ? (
-                          <div
-                            className={`relative w-full overflow-hidden ${isLoaded ? 'bg-white' : 'bg-[#f1f5f9] animate-pulse'}`}
-                            style={{ aspectRatio: dims ? `${dims[0]} / ${dims[1]}` : '4 / 3' }}
-                          >
-                            <img
-                              src={file.url}
-                              alt={file.name}
-                              loading="lazy"
-                              width={dims?.[0]}
-                              height={dims?.[1]}
-                              onLoad={(e) => {
-                                const img = e.currentTarget;
-                                setLoadedUrls((prev) => (prev[file.url] ? prev : { ...prev, [file.url]: true }));
-                                if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-                                  const existing = dimsMap[file.url];
-                                  if (!existing || existing[0] !== img.naturalWidth || existing[1] !== img.naturalHeight) {
-                                    saveCachedDimensionsBatch({ [file.url]: [img.naturalWidth, img.naturalHeight] });
-                                    setDimsMap((prev) => ({
-                                      ...prev,
-                                      [file.url]: [img.naturalWidth, img.naturalHeight],
-                                    }));
-                                  }
-                                }
-                              }}
-                              className={`block w-full h-full object-contain transition-all duration-300 group-hover:scale-[1.02] ${
-                                isLoaded ? 'opacity-100' : 'opacity-0'
-                              }`}
-                            />
-                          </div>
-                        ) : (
-                          <div className="w-full min-h-[148px] flex flex-col items-center justify-center gap-2 p-6 bg-[#f8fafc] text-zinc-500">
-                            <FileIcon className="h-9 w-9 text-zinc-300" />
-                            <div className="text-xs font-medium text-zinc-700 truncate max-w-full">
-                              {file.name}
-                            </div>
-                            <div className="text-[11px] text-zinc-400 tabular-nums">
-                              {formatBytes(file.size)}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Top-left selection checkbox */}
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleSelect({ type: 'file', path: file.key });
-                          }}
-                          className={`absolute top-2.5 left-2.5 h-6 w-6 rounded-md border items-center justify-center transition-opacity ${
-                            isSel
-                              ? 'flex bg-sky-500 border-sky-500 text-white opacity-100'
-                              : selected.size > 0
-                                ? 'flex bg-white/90 backdrop-blur-xs border-zinc-300 opacity-100 sm:opacity-0 sm:group-hover:opacity-100'
-                                : 'hidden sm:flex bg-white/90 backdrop-blur-xs border-zinc-300 opacity-0 group-hover:opacity-100'
-                          }`}
-                        >
-                          {isSel && <Check className="h-3.5 w-3.5" />}
-                        </button>
-
-                        {/* Top-right quick actions (desktop hover; mobile uses compact footer + sheet) */}
-                        <div
-                          onClick={(e) => e.stopPropagation()}
-                          className="hidden sm:flex absolute top-2.5 right-2.5 items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <Tooltip content="复制直链">
-                            <button
-                              type="button"
-                              onClick={() => void copyLink(file.url)}
-                              className={`h-7 w-7 rounded-lg bg-white/90 backdrop-blur-xs hover:bg-white shadow-xs flex items-center justify-center transition-colors ${
-                                copiedUrl === file.url ? 'text-emerald-600' : 'text-zinc-700'
-                              }`}
-                            >
-                              {copiedUrl === file.url ? (
-                                <Check className="h-3.5 w-3.5" />
-                              ) : (
-                                <Link2 className="h-3.5 w-3.5" />
-                              )}
-                            </button>
-                          </Tooltip>
-                          <Tooltip content="重命名">
-                            <button
-                              type="button"
-                              onClick={() => handleRename('file', file.key, file.name)}
-                              className="h-7 w-7 rounded-lg bg-white/90 backdrop-blur-xs hover:bg-white text-zinc-700 shadow-xs flex items-center justify-center transition-colors"
-                            >
-                              <Pencil className="h-3.5 w-3.5" />
-                            </button>
-                          </Tooltip>
-                          <Tooltip content="删除">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (window.confirm(`确定删除文件「${file.name}」吗？`)) {
-                                  deleteMut.mutate([{ type: 'file', path: file.key }]);
-                                }
-                              }}
-                              className="h-7 w-7 rounded-lg bg-white/90 backdrop-blur-xs hover:bg-red-50 text-zinc-700 hover:text-red-600 shadow-xs flex items-center justify-center transition-colors"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </Tooltip>
-                        </div>
-
-                        {/* Bottom overlay metadata (desktop hover only) */}
-                        <div className="hidden sm:flex absolute inset-x-0 bottom-0 bg-white/90 backdrop-blur-xs border-t border-zinc-200/60 px-3 py-2 text-zinc-700 opacity-0 group-hover:opacity-100 transition-opacity items-center justify-between gap-2">
-                          <span className="text-xs font-medium truncate">{file.name}</span>
-                          <span className="text-[11px] text-zinc-500 shrink-0 inline-flex items-center gap-1 tabular-nums">
-                            {file.metadata_stripped && <ShieldCheck className="h-3 w-3 text-emerald-500" />}
-                            {formatBytes(file.size)}
-                          </span>
-                        </div>
-
-                        {/* Mobile-only static footer strip (always reachable without hover) */}
-                        <div
-                          onClick={(e) => e.stopPropagation()}
-                          className="sm:hidden flex items-center justify-between gap-1 border-t border-zinc-100 bg-white px-2 py-1.5"
-                        >
-                          <span className="min-w-0 truncate text-[11px] font-medium text-zinc-700">
-                            {file.name}
-                          </span>
-                          <div className="flex items-center gap-0.5 shrink-0">
-                            <button
-                              type="button"
-                              aria-label="复制直链"
-                              onClick={() => void copyLink(file.url)}
-                              className={`inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors ${
-                                copiedUrl === file.url
-                                  ? 'text-emerald-600 bg-emerald-50'
-                                  : 'text-zinc-500 active:bg-zinc-100'
-                              }`}
-                            >
-                              {copiedUrl === file.url ? (
-                                <Check className="h-3.5 w-3.5" />
-                              ) : (
-                                <Link2 className="h-3.5 w-3.5" />
-                              )}
-                            </button>
-                            <button
-                              type="button"
-                              aria-label="更多文件操作"
-                              onClick={() => setMobileActionFile(file)}
-                              className="inline-flex h-6 w-6 items-center justify-center rounded-md text-zinc-500 active:bg-zinc-100"
-                            >
-                              <MoreHorizontal className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+          ) : (
+            <>
+              {visibleGroups.map((group) => (
+                <PrefixSection
+                  key={group.prefix || '__root__'}
+                  group={group}
+                  containerWidth={galleryWidth}
+                  dimsMap={dimsMap}
+                  loadedUrls={loadedUrls}
+                  selected={selected}
+                  copiedUrl={copiedUrl}
+                  isActive={effectiveUploadPrefix === group.prefix}
+                  isPointerDropTarget={
+                    pointerMove.dropTarget?.zone === 'section' &&
+                    pointerMove.dropTarget.prefix === group.prefix
+                  }
+                  draggingKeys={pointerMove.draggingKeys}
+                  sectionRef={getSectionRefCallback(group.prefix)}
+                  onActivatePrefix={handleActivatePrefix}
+                  onSelectBreadcrumb={handleSelectBreadcrumb}
+                  onSectionDragEnter={() => setDragging(false)}
+                  onUploadToPrefix={handleUploadToPrefix}
+                  onDropFilesToPrefix={handleDropFilesToPrefix}
+                  onToggleSelectGroup={handleToggleSelectGroup}
+                  onRenamePrefix={handleRenamePrefix}
+                  onToggleSelectFile={toggleSelect}
+                  onTilePointerDown={pointerMove.handleTilePointerDown}
+                  onOpenLightbox={(file) => setLightboxKey(file.key)}
+                  onCopyLink={(url) => void copyLink(url)}
+                  onRenameFile={handleRenameFile}
+                  onOpenMobileActions={setMobileActionFile}
+                  onImageLoaded={handleImageLoaded}
+                />
               ))}
+
+              {/* Exact dynamic overscroll spacer (zero extra margin from space-y-7) so the last section
+                  stops flush at stickyTop with 0px of its images slipping under the breadcrumb pill. */}
+              <div
+                ref={bottomSpacerRef}
+                className="!mt-0"
+                style={{ height: `${bottomSpacerHeight}px` }}
+                aria-hidden="true"
+              />
+            </>
+          )}
+        </div>
+
+        {/* Desktop Right-Side Minimal Album Path Rail (Frameless, sticky right at top) */}
+        <aside className="hidden lg:block w-52 xl:w-56 shrink-0 sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto py-0.5">
+          <PathNavigatorContent
+            nodes={pathTreeNodes}
+            totalFiles={gallery?.total_files ?? 0}
+            activePrefix={effectiveUploadPrefix}
+            focusedPrefix={focusedPrefix}
+            pointerDropPrefix={
+              pointerMove.dropTarget?.zone === 'nav' ? pointerMove.dropTarget.prefix : null
+            }
+            onJumpToPrefix={handleJumpToPrefix}
+            onToggleFocus={handleToggleFocus}
+            onClearFocus={() => setFocusedPrefix(null)}
+            onOpenSearch={handleOpenSearch}
+            onCreateFolder={handlePromptCreateFolder}
+          />
+        </aside>
+      </div>
+
+      {/* Floating Drag Ghost Portal (Pointer-Event Drag-to-Move) */}
+      {pointerMove.overlayPortal}
+
+      {/* Mobile Path Navigator Sheet */}
+      {mobileNavOpen && (
+        <div
+          onClick={() => setMobileNavOpen(false)}
+          className="lg:hidden fixed inset-0 z-50 flex items-end bg-slate-900/25 backdrop-blur-[2px] yd-fade-in"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-h-[75dvh] overflow-y-auto rounded-t-2xl border-t border-zinc-200/90 bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl space-y-3"
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-zinc-100">
+              <span className="text-sm font-semibold text-zinc-900">路径导航</span>
+              <button
+                type="button"
+                onClick={() => setMobileNavOpen(false)}
+                className="yd-btn-icon"
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
-          ) : filteredFolders.length === 0 ? (
-            <div className="yd-empty py-16 space-y-1">
-              <p className="text-sm font-medium text-zinc-700">当前目录为空</p>
-              <p className="text-xs text-zinc-400">支持拖拽、Ctrl+V 粘贴截图或点击上传</p>
-            </div>
-          ) : null}
-        </>
+            <PathNavigatorContent
+              nodes={pathTreeNodes}
+              totalFiles={gallery?.total_files ?? 0}
+              activePrefix={effectiveUploadPrefix}
+              focusedPrefix={focusedPrefix}
+              onJumpToPrefix={handleJumpToPrefix}
+              onToggleFocus={(p) => {
+                handleToggleFocus(p);
+                setMobileNavOpen(false);
+              }}
+              onClearFocus={() => {
+                setFocusedPrefix(null);
+                setMobileNavOpen(false);
+              }}
+            />
+          </div>
+        </div>
       )}
 
-      {/* Floating Batch Selection Bar */}
+      {/* Floating Batch Selection Bar (Central place for Move & Delete) */}
       {selected.size > 0 && (
         <div className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] sm:bottom-6 inset-x-3 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 z-30 flex flex-wrap sm:flex-nowrap items-center justify-between sm:justify-start gap-2 rounded-2xl sm:rounded-full border border-zinc-200/90 bg-white/95 backdrop-blur-md px-3.5 sm:px-4 py-2 text-xs text-zinc-700 shadow-[0_8px_28px_rgba(15,23,42,0.1)]">
-          <span className="px-1.5 font-medium text-zinc-800 tabular-nums">已选 {selected.size} 项</span>
+          <span className="px-1.5 font-medium text-zinc-800 tabular-nums">
+            已选 {selected.size} 项
+          </span>
           <button
             type="button"
             onClick={() => setMoveModalOpen(true)}
@@ -794,7 +1042,7 @@ export default function StoragePage() {
         />
       )}
 
-      {/* Mobile File Action Sheet */}
+      {/* Mobile File Action Sheet (Copy Link, Multi-select, Rename) */}
       {mobileActionFile && (
         <div
           onClick={() => setMobileActionFile(null)}
@@ -809,8 +1057,9 @@ export default function StoragePage() {
                 <div className="text-sm font-semibold text-zinc-900 break-all">
                   {mobileActionFile.name}
                 </div>
-                <div className="mt-0.5 text-xs text-zinc-400 inline-flex items-center gap-1.5 tabular-nums">
-                  <span>{formatBytes(mobileActionFile.size)}</span>
+                <div className="mt-0.5 text-xs text-zinc-400 inline-flex flex-wrap items-center gap-1.5 tabular-nums">
+                  <span>{formatPrefixLabel(mobileActionFile.prefix ?? '')}</span>
+                  <span>· {formatBytes(mobileActionFile.size)}</span>
                   {mobileActionFile.metadata_stripped && (
                     <span className="inline-flex items-center gap-0.5 text-emerald-600">
                       <ShieldCheck className="h-3 w-3" />
@@ -858,118 +1107,37 @@ export default function StoragePage() {
                 onClick={() => {
                   const target = mobileActionFile;
                   setMobileActionFile(null);
-                  handleRename('file', target.key, target.name);
+                  handleRenameFile(target);
                 }}
                 className="w-full flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm text-zinc-700 active:bg-zinc-100"
               >
                 <Pencil className="h-4 w-4 text-zinc-400" />
                 重命名
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const target = mobileActionFile;
-                  setMobileActionFile(null);
-                  if (window.confirm(`确定删除文件「${target.name}」吗？`)) {
-                    deleteMut.mutate([{ type: 'file', path: target.key }]);
-                  }
-                }}
-                className="w-full flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm text-red-600 active:bg-red-50"
-              >
-                <Trash2 className="h-4 w-4" />
-                删除文件
-              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Fullscreen Lightbox */}
+      {/* Fullscreen Album Lightbox (Zoom, Wheel-Zoom, Pan, Rotate, Checkerboard, Scroll Lock) */}
       {activeLightbox && lightboxIdx !== null && (
-        <div
-          onClick={() => setLightboxIdx(null)}
-          onTouchStart={(e) => {
-            lightboxTouchXRef.current = e.touches[0]?.clientX ?? null;
+        <StorageLightbox
+          image={activeLightbox}
+          dims={activeLightboxDims}
+          index={lightboxIdx}
+          total={allVisibleImages.length}
+          copiedUrl={copiedUrl}
+          onClose={() => setLightboxKey(null)}
+          onPrev={() => {
+            if (lightboxIdx > 0) setLightboxKey(allVisibleImages[lightboxIdx - 1].key);
           }}
-          onTouchEnd={(e) => {
-            const startX = lightboxTouchXRef.current;
-            lightboxTouchXRef.current = null;
-            if (startX === null) return;
-            const endX = e.changedTouches[0]?.clientX ?? startX;
-            const dx = endX - startX;
-            if (dx > 50 && lightboxIdx > 0) setLightboxIdx(lightboxIdx - 1);
-            else if (dx < -50 && lightboxIdx < imageFiles.length - 1) setLightboxIdx(lightboxIdx + 1);
+          onNext={() => {
+            if (lightboxIdx < allVisibleImages.length - 1) {
+              setLightboxKey(allVisibleImages[lightboxIdx + 1].key);
+            }
           }}
-          className="fixed inset-0 z-50 bg-white/85 backdrop-blur-md flex flex-col items-center justify-center p-4"
-        >
-          <button
-            type="button"
-            onClick={() => setLightboxIdx(null)}
-            className="absolute top-4 right-4 rounded-full border border-zinc-200 bg-white p-2 text-zinc-600 shadow-xs hover:bg-zinc-50 hover:text-zinc-900 transition-colors"
-          >
-            <X className="h-5 w-5" />
-          </button>
-
-          {lightboxIdx > 0 && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setLightboxIdx(lightboxIdx - 1);
-              }}
-              className="absolute left-2 sm:left-4 rounded-full border border-zinc-200 bg-white p-1.5 sm:p-2.5 text-zinc-600 shadow-xs hover:bg-zinc-50 hover:text-zinc-900 transition-colors"
-            >
-              <ChevronLeft className="h-5 w-5 sm:h-6 sm:w-6" />
-            </button>
-          )}
-          {lightboxIdx < imageFiles.length - 1 && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setLightboxIdx(lightboxIdx + 1);
-              }}
-              className="absolute right-2 sm:right-4 rounded-full border border-zinc-200 bg-white p-1.5 sm:p-2.5 text-zinc-600 shadow-xs hover:bg-zinc-50 hover:text-zinc-900 transition-colors"
-            >
-              <ChevronRight className="h-5 w-5 sm:h-6 sm:w-6" />
-            </button>
-          )}
-
-          <img
-            src={activeLightbox.url}
-            alt={activeLightbox.name}
-            onClick={(e) => e.stopPropagation()}
-            className="max-h-[76dvh] sm:max-h-[80vh] max-w-[92vw] sm:max-w-[90vw] object-contain rounded-xl border border-zinc-200/80 bg-white shadow-xl"
-          />
-
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="mt-4 max-w-full flex flex-wrap items-center justify-center gap-2.5 rounded-2xl sm:rounded-full border border-zinc-200/90 bg-white px-4 py-2 text-xs text-zinc-700 shadow-sm"
-          >
-            <span className="font-medium text-zinc-800 truncate max-w-[55vw] sm:max-w-none">
-              {activeLightbox.name}
-            </span>
-            <span className="text-zinc-400 tabular-nums">{formatBytes(activeLightbox.size)}</span>
-            <button
-              type="button"
-              onClick={() => void copyLink(activeLightbox.url)}
-              className={`rounded-full px-3 py-1 font-medium transition-colors inline-flex items-center gap-1 ${
-                copiedUrl === activeLightbox.url
-                  ? 'bg-emerald-50 text-emerald-700'
-                  : 'bg-sky-50 text-sky-700 hover:bg-sky-100'
-              }`}
-            >
-              {copiedUrl === activeLightbox.url ? (
-                <>
-                  <Check className="h-3 w-3" />
-                  已复制
-                </>
-              ) : (
-                '复制直链'
-              )}
-            </button>
-          </div>
-        </div>
+          onCopyLink={(url) => void copyLink(url)}
+        />
       )}
     </div>
   );

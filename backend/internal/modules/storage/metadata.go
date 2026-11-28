@@ -248,3 +248,116 @@ func stripWebPMetadata(input []byte) StripResult {
 	}
 	return StripResult{Data: res, Stripped: true, RemovedBytes: removed}
 }
+
+// ExtractImageDimensions reads pixel width & height from PNG, GIF, WebP, or JPEG headers
+// (accounting for JPEG EXIF orientation 5-8) without full image decoding.
+func ExtractImageDimensions(input []byte) (int, int, bool) {
+	if len(input) < 12 {
+		return 0, 0, false
+	}
+
+	// PNG: IHDR width at [16:20], height at [20:24]
+	if isPNG(input) && len(input) >= 24 {
+		w := int(binary.BigEndian.Uint32(input[16:20]))
+		h := int(binary.BigEndian.Uint32(input[20:24]))
+		if w > 0 && h > 0 {
+			return w, h, true
+		}
+		return 0, 0, false
+	}
+
+	// GIF: GIF87a / GIF89a width at [6:8], height at [8:10] (LE)
+	if len(input) >= 10 && string(input[0:4]) == "GIF8" {
+		w := int(binary.LittleEndian.Uint16(input[6:8]))
+		h := int(binary.LittleEndian.Uint16(input[8:10]))
+		if w > 0 && h > 0 {
+			return w, h, true
+		}
+		return 0, 0, false
+	}
+
+	// WebP: VP8X / VP8L / VP8
+	if isWebP(input) && len(input) >= 30 {
+		chunk := string(input[12:16])
+		switch chunk {
+		case "VP8X":
+			w := 1 + (int(input[24]) | (int(input[25]) << 8) | (int(input[26]) << 16))
+			h := 1 + (int(input[27]) | (int(input[28]) << 8) | (int(input[29]) << 16))
+			if w > 0 && h > 0 {
+				return w, h, true
+			}
+		case "VP8L":
+			if input[20] == 0x2f {
+				bits := binary.LittleEndian.Uint32(input[21:25])
+				w := int(bits&0x3fff) + 1
+				h := int((bits>>14)&0x3fff) + 1
+				if w > 0 && h > 0 {
+					return w, h, true
+				}
+			}
+		case "VP8 ":
+			if input[23] == 0x9d && input[24] == 0x01 && input[25] == 0x2a {
+				w := int(binary.LittleEndian.Uint16(input[26:28]) & 0x3fff)
+				h := int(binary.LittleEndian.Uint16(input[28:30]) & 0x3fff)
+				if w > 0 && h > 0 {
+					return w, h, true
+				}
+			}
+		}
+		return 0, 0, false
+	}
+
+	// JPEG: scan SOF markers + EXIF orientation
+	if isJPEG(input) {
+		pos := 2
+		var orientation uint16 = 1
+		for pos < len(input) {
+			if input[pos] != 0xff {
+				break
+			}
+			for pos < len(input) && input[pos] == 0xff {
+				pos++
+			}
+			if pos >= len(input) {
+				break
+			}
+			marker := input[pos]
+			pos++
+			if marker == 0xd9 || marker == 0xda {
+				break
+			}
+			if marker == 0xd8 || marker == 0x01 || (marker >= 0xd0 && marker <= 0xd7) {
+				continue
+			}
+			if pos+2 > len(input) {
+				break
+			}
+			segLen := int(binary.BigEndian.Uint16(input[pos : pos+2]))
+			if segLen < 2 || pos+segLen > len(input) {
+				break
+			}
+			if marker == 0xe1 {
+				if ori, ok := extractJPEGExifOrientation(input[pos+2 : pos+segLen]); ok {
+					orientation = ori
+				}
+			}
+			isSOF := (marker >= 0xc0 && marker <= 0xc3) ||
+				(marker >= 0xc5 && marker <= 0xc7) ||
+				(marker >= 0xc9 && marker <= 0xcb) ||
+				(marker >= 0xcd && marker <= 0xcf)
+			if isSOF && segLen >= 7 {
+				h := int(binary.BigEndian.Uint16(input[pos+3 : pos+5]))
+				w := int(binary.BigEndian.Uint16(input[pos+5 : pos+7]))
+				if w > 0 && h > 0 {
+					if orientation >= 5 && orientation <= 8 {
+						return h, w, true
+					}
+					return w, h, true
+				}
+				break
+			}
+			pos += segLen
+		}
+	}
+	return 0, 0, false
+}

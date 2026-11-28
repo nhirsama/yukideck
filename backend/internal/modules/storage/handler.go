@@ -40,8 +40,10 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 	})
 
 	r.With(readMW).Get("/list", httpx.Handle(h.logger, h.listDirectory))
+	r.With(readMW).Get("/gallery", httpx.Handle(h.logger, h.listGallery))
 	r.With(readMW).Get("/folders", httpx.Handle(h.logger, h.listSubfolders))
 	r.With(writeMW).Post("/folder", httpx.Handle(h.logger, h.createFolder))
+	r.With(writeMW).Post("/dimensions", httpx.Handle(h.logger, h.saveDimensions))
 
 	r.With(writeMW).Post("/presign", httpx.Handle(h.logger, h.presignDirect))
 	r.With(writeMW).Post("/upload", httpx.Handle(h.logger, h.proxyUpload))
@@ -105,6 +107,37 @@ func (h *Handler) listDirectory(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	httpx.JSON(w, http.StatusOK, res)
+	return nil
+}
+
+func (h *Handler) listGallery(w http.ResponseWriter, r *http.Request) error {
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		return httpx.Unauthorized("未登录")
+	}
+	prefix := r.URL.Query().Get("prefix")
+	res, err := h.svc.ListGallery(r.Context(), uid, prefix)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, res)
+	return nil
+}
+
+func (h *Handler) saveDimensions(w http.ResponseWriter, r *http.Request) error {
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		return httpx.Unauthorized("未登录")
+	}
+	var in SaveDimensionsInput
+	if err := httpx.DecodeJSON(w, r, h.jsonMaxBodyByte, &in); err != nil {
+		return err
+	}
+	saved, err := h.svc.SaveObjectDimensions(r.Context(), uid, in.Items)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "saved": saved})
 	return nil
 }
 

@@ -22,6 +22,15 @@ type ApiKey struct {
 	UpdatedAt  time.Time
 }
 
+type StorageObjectDim struct {
+	UserID    int64
+	ObjectKey string
+	ByteSize  int64
+	Width     int32
+	Height    int32
+	UpdatedAt time.Time
+}
+
 type User struct {
 	ID        int64
 	OidcSub   string

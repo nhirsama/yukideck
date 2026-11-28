@@ -35,12 +35,15 @@ export interface FolderEntry {
 export interface FileEntry {
   key: string;
   name: string;
+  prefix?: string;
   size: number /* int64 */;
   uploaded: string;
   content_type: string;
   url: string;
   is_image: boolean;
   metadata_stripped: boolean;
+  width?: number /* int */;
+  height?: number /* int */;
 }
 export interface DirectoryListing {
   prefix: string;
@@ -49,6 +52,25 @@ export interface DirectoryListing {
   files: FileEntry[];
   truncated: boolean;
   cursor?: string;
+}
+export interface PrefixGroup {
+  prefix: string;
+  files: FileEntry[];
+}
+export interface BucketGalleryListing {
+  base_url: string;
+  groups: PrefixGroup[];
+  total_files: number /* int */;
+  truncated: boolean;
+}
+export interface ObjectDimensionInput {
+  key: string;
+  size: number /* int64 */;
+  width: number /* int */;
+  height: number /* int */;
+}
+export interface SaveDimensionsInput {
+  items: ObjectDimensionInput[];
 }
 export interface PresignInput {
   folder: string;

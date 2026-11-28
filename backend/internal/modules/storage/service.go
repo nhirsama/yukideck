@@ -134,6 +134,9 @@ func (s *Service) SaveConfig(ctx context.Context, userID int64, in SaveConfigInp
 	if err != nil {
 		return nil, httpx.Internal("保存图床配置失败", err)
 	}
+	if existing != nil && (existing.Bucket != bucket || existing.Endpoint != endpoint) {
+		_ = s.store.DeleteAllObjectDims(ctx, userID)
+	}
 	return s.toConfigView(*saved)
 }
 
@@ -173,6 +176,8 @@ func (s *Service) ListDirectory(ctx context.Context, userID int64, rawPrefix, cu
 	}
 	sort.Slice(folders, func(i, j int) bool { return folders[i].Name < folders[j].Name })
 
+	dimsMap, _ := s.store.ListObjectDims(ctx, userID)
+
 	files := make([]FileEntry, 0, len(listed.Objects))
 	for _, obj := range listed.Objects {
 		if obj.Key == prefix || strings.HasSuffix(obj.Key, "/") {
@@ -183,16 +188,22 @@ func (s *Service) ListDirectory(ctx context.Context, userID int64, rawPrefix, cu
 			continue
 		}
 		ct := ResolveContentType(obj.ContentType, name)
-		files = append(files, FileEntry{
+		entry := FileEntry{
 			Key:              obj.Key,
 			Name:             name,
+			Prefix:           prefix,
 			Size:             obj.Size,
 			Uploaded:         obj.LastModified.UTC().Format(time.RFC3339),
 			ContentType:      ct,
 			URL:              BuildPublicURL(cfg.PublicBaseURL, obj.Key),
 			IsImage:          IsImageFile(ct, name),
 			MetadataStripped: obj.Metadata["stripped"] == "true",
-		})
+		}
+		if dim, ok := dimsMap[obj.Key]; ok && dim.ByteSize == obj.Size && dim.Width > 0 && dim.Height > 0 {
+			entry.Width = dim.Width
+			entry.Height = dim.Height
+		}
+		files = append(files, entry)
 	}
 	sort.Slice(files, func(i, j int) bool {
 		if files[i].Uploaded != files[j].Uploaded {
@@ -209,6 +220,181 @@ func (s *Service) ListDirectory(ctx context.Context, userID int64, rawPrefix, cu
 		Truncated: listed.Truncated,
 		Cursor:    listed.NextCursor,
 	}, nil
+}
+
+// ListGallery recursively lists objects under rawPrefix (or the entire bucket when empty),
+// groups them by their path prefix (root first, then lexicographical order), and attaches
+// cached image dimensions from the ephemeral PostgreSQL UNLOGGED cache table.
+func (s *Service) ListGallery(ctx context.Context, userID int64, rawPrefix string) (*BucketGalleryListing, error) {
+	b, cfg, err := s.userBucket(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	scopePrefix, err := NormalizeFolderPrefix(rawPrefix)
+	if err != nil {
+		return nil, httpx.BadRequest(err.Error())
+	}
+
+	const maxPages = 5 // up to 5,000 objects guardrail per gallery request
+	var allObjects []S3Object
+	cursor := ""
+	truncated := false
+	for page := 0; page < maxPages; page++ {
+		res, err := b.List(ctx, scopePrefix, "", cursor, 1000)
+		if err != nil {
+			return nil, httpx.BadRequest("读取存储桶对象列表失败: " + err.Error())
+		}
+		allObjects = append(allObjects, res.Objects...)
+		if !res.Truncated || res.NextCursor == "" {
+			break
+		}
+		cursor = res.NextCursor
+		if page == maxPages-1 {
+			truncated = true
+		}
+	}
+
+	dimsMap, _ := s.store.ListObjectDims(ctx, userID)
+
+	groupFiles := make(map[string][]FileEntry)
+	liveKeys := make(map[string]struct{}, len(allObjects))
+	totalFiles := 0
+
+	for _, obj := range allObjects {
+		key := obj.Key
+		if key == "" {
+			continue
+		}
+		// Trailing slash directory marker
+		if strings.HasSuffix(key, "/") {
+			if _, exists := groupFiles[key]; !exists {
+				groupFiles[key] = nil
+			}
+			continue
+		}
+
+		dirPrefix := ""
+		name := key
+		if idx := strings.LastIndex(key, "/"); idx >= 0 {
+			dirPrefix = key[:idx+1]
+			name = key[idx+1:]
+		}
+		if name == "" {
+			continue
+		}
+		// Folder placeholder (.keep): preserve empty prefix group without listing .keep as a file.
+		if name == FolderKeepFilename {
+			if _, exists := groupFiles[dirPrefix]; !exists {
+				groupFiles[dirPrefix] = nil
+			}
+			continue
+		}
+
+		liveKeys[key] = struct{}{}
+		ct := ResolveContentType(obj.ContentType, name)
+		entry := FileEntry{
+			Key:              key,
+			Name:             name,
+			Prefix:           dirPrefix,
+			Size:             obj.Size,
+			Uploaded:         obj.LastModified.UTC().Format(time.RFC3339),
+			ContentType:      ct,
+			URL:              BuildPublicURL(cfg.PublicBaseURL, key),
+			IsImage:          IsImageFile(ct, name),
+			MetadataStripped: obj.Metadata["stripped"] == "true",
+		}
+		if dim, ok := dimsMap[key]; ok && dim.ByteSize == obj.Size && dim.Width > 0 && dim.Height > 0 {
+			entry.Width = dim.Width
+			entry.Height = dim.Height
+		}
+		groupFiles[dirPrefix] = append(groupFiles[dirPrefix], entry)
+		totalFiles++
+	}
+
+	// Best-effort garbage collection of stale cache rows when we scanned the full bucket.
+	if scopePrefix == "" && !truncated && len(dimsMap) > 0 {
+		var orphans []string
+		for k := range dimsMap {
+			if _, alive := liveKeys[k]; !alive {
+				orphans = append(orphans, k)
+			}
+		}
+		if len(orphans) > 0 {
+			_ = s.store.DeleteObjectDimsByKeys(ctx, userID, orphans)
+		}
+	}
+
+	prefixes := make([]string, 0, len(groupFiles))
+	for p := range groupFiles {
+		prefixes = append(prefixes, p)
+	}
+	// Root ("") first, then remaining prefixes in lexicographical order.
+	sort.Slice(prefixes, func(i, j int) bool {
+		if prefixes[i] == "" {
+			return true
+		}
+		if prefixes[j] == "" {
+			return false
+		}
+		return prefixes[i] < prefixes[j]
+	})
+
+	groups := make([]PrefixGroup, 0, len(prefixes))
+	for _, p := range prefixes {
+		files := groupFiles[p]
+		if files == nil {
+			files = []FileEntry{}
+		}
+		sort.Slice(files, func(i, j int) bool {
+			if files[i].Uploaded != files[j].Uploaded {
+				return files[i].Uploaded > files[j].Uploaded
+			}
+			return files[i].Name < files[j].Name
+		})
+		groups = append(groups, PrefixGroup{
+			Prefix: p,
+			Files:  files,
+		})
+	}
+
+	return &BucketGalleryListing{
+		BaseURL:    cfg.PublicBaseURL,
+		Groups:     groups,
+		TotalFiles: totalFiles,
+		Truncated:  truncated,
+	}, nil
+}
+
+func (s *Service) SaveObjectDimensions(ctx context.Context, userID int64, items []ObjectDimensionInput) (int, error) {
+	if len(items) == 0 {
+		return 0, nil
+	}
+	if len(items) > 200 {
+		items = items[:200]
+	}
+	records := make([]ObjectDimRecord, 0, len(items))
+	for _, it := range items {
+		key, err := NormalizeObjectKey(it.Key)
+		if err != nil {
+			continue
+		}
+		if it.Width <= 0 || it.Height <= 0 || it.Width > 65535 || it.Height > 65535 || it.Size < 0 {
+			continue
+		}
+		records = append(records, ObjectDimRecord{
+			Key:      key,
+			ByteSize: it.Size,
+			Width:    it.Width,
+			Height:   it.Height,
+		})
+	}
+	if len(records) == 0 {
+		return 0, nil
+	}
+	if err := s.store.UpsertObjectDims(ctx, userID, records); err != nil {
+		return 0, httpx.Internal("保存图片尺寸缓存失败", err)
+	}
+	return len(records), nil
 }
 
 func (s *Service) ListSubfolders(ctx context.Context, userID int64, rawPrefix string) (string, []FolderEntry, error) {
@@ -376,15 +562,29 @@ func (s *Service) ProxyUpload(
 		return nil, httpx.BadRequest("上传到对象存储失败: " + err.Error())
 	}
 
+	var width, height int
+	if w, h, ok := ExtractImageDimensions(cleanData); ok {
+		width, height = w, h
+		_ = s.store.UpsertObjectDims(ctx, userID, []ObjectDimRecord{{
+			Key:      key,
+			ByteSize: int64(len(cleanData)),
+			Width:    w,
+			Height:   h,
+		}})
+	}
+
 	return &FileEntry{
 		Key:              key,
 		Name:             fileName,
+		Prefix:           prefix,
 		Size:             int64(len(cleanData)),
 		Uploaded:         time.Now().UTC().Format(time.RFC3339),
 		ContentType:      ct,
 		URL:              BuildPublicURL(cfg.PublicBaseURL, key),
 		IsImage:          IsImageFile(ct, fileName),
 		MetadataStripped: stripped,
+		Width:            width,
+		Height:           height,
 	}, nil
 }
 
@@ -423,6 +623,7 @@ func (s *Service) RenameEntry(ctx context.Context, userID int64, entryType, oldP
 		if err := b.Delete(ctx, []string{oldKey}); err != nil {
 			return "", "", 0, "", httpx.BadRequest("删除原文件失败: " + err.Error())
 		}
+		_ = s.store.RenameObjectDimKey(ctx, userID, oldKey, newKey)
 		return oldKey, newKey, 1, BuildPublicURL(cfg.PublicBaseURL, newKey), nil
 	}
 
@@ -488,6 +689,10 @@ func (s *Service) RenameEntry(ctx context.Context, userID int64, entryType, oldP
 	if len(toDelete) > 0 {
 		if err := b.Delete(ctx, toDelete); err != nil {
 			return "", "", 0, "", httpx.BadRequest("清理原文件夹失败: " + err.Error())
+		}
+		for _, oldKey := range toDelete {
+			rel := strings.TrimPrefix(oldKey, oldPrefix)
+			_ = s.store.RenameObjectDimKey(ctx, userID, oldKey, newPrefix+rel)
 		}
 	}
 	return oldPrefix, newPrefix, len(toDelete), "", nil
@@ -567,6 +772,9 @@ func (s *Service) MoveEntries(ctx context.Context, userID int64, items []PathIte
 			if err := b.Delete(ctx, toDelete); err != nil {
 				return totalMoved, httpx.BadRequest("清理原文件失败: " + err.Error())
 			}
+			for _, p := range filePairs {
+				_ = s.store.RenameObjectDimKey(ctx, userID, p.oldKey, p.newKey)
+			}
 			totalMoved += len(toDelete)
 		}
 	}
@@ -623,6 +831,7 @@ func (s *Service) DeleteEntries(ctx context.Context, userID int64, items []PathI
 		if err := b.Delete(ctx, keys); err != nil {
 			return 0, httpx.BadRequest("删除对象失败: " + err.Error())
 		}
+		_ = s.store.DeleteObjectDimsByKeys(ctx, userID, keys)
 	}
 	return len(keys), nil
 }

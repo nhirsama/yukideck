@@ -25,6 +25,7 @@ import (
 type memConfigStore struct {
 	mu   sync.Mutex
 	cfgs map[int64]ConfigRecord
+	dims map[int64]map[string]ObjectDimRecord
 }
 
 func (m *memConfigStore) GetConfig(_ context.Context, userID int64) (*ConfigRecord, error) {
@@ -43,6 +44,66 @@ func (m *memConfigStore) UpsertConfig(_ context.Context, rec ConfigRecord) (*Con
 	rec.UpdatedAt = time.Now()
 	m.cfgs[rec.UserID] = rec
 	return &rec, nil
+}
+
+func (m *memConfigStore) ListObjectDims(_ context.Context, userID int64) (map[string]ObjectDimRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[string]ObjectDimRecord)
+	for k, v := range m.dims[userID] {
+		out[k] = v
+	}
+	return out, nil
+}
+
+func (m *memConfigStore) UpsertObjectDims(_ context.Context, userID int64, items []ObjectDimRecord) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.dims == nil {
+		m.dims = make(map[int64]map[string]ObjectDimRecord)
+	}
+	if m.dims[userID] == nil {
+		m.dims[userID] = make(map[string]ObjectDimRecord)
+	}
+	for _, it := range items {
+		m.dims[userID][it.Key] = it
+	}
+	return nil
+}
+
+func (m *memConfigStore) RenameObjectDimKey(_ context.Context, userID int64, oldKey, newKey string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.dims == nil || m.dims[userID] == nil {
+		return nil
+	}
+	if v, ok := m.dims[userID][oldKey]; ok {
+		delete(m.dims[userID], oldKey)
+		v.Key = newKey
+		m.dims[userID][newKey] = v
+	}
+	return nil
+}
+
+func (m *memConfigStore) DeleteObjectDimsByKeys(_ context.Context, userID int64, keys []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.dims == nil || m.dims[userID] == nil {
+		return nil
+	}
+	for _, k := range keys {
+		delete(m.dims[userID], k)
+	}
+	return nil
+}
+
+func (m *memConfigStore) DeleteAllObjectDims(_ context.Context, userID int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.dims != nil {
+		delete(m.dims, userID)
+	}
+	return nil
 }
 
 type memBucket struct {
@@ -336,5 +397,98 @@ func TestStorageOperationsAndGuardrails(t *testing.T) {
 	})
 	if err != nil || reply == nil || !strings.Contains(reply.Content, "https://img.example.com/telegram/") {
 		t.Fatalf("expected TG image upload reply with direct URL, got %+v err=%v", reply, err)
+	}
+}
+
+func buildSizedPNG(width, height uint32) []byte {
+	sig := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:4], width)
+	binary.BigEndian.PutUint32(ihdr[4:8], height)
+	makeChunk := func(typ string, data []byte) []byte {
+		out := make([]byte, 12+len(data))
+		binary.BigEndian.PutUint32(out[0:4], uint32(len(data)))
+		copy(out[4:8], typ)
+		copy(out[8:], data)
+		return out
+	}
+	var buf bytes.Buffer
+	buf.Write(sig)
+	buf.Write(makeChunk("IHDR", ihdr))
+	buf.Write(makeChunk("IEND", nil))
+	return buf.Bytes()
+}
+
+func TestGalleryGroupingAndDimensionCache(t *testing.T) {
+	box, _ := crypto.NewBox(bytes.Repeat([]byte{0x55}, 32))
+	store := &memConfigStore{cfgs: map[int64]ConfigRecord{}}
+	bucket := newMemBucket()
+	svc := NewService(store, box, func(PlainConfig) (Bucket, error) { return bucket, nil }, 5)
+	ctx := context.Background()
+
+	_, err := svc.SaveConfig(ctx, 1, SaveConfigInput{
+		Endpoint:      "https://acct.r2.cloudflarestorage.com",
+		Region:        "auto",
+		Bucket:        "album-bucket",
+		AccessKey:     "AKIA_TEST",
+		SecretKey:     "SECRET_KEY_123456",
+		PublicBaseURL: "https://img.example.com",
+		HashLength:    16,
+		UploadMode:    UploadModeDirect,
+	})
+	if err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	// Verify PNG dimension extraction
+	pngData := buildSizedPNG(1920, 1080)
+	if w, h, ok := ExtractImageDimensions(pngData); !ok || w != 1920 || h != 1080 {
+		t.Fatalf("ExtractImageDimensions PNG failed: w=%d h=%d ok=%v", w, h, ok)
+	}
+
+	// Seed objects across root, nested prefixes, and an empty .keep folder
+	_ = bucket.Put(ctx, "root.png", pngData, "image/png", nil)
+	_ = bucket.Put(ctx, "zeta/pic.png", pngData, "image/png", nil)
+	_ = bucket.Put(ctx, "alpha/2026/a.png", pngData, "image/png", nil)
+	_ = bucket.Put(ctx, "empty/.keep", []byte{}, "application/x-empty", nil)
+
+	// Save dimensions including one stale size mismatch and one orphan key
+	saved, err := svc.SaveObjectDimensions(ctx, 1, []ObjectDimensionInput{
+		{Key: "root.png", Size: int64(len(pngData)), Width: 1920, Height: 1080},
+		{Key: "zeta/pic.png", Size: 999999, Width: 100, Height: 100}, // wrong size -> must miss
+		{Key: "deleted/orphan.png", Size: 123, Width: 50, Height: 50},
+	})
+	if err != nil || saved != 3 {
+		t.Fatalf("SaveObjectDimensions: saved=%d err=%v", saved, err)
+	}
+
+	gallery, err := svc.ListGallery(ctx, 1, "")
+	if err != nil {
+		t.Fatalf("ListGallery: %v", err)
+	}
+	if gallery.TotalFiles != 3 || len(gallery.Groups) != 4 {
+		t.Fatalf("expected 3 files across 4 groups, got total=%d groups=%d", gallery.TotalFiles, len(gallery.Groups))
+	}
+
+	// Root first, then lexicographical order: "", "alpha/2026/", "empty/", "zeta/"
+	wantOrder := []string{"", "alpha/2026/", "empty/", "zeta/"}
+	for i, want := range wantOrder {
+		if gallery.Groups[i].Prefix != want {
+			t.Fatalf("group[%d] = %q, want %q", i, gallery.Groups[i].Prefix, want)
+		}
+	}
+
+	// Cache hit on root.png, cache miss on size-mismatched zeta/pic.png
+	if gallery.Groups[0].Files[0].Width != 1920 || gallery.Groups[0].Files[0].Height != 1080 {
+		t.Fatalf("expected cached dims 1920x1080 on root.png, got %+v", gallery.Groups[0].Files[0])
+	}
+	if gallery.Groups[3].Files[0].Width != 0 || gallery.Groups[3].Files[0].Height != 0 {
+		t.Fatalf("expected size-mismatched dims to be ignored on zeta/pic.png, got %+v", gallery.Groups[3].Files[0])
+	}
+
+	// Orphan key should have been garbage-collected after full-bucket scan
+	remainingDims, _ := store.ListObjectDims(ctx, 1)
+	if _, stillThere := remainingDims["deleted/orphan.png"]; stillThere {
+		t.Fatalf("expected orphan dim cache key to be cleaned up")
 	}
 }

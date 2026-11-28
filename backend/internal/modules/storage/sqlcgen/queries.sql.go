@@ -9,6 +9,31 @@ import (
 	"context"
 )
 
+const deleteAllObjectDims = `-- name: DeleteAllObjectDims :exec
+DELETE FROM storage_object_dims
+WHERE user_id = $1
+`
+
+func (q *Queries) DeleteAllObjectDims(ctx context.Context, userID int64) error {
+	_, err := q.db.Exec(ctx, deleteAllObjectDims, userID)
+	return err
+}
+
+const deleteObjectDimsByKeys = `-- name: DeleteObjectDimsByKeys :exec
+DELETE FROM storage_object_dims
+WHERE user_id = $1 AND object_key = ANY($2::text[])
+`
+
+type DeleteObjectDimsByKeysParams struct {
+	UserID  int64
+	Column2 []string
+}
+
+func (q *Queries) DeleteObjectDimsByKeys(ctx context.Context, arg DeleteObjectDimsByKeysParams) error {
+	_, err := q.db.Exec(ctx, deleteObjectDimsByKeys, arg.UserID, arg.Column2)
+	return err
+}
+
 const getStorageConfig = `-- name: GetStorageConfig :one
 SELECT user_id, endpoint, region, bucket, access_key, secret_key_enc,
        public_base_url, hash_length, force_path_style, upload_mode, updated_at
@@ -33,6 +58,90 @@ func (q *Queries) GetStorageConfig(ctx context.Context, userID int64) (UserStora
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listObjectDims = `-- name: ListObjectDims :many
+SELECT object_key, byte_size, width, height
+FROM storage_object_dims
+WHERE user_id = $1
+`
+
+type ListObjectDimsRow struct {
+	ObjectKey string
+	ByteSize  int64
+	Width     int32
+	Height    int32
+}
+
+func (q *Queries) ListObjectDims(ctx context.Context, userID int64) ([]ListObjectDimsRow, error) {
+	rows, err := q.db.Query(ctx, listObjectDims, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListObjectDimsRow{}
+	for rows.Next() {
+		var i ListObjectDimsRow
+		if err := rows.Scan(
+			&i.ObjectKey,
+			&i.ByteSize,
+			&i.Width,
+			&i.Height,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const renameObjectDimKey = `-- name: RenameObjectDimKey :exec
+UPDATE storage_object_dims
+SET object_key = $3, updated_at = NOW()
+WHERE user_id = $1 AND object_key = $2
+`
+
+type RenameObjectDimKeyParams struct {
+	UserID      int64
+	ObjectKey   string
+	ObjectKey_2 string
+}
+
+func (q *Queries) RenameObjectDimKey(ctx context.Context, arg RenameObjectDimKeyParams) error {
+	_, err := q.db.Exec(ctx, renameObjectDimKey, arg.UserID, arg.ObjectKey, arg.ObjectKey_2)
+	return err
+}
+
+const upsertObjectDim = `-- name: UpsertObjectDim :exec
+INSERT INTO storage_object_dims (user_id, object_key, byte_size, width, height, updated_at)
+VALUES ($1, $2, $3, $4, $5, NOW())
+ON CONFLICT (user_id, object_key) DO UPDATE SET
+    byte_size  = EXCLUDED.byte_size,
+    width      = EXCLUDED.width,
+    height     = EXCLUDED.height,
+    updated_at = NOW()
+`
+
+type UpsertObjectDimParams struct {
+	UserID    int64
+	ObjectKey string
+	ByteSize  int64
+	Width     int32
+	Height    int32
+}
+
+func (q *Queries) UpsertObjectDim(ctx context.Context, arg UpsertObjectDimParams) error {
+	_, err := q.db.Exec(ctx, upsertObjectDim,
+		arg.UserID,
+		arg.ObjectKey,
+		arg.ByteSize,
+		arg.Width,
+		arg.Height,
+	)
+	return err
 }
 
 const upsertStorageConfig = `-- name: UpsertStorageConfig :one

@@ -7,10 +7,12 @@ import {
   stripImageMetadata,
 } from './metadata';
 import type {
+  BucketGalleryListing,
   ConfigView,
   DirectoryListing,
   FileEntry,
   FolderEntry,
+  ObjectDimensionInput,
   PathItem,
   PresignResult,
   RenameEntryResponse,
@@ -19,12 +21,15 @@ import type {
 
 export type UploadMode = ConfigView['upload_mode'];
 export type {
+  BucketGalleryListing,
   ConfigView as StorageConfig,
   SaveConfigInput as SaveStorageConfigPayload,
   FolderEntry,
   FileEntry,
   DirectoryListing,
+  ObjectDimensionInput,
   PathItem,
+  PrefixGroup,
   PresignInput,
   PresignResult,
   RenameEntryResponse,
@@ -46,6 +51,15 @@ export const storageApi = {
     const qs = params.toString();
     return request<DirectoryListing>(`/api/v1/storage/list${qs ? `?${qs}` : ''}`);
   },
+  gallery: (prefix = '') => {
+    const qs = prefix ? `?prefix=${encodeURIComponent(prefix)}` : '';
+    return request<BucketGalleryListing>(`/api/v1/storage/gallery${qs}`);
+  },
+  saveDimensions: (items: ObjectDimensionInput[]) =>
+    request<{ ok: boolean; saved: number }>('/api/v1/storage/dimensions', {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    }),
   listFolders: (prefix = '') => {
     const qs = prefix ? `?prefix=${encodeURIComponent(prefix)}` : '';
     return request<{ prefix: string; folders: FolderEntry[] }>(`/api/v1/storage/folders${qs}`);
@@ -113,8 +127,23 @@ export const storageApi = {
       }
       if (dims && presigned.file.url) {
         saveCachedDimensionsBatch({ [presigned.file.url]: [dims.width, dims.height] });
+        void storageApi
+          .saveDimensions([
+            {
+              key: presigned.file.key,
+              size: cleanBytes.byteLength,
+              width: dims.width,
+              height: dims.height,
+            },
+          ])
+          .catch(() => {});
       }
-      return { ...presigned.file, size: cleanBytes.byteLength };
+      return {
+        ...presigned.file,
+        size: cleanBytes.byteLength,
+        width: dims?.width,
+        height: dims?.height,
+      };
     }
 
     // Proxy mode

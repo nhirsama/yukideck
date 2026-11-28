@@ -316,17 +316,26 @@ export function AppShell() {
       </aside>
 
       <main
-        className="flex-1 min-w-0"
+        className="flex-1 min-w-0 flex flex-col"
         onClickCapture={handleGuestClickCapture}
         onSubmitCapture={handleGuestSubmitCapture}
         onFocusCapture={handleGuestFocusCapture}
         onDragOverCapture={handleGuestDragOverCapture}
         onDropCapture={handleGuestDropCapture}
       >
-        <div className="max-w-7xl mx-auto px-4 sm:px-8 py-5 sm:py-7">
-          <Suspense fallback={<LoadingState label="正在加载模块..." variant="module" />}>
-            <Outlet />
-          </Suspense>
+        <div className="w-full max-w-7xl mx-auto px-4 sm:px-8 pt-5 sm:pt-7 pb-6 flex-1 flex flex-col">
+          <div className="flex-1">
+            <Suspense fallback={<LoadingState label="正在加载模块..." variant="module" />}>
+              <Outlet />
+            </Suspense>
+          </div>
+          {!location.pathname.startsWith('/clipboard/') && (
+            <footer className="mt-auto pt-12 pb-2 flex items-center justify-center gap-3 text-[11.5px] text-zinc-300 select-none">
+              <span className="h-px w-16 sm:w-28 bg-zinc-200/80" />
+              <span>已经到底啦</span>
+              <span className="h-px w-16 sm:w-28 bg-zinc-200/80" />
+            </footer>
+          )}
         </div>
       </main>
     </div>

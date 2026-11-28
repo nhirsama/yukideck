@@ -35,12 +35,15 @@ type FolderEntry struct {
 type FileEntry struct {
 	Key              string `json:"key"`
 	Name             string `json:"name"`
+	Prefix           string `json:"prefix,omitempty"`
 	Size             int64  `json:"size"`
 	Uploaded         string `json:"uploaded"`
 	ContentType      string `json:"content_type"`
 	URL              string `json:"url"`
 	IsImage          bool   `json:"is_image"`
 	MetadataStripped bool   `json:"metadata_stripped"`
+	Width            int    `json:"width,omitempty"`
+	Height           int    `json:"height,omitempty"`
 }
 
 type DirectoryListing struct {
@@ -50,6 +53,29 @@ type DirectoryListing struct {
 	Files     []FileEntry   `json:"files"`
 	Truncated bool          `json:"truncated"`
 	Cursor    string        `json:"cursor,omitempty"`
+}
+
+type PrefixGroup struct {
+	Prefix string      `json:"prefix"`
+	Files  []FileEntry `json:"files"`
+}
+
+type BucketGalleryListing struct {
+	BaseURL    string        `json:"base_url"`
+	Groups     []PrefixGroup `json:"groups"`
+	TotalFiles int           `json:"total_files"`
+	Truncated  bool          `json:"truncated"`
+}
+
+type ObjectDimensionInput struct {
+	Key    string `json:"key"`
+	Size   int64  `json:"size"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+}
+
+type SaveDimensionsInput struct {
+	Items []ObjectDimensionInput `json:"items"`
 }
 
 type PresignInput struct {
