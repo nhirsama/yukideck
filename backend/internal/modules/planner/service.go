@@ -8,6 +8,7 @@ import (
 
 	"github.com/6tail/lunar-go/calendar"
 
+	"yukideck/internal/core/auth"
 	"yukideck/internal/core/httpx"
 	"yukideck/internal/core/messenger"
 )
@@ -72,6 +73,9 @@ func (s *Service) ListCalendarEvents(ctx context.Context, userID int64, start, e
 }
 
 func (s *Service) CreateItem(ctx context.Context, userID int64, in UpsertItemInput) (*ItemView, error) {
+	if strings.TrimSpace(in.Timezone) == "" {
+		in.Timezone = auth.UserTimezone(ctx)
+	}
 	rec, err := buildItemRecord(userID, 0, StatusPending, in, time.Now().UTC())
 	if err != nil {
 		return nil, err
@@ -92,6 +96,13 @@ func (s *Service) UpdateItem(ctx context.Context, userID, id int64, in UpsertIte
 	}
 	if existing == nil {
 		return nil, httpx.NotFound("事项不存在")
+	}
+	if strings.TrimSpace(in.Timezone) == "" {
+		if strings.TrimSpace(existing.Timezone) != "" {
+			in.Timezone = existing.Timezone
+		} else {
+			in.Timezone = auth.UserTimezone(ctx)
+		}
 	}
 
 	now := time.Now().UTC()

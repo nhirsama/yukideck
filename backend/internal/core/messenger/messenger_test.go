@@ -222,7 +222,10 @@ func (stubUserStore) UpsertByOIDCSub(_ context.Context, sub, u, e, a string) (*a
 	return &auth.User{ID: 1, OIDCSub: sub, Username: u, Email: e, AvatarURL: a}, nil
 }
 func (stubUserStore) FindByID(_ context.Context, id int64) (*auth.User, error) {
-	return &auth.User{ID: id, Username: "yuki"}, nil
+	return &auth.User{ID: id, Username: "yuki", Timezone: auth.DefaultTimezone, DisabledModules: []string{}}, nil
+}
+func (stubUserStore) UpdatePreferences(_ context.Context, id int64, tz string, disabled []string) (*auth.User, error) {
+	return &auth.User{ID: id, Username: "yuki", Timezone: tz, DisabledModules: disabled}, nil
 }
 
 type stubAPIKeyStore struct {

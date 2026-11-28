@@ -1,3 +1,10 @@
+import {
+  detectBrowserTimezone as coreDetectBrowserTimezone,
+  formatDateTimeInTimezone,
+  getActiveUserTimezone,
+  getDateOffsetISOInTimezone,
+} from '@/core/timezone';
+
 export function formatTokens(n: number): string {
   if (!Number.isFinite(n) || n === 0) return '0';
   const abs = Math.abs(n);
@@ -20,36 +27,15 @@ export function formatPercent(ratio: number): string {
 
 export function formatDateTime(iso: string, tz?: string): string {
   if (!iso) return '-';
-  try {
-    return new Intl.DateTimeFormat('zh-CN', {
-      timeZone: tz || undefined,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).format(new Date(iso));
-  } catch {
-    return iso;
-  }
+  return formatDateTimeInTimezone(iso, tz || getActiveUserTimezone());
 }
 
-export function localDateISO(daysOffset = 0): string {
-  const d = new Date();
-  d.setDate(d.getDate() + daysOffset);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+export function localDateISO(daysOffset = 0, tz?: string): string {
+  return getDateOffsetISOInTimezone(daysOffset, tz || getActiveUserTimezone());
 }
 
 export function detectBrowserTimezone(): string {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-  } catch {
-    return 'UTC';
-  }
+  return coreDetectBrowserTimezone();
 }
 
 export type ChartScaleMode = 'log' | 'linear';

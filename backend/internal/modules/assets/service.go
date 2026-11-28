@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"yukideck/internal/core/auth"
 	"yukideck/internal/core/httpx"
 	"yukideck/internal/modules/assets/sqlcgen"
 )
@@ -365,7 +366,7 @@ func (s *Service) ListItems(ctx context.Context, userID int64, filter ItemListFi
 	if filter.ExcludeRetired != nil {
 		excludeRetired = *filter.ExcludeRetired
 	}
-	today, err := parseTodayDate(filter.Today)
+	today, err := parseTodayDate(ctx, filter.Today)
 	if err != nil {
 		return ListItemsResponse{}, err
 	}
@@ -442,7 +443,7 @@ func (s *Service) GetItemDetail(ctx context.Context, userID, itemID int64, today
 		}
 		displayCurrency = c
 	}
-	today, err := parseTodayDate(todayStr)
+	today, err := parseTodayDate(ctx, todayStr)
 	if err != nil {
 		return ItemDetailResponse{}, err
 	}
@@ -529,7 +530,7 @@ func (s *Service) CreateItem(ctx context.Context, userID int64, in UpsertItemInp
 		}
 	}
 
-	purchasedAt, err := parseTodayDate(todayStr)
+	purchasedAt, err := parseTodayDate(ctx, todayStr)
 	if err != nil {
 		return ItemView{}, err
 	}
@@ -746,7 +747,7 @@ func (s *Service) RetireItem(ctx context.Context, userID, itemID int64, in Retir
 			return ItemView{}, err
 		}
 	}
-	retiredAt, err := parseTodayDate(todayStr)
+	retiredAt, err := parseTodayDate(ctx, todayStr)
 	if err != nil {
 		return ItemView{}, err
 	}
@@ -817,7 +818,7 @@ func (s *Service) BatchItems(ctx context.Context, userID int64, in BatchItemInpu
 		if err != nil {
 			return 0, err
 		}
-		retiredAt, err := parseTodayDate(todayStr)
+		retiredAt, err := parseTodayDate(ctx, todayStr)
 		if err != nil {
 			return 0, err
 		}
@@ -865,7 +866,7 @@ func (s *Service) CreateTransaction(ctx context.Context, userID, itemID int64, i
 			return TransactionView{}, err
 		}
 	}
-	occurredAt, err := parseTodayDate(todayStr)
+	occurredAt, err := parseTodayDate(ctx, todayStr)
 	if err != nil {
 		return TransactionView{}, err
 	}
@@ -916,7 +917,7 @@ func (s *Service) UpdateTransaction(ctx context.Context, userID, itemID, txID in
 			return TransactionView{}, err
 		}
 	}
-	occurredAt, err := parseTodayDate(todayStr)
+	occurredAt, err := parseTodayDate(ctx, todayStr)
 	if err != nil {
 		return TransactionView{}, err
 	}
@@ -1630,7 +1631,7 @@ func parseOptionalDatePtr(raw *string) (*time.Time, error) {
 	return &t, nil
 }
 
-func parseTodayDate(raw string) (time.Time, error) {
+func parseTodayDate(ctx context.Context, raw string) (time.Time, error) {
 	if strings.TrimSpace(raw) != "" {
 		t, err := parseDate(raw)
 		if err != nil {
@@ -1638,7 +1639,7 @@ func parseTodayDate(raw string) (time.Time, error) {
 		}
 		return t, nil
 	}
-	loc, err := time.LoadLocation("Asia/Shanghai")
+	loc, err := time.LoadLocation(auth.UserTimezone(ctx))
 	if err != nil {
 		loc = time.UTC
 	}

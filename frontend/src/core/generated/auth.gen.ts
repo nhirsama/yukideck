@@ -8,6 +8,15 @@ export interface User {
   username: string;
   email: string;
   avatar_url: string;
+  timezone: string;
+  disabled_modules: string[];
+}
+/**
+ * UpdateUserPreferencesInput updates user-scoped platform preferences (global default timezone & module toggles).
+ */
+export interface UpdateUserPreferencesInput {
+  timezone?: string;
+  disabled_modules?: string[];
 }
 /**
  * ResourceOption represents a selectable module-owned resource exposed for fine-grained API Key policies.

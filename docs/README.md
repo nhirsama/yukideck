@@ -6,4 +6,5 @@
 - [AI Agent 用量统计模块（`ai-usage`）设计方案](./ai-usage-module.md)：小时×会话 UUID 模型、多维统计 API、服务端定价与 `collector/` 同步工具。
 - [个人物品与资产管理模块（`assets`）详细设计方案](./assets-module.md)：多币种实时汇率换算、两级分类与预置分类、统一实体子物品归属、财务口径与三视图工作区。
 - [剪切板模块（`clipboard`）详细设计方案](./clipboard-module.md)：纯文本云剪切板、可配置体积护栏、CodeMirror 6 编辑与 Markdown 预览、SSE 近似实时同步与到期自动清理。
+- [使用时间模块（`screen-time`）详细设计方案](./screen-time-module.md)：零侵入定时拉取 WakaTime `/summaries` 与 `/durations` 永久归档、多维统计、年度热力图与每日编码时间轴。
 - [阶段实施与验证记录](./walkthrough.md)：已完成各阶段的交付清单与测试验证结果。

@@ -102,6 +102,7 @@ func newWithDeps(
 	msgSvc.RegisterPermissions(authSvc.Permissions())
 
 	enabledModules := make([]module.Module, 0, len(candidates))
+	enabledIDs := make([]string, 0, len(candidates))
 	for _, m := range candidates {
 		if cfg.IsModuleDisabled(m.Meta().ID) {
 			if logger != nil {
@@ -112,7 +113,9 @@ func newWithDeps(
 		m.RegisterPermissions(authSvc.Permissions())
 		m.RegisterCommands(msgSvc.CommandBus())
 		enabledModules = append(enabledModules, m)
+		enabledIDs = append(enabledIDs, m.Meta().ID)
 	}
+	authSvc.SetKnownModuleIDs(enabledIDs)
 
 	a := &App{
 		cfg:       cfg,

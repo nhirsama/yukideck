@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, configureApiAuthBridge, coreApi, type User } from './api';
+import { setActiveUserTimezone } from './timezone';
 
 interface AuthContextValue {
   user: User | null;
@@ -50,6 +51,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const user = data ?? null;
   const isAuthenticated = Boolean(user);
+  // Keep synchronous module-level timezone snapshot updated before children render.
+  setActiveUserTimezone(user?.timezone ?? null);
 
   const openLoginModal = useCallback((reason?: string) => {
     setLoginModalReason(reason ?? null);

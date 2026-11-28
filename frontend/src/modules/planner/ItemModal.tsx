@@ -3,6 +3,7 @@ import { useMutation } from '@tanstack/react-query';
 import { X } from 'lucide-react';
 import { InfoTooltip } from '@/components/InfoTooltip';
 import { Select } from '@/components/Select';
+import { formatDateISOInTimezone, useUserTimezone } from '@/core/timezone';
 import {
   COMMON_TIMEZONES,
   formatTimezoneOptionLabel,
@@ -39,23 +40,11 @@ const WEEKDAYS = [
   { value: 0, label: '日' },
 ];
 
-function defaultTimezone(): string {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai';
-  } catch {
-    return 'Asia/Shanghai';
-  }
-}
-
-function defaultLocalDateTime(prefillDate?: string): string {
+function defaultLocalDateTime(tz: string, prefillDate?: string): string {
   if (prefillDate) {
     return prefillDate.includes('T') ? prefillDate.slice(0, 16) : `${prefillDate}T09:00`;
   }
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}T09:00`;
+  return `${formatDateISOInTimezone(new Date(), tz)}T09:00`;
 }
 
 export function ItemModal({
@@ -70,6 +59,7 @@ export function ItemModal({
   onSaved: () => void;
 }) {
   const isEditing = Boolean(initial);
+  const userTimezone = useUserTimezone();
 
   const [title, setTitle] = useState(initial?.title ?? '');
   const [note, setNote] = useState(initial?.note ?? '');
@@ -77,8 +67,8 @@ export function ItemModal({
     Boolean(initial?.target_at || initial?.repeat_type === 'cron' || prefillDate),
   );
   const [calendarType, setCalendarType] = useState<CalendarType>(initial?.calendar_type ?? 'solar');
-  const [timezone, setTimezone] = useState(initial?.timezone ?? defaultTimezone());
-  const initialTargetLocal = initial?.target_local ?? defaultLocalDateTime(prefillDate);
+  const [timezone, setTimezone] = useState(initial?.timezone ?? userTimezone);
+  const initialTargetLocal = initial?.target_local ?? defaultLocalDateTime(initial?.timezone ?? userTimezone, prefillDate);
   const initialSolarParsed = useMemo(
     () => parseSolarLocal(initialTargetLocal),
     [initialTargetLocal],

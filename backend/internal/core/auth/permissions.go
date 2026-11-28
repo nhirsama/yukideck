@@ -156,6 +156,25 @@ func UserID(ctx context.Context) (int64, bool) {
 	return u.ID, true
 }
 
+// UserTimezone returns the authenticated user's configured global IANA timezone,
+// falling back to DefaultTimezone ("Asia/Shanghai") when unset or unavailable.
+func UserTimezone(ctx context.Context) string {
+	u, ok := UserFromContext(ctx)
+	if !ok || u == nil {
+		return DefaultTimezone
+	}
+	return NormalizeTimezone(u.Timezone)
+}
+
+// IsModuleDisabledForUser reports whether the authenticated user has disabled moduleID in preferences.
+func IsModuleDisabledForUser(ctx context.Context, moduleID string) bool {
+	u, ok := UserFromContext(ctx)
+	if !ok || u == nil {
+		return false
+	}
+	return u.IsModuleDisabled(moduleID)
+}
+
 // MatchPolicies evaluates Cloudflare-style Permission × Resource policy rules.
 func MatchPolicies(policies []PolicyRule, perm string, resource string) bool {
 	perm = strings.TrimSpace(perm)

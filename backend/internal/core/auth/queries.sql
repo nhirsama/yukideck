@@ -6,12 +6,20 @@ SET username = EXCLUDED.username,
     email = EXCLUDED.email,
     avatar_url = EXCLUDED.avatar_url,
     updated_at = NOW()
-RETURNING id, oidc_sub, username, email, avatar_url;
+RETURNING id, oidc_sub, username, email, avatar_url, timezone, disabled_modules;
 
 -- name: FindUserByID :one
-SELECT id, oidc_sub, username, email, avatar_url
+SELECT id, oidc_sub, username, email, avatar_url, timezone, disabled_modules
 FROM users
 WHERE id = $1;
+
+-- name: UpdateUserPreferences :one
+UPDATE users
+SET timezone = $2,
+    disabled_modules = $3,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, oidc_sub, username, email, avatar_url, timezone, disabled_modules;
 
 -- name: ListAPIKeys :many
 SELECT id, user_id, name, key_prefix, key_hash, policies, enabled, expires_at, last_used_at, created_at, updated_at

@@ -1,4 +1,5 @@
 import { apiUrl, request } from '@/core/api';
+import { formatDateTimeInTimezone, getActiveUserTimezone } from '@/core/timezone';
 import type {
   ClipboardEvent,
   ClipboardItem,
@@ -71,7 +72,7 @@ export function formatBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
-export function formatRelativeTime(iso: string): string {
+export function formatRelativeTime(iso: string, tz = getActiveUserTimezone()): string {
   const ts = new Date(iso).getTime();
   if (Number.isNaN(ts)) return '';
   const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -79,12 +80,14 @@ export function formatRelativeTime(iso: string): string {
   if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`;
   if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`;
   if (diffSec < 7 * 86400) return `${Math.floor(diffSec / 86400)} 天前`;
-  const d = new Date(ts);
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mi = String(d.getMinutes()).padStart(2, '0');
-  return `${mm}-${dd} ${hh}:${mi}`;
+  return formatDateTimeInTimezone(iso, tz, {
+    year: undefined,
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
 }
 
 export function formatExpiryBadge(iso: string): {
@@ -114,15 +117,10 @@ export function formatExpiryBadge(iso: string): {
   return { text: `${diffDays} 天后过期`, tone: 'neutral' };
 }
 
-export function formatDateTimeFull(iso: string): string {
+export function formatDateTimeFull(iso: string, tz = getActiveUserTimezone()): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mi = String(d.getMinutes()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
+  return formatDateTimeInTimezone(d, tz);
 }
 
 export function toLocalDateTimeInput(date: Date): string {

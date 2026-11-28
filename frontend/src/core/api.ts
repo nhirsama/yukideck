@@ -105,6 +105,7 @@ export type { Meta as BackendModuleMeta } from './generated/module.gen';
 export type { AppMeta, HealthResponse } from './generated/app.gen';
 export type {
   User,
+  UpdateUserPreferencesInput,
   ResourceOption,
   PermissionDef,
   PermissionSchemaItem,
@@ -125,6 +126,7 @@ export type {
 import type { AppMeta } from './generated/app.gen';
 import type {
   User,
+  UpdateUserPreferencesInput,
   PermissionSchemaItem,
   APIKeyView as APIKey,
   CreateAPIKeyResponse,
@@ -145,6 +147,11 @@ export type Capability = 'outbound' | 'inbound';
 export const coreApi = {
   getMeta: () => request<AppMeta>('/api/v1/meta'),
   getMe: () => request<{ user: User }>('/api/v1/auth/me', { silentAuth: true }),
+  updatePreferences: (payload: UpdateUserPreferencesInput) =>
+    request<{ user: User }>('/api/v1/auth/preferences', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
   logout: () => request<{ ok: boolean }>('/api/v1/auth/logout', { method: 'POST', silentAuth: true }),
   loginUrl: (next?: string) => {
     const safeNext = sanitizeLoginNext(next);

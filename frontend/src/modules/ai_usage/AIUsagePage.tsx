@@ -7,10 +7,10 @@ import { LoadingState } from '@/components/LoadingState';
 import { Select } from '@/components/Select';
 import { Tooltip } from '@/components/Tooltip';
 import { isTouchPrimary } from '@/core/responsive';
+import { useUserTimezone } from '@/core/timezone';
 import { aiUsageApi, type BreakdownItem, type HeatmapDay } from './api';
 import {
   buildAxisScale,
-  detectBrowserTimezone,
   formatDateTime,
   formatPercent,
   formatTokens,
@@ -41,10 +41,10 @@ const HEATMAP_CLASSES = [
 type RangePreset = '7d' | '30d' | '90d' | '365d';
 
 export default function AIUsagePage() {
-  const tz = useMemo(() => detectBrowserTimezone(), []);
+  const tz = useUserTimezone();
   const [preset, setPreset] = useState<RangePreset>('30d');
-  const [startDate, setStartDate] = useState(() => localDateISO(-29));
-  const [endDate, setEndDate] = useState(() => localDateISO(0));
+  const [startDate, setStartDate] = useState(() => localDateISO(-29, tz));
+  const [endDate, setEndDate] = useState(() => localDateISO(0, tz));
   const [agent, setAgent] = useState('');
   const [model, setModel] = useState('');
   const [deviceId, setDeviceId] = useState('');
@@ -63,11 +63,20 @@ export default function AIUsagePage() {
   const [activeHourBucket, setActiveHourBucket] = useState<string | null>(null);
   const heatmapScrollRef = useRef<HTMLDivElement>(null);
 
+  const prevTzRef = useRef(tz);
+  useEffect(() => {
+    if (prevTzRef.current === tz) return;
+    prevTzRef.current = tz;
+    const days = preset === '7d' ? 6 : preset === '30d' ? 29 : preset === '90d' ? 89 : 364;
+    setStartDate(localDateISO(-days, tz));
+    setEndDate(localDateISO(0, tz));
+  }, [tz, preset]);
+
   const applyPreset = (p: RangePreset) => {
     setPreset(p);
     const days = p === '7d' ? 6 : p === '30d' ? 29 : p === '90d' ? 89 : 364;
-    setStartDate(localDateISO(-days));
-    setEndDate(localDateISO(0));
+    setStartDate(localDateISO(-days, tz));
+    setEndDate(localDateISO(0, tz));
     setPage(1);
   };
 
@@ -92,8 +101,8 @@ export default function AIUsagePage() {
 
   const heatmapParams = useMemo(
     () => ({
-      start: localDateISO(-364),
-      end: localDateISO(0),
+      start: localDateISO(-364, tz),
+      end: localDateISO(0, tz),
       tz,
       agent: agent || undefined,
       model: model || undefined,
@@ -174,33 +183,35 @@ export default function AIUsagePage() {
     }
   }, [summary, breakdownTab]);
 
-  // Build 365-day heatmap grid aligned by week columns
+  // Build 365-day heatmap grid aligned by week columns in user's configured timezone
   const heatmapGrid = useMemo(() => {
     const map = new Map<string, HeatmapDay>();
     for (const d of heatmap?.days ?? []) {
       map.set(d.date, d);
     }
-    const today = new Date();
-    const start = new Date(today);
-    start.setDate(today.getDate() - 364);
+    const todayISO = localDateISO(0, tz);
+    const [ty, tm, td] = todayISO.split('-').map(Number);
+    const todayUTC = new Date(Date.UTC(ty, tm - 1, td));
+    const startUTC = new Date(todayUTC);
+    startUTC.setUTCDate(todayUTC.getUTCDate() - 364);
     // rewind to Sunday
-    start.setDate(start.getDate() - start.getDay());
+    startUTC.setUTCDate(startUTC.getUTCDate() - startUTC.getUTCDay());
     const weeks: { date: string; day?: HeatmapDay }[][] = [];
-    const cur = new Date(start);
-    while (cur <= today) {
+    const cur = new Date(startUTC);
+    while (cur <= todayUTC) {
       const col: { date: string; day?: HeatmapDay }[] = [];
       for (let i = 0; i < 7; i++) {
-        const y = cur.getFullYear();
-        const m = String(cur.getMonth() + 1).padStart(2, '0');
-        const dd = String(cur.getDate()).padStart(2, '0');
+        const y = cur.getUTCFullYear();
+        const m = String(cur.getUTCMonth() + 1).padStart(2, '0');
+        const dd = String(cur.getUTCDate()).padStart(2, '0');
         const iso = `${y}-${m}-${dd}`;
         col.push({ date: iso, day: map.get(iso) });
-        cur.setDate(cur.getDate() + 1);
+        cur.setUTCDate(cur.getUTCDate() + 1);
       }
       weeks.push(col);
     }
     return weeks;
-  }, [heatmap]);
+  }, [heatmap, tz]);
 
   const heatmapMonthLabels = useMemo(() => {
     const labels = new Map<number, string>();

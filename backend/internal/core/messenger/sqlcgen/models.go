@@ -36,13 +36,15 @@ type PushEndpoint struct {
 }
 
 type User struct {
-	ID        int64
-	OidcSub   string
-	Username  string
-	Email     string
-	AvatarUrl string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID              int64
+	OidcSub         string
+	Username        string
+	Email           string
+	AvatarUrl       string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	Timezone        string
+	DisabledModules []string
 }
 
 type UserChannel struct {

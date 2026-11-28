@@ -5,6 +5,7 @@ import { ExternalLink } from 'lucide-react';
 import { useAppMeta, useEnabledModules } from '@/core/module';
 import { LoadingState } from '@/components/LoadingState';
 import { APIKeysPanel } from './APIKeysPanel';
+import { GeneralSettingsPanel } from './GeneralSettingsPanel';
 
 const GITHUB_REPO = 'nhirsama/yukideck';
 const GITHUB_REPO_URL = `https://github.com/${GITHUB_REPO}`;
@@ -73,10 +74,10 @@ export function SettingsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const rawTab = searchParams.get('tab');
-  const activeTab = !rawTab || rawTab === 'general' ? 'about' : rawTab;
+  const activeTab = !rawTab ? 'general' : rawTab;
 
   const selectTab = (tab: string) => {
-    if (tab === 'about') setSearchParams({}, { replace: true });
+    if (tab === 'general') setSearchParams({}, { replace: true });
     else setSearchParams({ tab }, { replace: true });
   };
 
@@ -89,10 +90,10 @@ export function SettingsPage() {
       <div className="yd-tabs">
         <button
           type="button"
-          onClick={() => selectTab('about')}
-          className={`yd-tab ${activeTab === 'about' ? 'yd-tab-active' : 'yd-tab-idle'}`}
+          onClick={() => selectTab('general')}
+          className={`yd-tab ${activeTab === 'general' ? 'yd-tab-active' : 'yd-tab-idle'}`}
         >
-          关于
+          通用
         </button>
         <button
           type="button"
@@ -111,9 +112,18 @@ export function SettingsPage() {
             {m.settingsPanel!.label}
           </button>
         ))}
+        <button
+          type="button"
+          onClick={() => selectTab('about')}
+          className={`yd-tab ${activeTab === 'about' ? 'yd-tab-active' : 'yd-tab-idle'}`}
+        >
+          关于
+        </button>
       </div>
 
-      {activeTab === 'about' ? (
+      {activeTab === 'general' ? (
+        <GeneralSettingsPanel />
+      ) : activeTab === 'about' ? (
         <AboutPanel
           appName={meta?.app ?? 'YukiDeck'}
           version={meta?.version ?? 'dev'}
@@ -126,7 +136,9 @@ export function SettingsPage() {
         <Suspense fallback={<LoadingState label="正在加载模块..." variant="section" />}>
           <activeModule.settingsPanel.component />
         </Suspense>
-      ) : null}
+      ) : (
+        <GeneralSettingsPanel />
+      )}
     </div>
   );
 }

@@ -21,13 +21,25 @@ type memUserStore struct {
 }
 
 func (m *memUserStore) UpsertByOIDCSub(_ context.Context, sub, username, email, avatar string) (*User, error) {
-	u := &User{ID: 1, OIDCSub: sub, Username: username, Email: email, AvatarURL: avatar}
+	u := normalizeUser(&User{ID: 1, OIDCSub: sub, Username: username, Email: email, AvatarURL: avatar})
 	m.users[u.ID] = u
 	return u, nil
 }
 
 func (m *memUserStore) FindByID(_ context.Context, id int64) (*User, error) {
-	return m.users[id], nil
+	return normalizeUser(m.users[id]), nil
+}
+
+func (m *memUserStore) UpdatePreferences(_ context.Context, userID int64, timezone string, disabledModules []string) (*User, error) {
+	u := m.users[userID]
+	if u == nil {
+		return nil, nil
+	}
+	cp := *u
+	cp.Timezone = NormalizeTimezone(timezone)
+	cp.DisabledModules = append([]string{}, disabledModules...)
+	m.users[userID] = normalizeUser(&cp)
+	return normalizeUser(&cp), nil
 }
 
 type memAPIKeyStore struct {
@@ -416,5 +428,109 @@ func TestSanitizeNextPath(t *testing.T) {
 		if got := sanitizeNextPath(tc.in); got != tc.want {
 			t.Errorf("sanitizeNextPath(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestUserPreferencesLifecycleAndValidation(t *testing.T) {
+	box, _ := crypto.NewBox(bytes.Repeat([]byte{0x42}, 32))
+	cfg := &config.Config{RequestMaxBodyBytes: 1 << 20}
+	uStore := &memUserStore{users: map[int64]*User{
+		1: {ID: 1, Username: "yuki", Timezone: DefaultTimezone, DisabledModules: []string{}},
+	}}
+	svc := NewTestService(cfg, box, uStore, newMemAPIKeyStore(), nil)
+	svc.SetKnownModuleIDs([]string{"storage", "planner", "ai-usage", "assets", "clipboard"})
+
+	r := chi.NewRouter()
+	r.Route("/api/v1/auth", svc.RegisterRoutes)
+
+	sessToken, err := svc.IssueSessionToken(1)
+	if err != nil {
+		t.Fatalf("issue session: %v", err)
+	}
+	sessCookie := &http.Cookie{Name: sessionCookieName, Value: sessToken}
+
+	// 1. GET /me returns default timezone and empty disabled_modules
+	reqMe := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	reqMe.AddCookie(sessCookie)
+	recMe := httptest.NewRecorder()
+	r.ServeHTTP(recMe, reqMe)
+	if recMe.Code != http.StatusOK {
+		t.Fatalf("GET /me expected 200, got %d: %s", recMe.Code, recMe.Body.String())
+	}
+	var meResp struct {
+		User User `json:"user"`
+	}
+	if err := json.Unmarshal(recMe.Body.Bytes(), &meResp); err != nil {
+		t.Fatalf("decode /me: %v", err)
+	}
+	if meResp.User.Timezone != DefaultTimezone || len(meResp.User.DisabledModules) != 0 {
+		t.Fatalf("unexpected initial prefs: %+v", meResp.User)
+	}
+
+	// 2. PATCH /preferences updates timezone and deduplicates disabled_modules
+	patch := func(body string, withBearer bool) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/auth/preferences", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		if withBearer {
+			req.Header.Set("Authorization", "Bearer ydk_fake")
+		} else {
+			req.AddCookie(sessCookie)
+		}
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+
+	recOK := patch(`{"timezone":"Asia/Tokyo","disabled_modules":["clipboard","storage","clipboard"]}`, false)
+	if recOK.Code != http.StatusOK {
+		t.Fatalf("PATCH /preferences expected 200, got %d: %s", recOK.Code, recOK.Body.String())
+	}
+	if err := json.Unmarshal(recOK.Body.Bytes(), &meResp); err != nil {
+		t.Fatalf("decode /preferences: %v", err)
+	}
+	if meResp.User.Timezone != "Asia/Tokyo" {
+		t.Fatalf("expected Asia/Tokyo, got %q", meResp.User.Timezone)
+	}
+	if len(meResp.User.DisabledModules) != 2 || !meResp.User.IsModuleDisabled("clipboard") || !meResp.User.IsModuleDisabled("storage") {
+		t.Fatalf("unexpected disabled_modules: %v", meResp.User.DisabledModules)
+	}
+
+	// 3. Partial PATCH only clearing disabled_modules preserves timezone
+	recClear := patch(`{"disabled_modules":[]}`, false)
+	if recClear.Code != http.StatusOK {
+		t.Fatalf("clear disabled_modules expected 200, got %d: %s", recClear.Code, recClear.Body.String())
+	}
+	if err := json.Unmarshal(recClear.Body.Bytes(), &meResp); err != nil {
+		t.Fatalf("decode clear: %v", err)
+	}
+	if meResp.User.Timezone != "Asia/Tokyo" || len(meResp.User.DisabledModules) != 0 {
+		t.Fatalf("expected preserved timezone & empty disabled_modules, got %+v", meResp.User)
+	}
+
+	// 4. Invalid timezone returns 400
+	if rec := patch(`{"timezone":"Mars/Olympus"}`, false); rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid timezone expected 400, got %d", rec.Code)
+	}
+
+	// 5. Unknown module ID returns 400
+	if rec := patch(`{"disabled_modules":["unknown-mod"]}`, false); rec.Code != http.StatusBadRequest {
+		t.Fatalf("unknown module expected 400, got %d", rec.Code)
+	}
+
+	// 6. Bearer API Key is rejected with 403
+	if rec := patch(`{"timezone":"UTC"}`, true); rec.Code != http.StatusForbidden {
+		t.Fatalf("bearer on /preferences expected 403, got %d", rec.Code)
+	}
+
+	// 7. Context helper UserTimezone reflects configured user timezone
+	ctx := WithUser(context.Background(), &User{ID: 1, Timezone: "America/New_York", DisabledModules: []string{"assets"}})
+	if got := UserTimezone(ctx); got != "America/New_York" {
+		t.Fatalf("UserTimezone = %q, want America/New_York", got)
+	}
+	if !IsModuleDisabledForUser(ctx, "assets") || IsModuleDisabledForUser(ctx, "planner") {
+		t.Fatalf("IsModuleDisabledForUser mismatch")
+	}
+	if got := UserTimezone(context.Background()); got != DefaultTimezone {
+		t.Fatalf("fallback UserTimezone = %q, want %q", got, DefaultTimezone)
 	}
 }

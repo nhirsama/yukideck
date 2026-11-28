@@ -1,4 +1,5 @@
 import { request } from '@/core/api';
+import { formatDateISOInTimezone, getActiveUserTimezone } from '@/core/timezone';
 import type {
   BatchItemInput,
   CategoryView,
@@ -96,12 +97,8 @@ export interface AssetItemQuery {
   sort_dir?: 'asc' | 'desc';
 }
 
-export function getLocalTodayString(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+export function getLocalTodayString(tz = getActiveUserTimezone()): string {
+  return formatDateISOInTimezone(new Date(), tz);
 }
 
 function buildQueryString(params: Record<string, string | number | boolean | undefined>): string {

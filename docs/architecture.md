@@ -120,7 +120,7 @@ type Module interface {
 ```
 
 - **模块自治迁移机制**：迁移表按 `(module_id, version)` 记录版本，各模块独立演进 SQL 迁移。
-- **能力发现接口**：`GET /api/v1/meta` 宣告当前已启用模块（支持 `DISABLED_MODULES` 按需关闭）。
+- **能力发现与模块开关**：`GET /api/v1/meta` 宣告当前部署级已启用模块（由环境变量 `DISABLED_MODULES` 静态裁剪）；在此之上叠加**用户级模块开关**（`users.disabled_modules`），允许每个用户在「系统设置 → 通用」中按需隐藏/停用任意业务模块（不删除数据）。
 
 ### 2. 前端模块注册契约（`frontend/src/core/module.ts`）
 
@@ -154,6 +154,10 @@ export interface FrontendModule {
     - 各核心能力与业务模块向 `auth.PermissionRegistry` 注册 `PermissionDef`（`Key` 如 `ai-usage:ingest`、`messenger:push`，含 `ModuleID`、`Label`、`ResourceType`、`AllowQueryKey`）；
     - 如需细分到具体资源（如消息推送的单个终结点），模块额外注册一个 `ResourceLister(ctx, userID) ([]ResourceOption, error)` 回调，供设置页动态拉取可选资源，底座不感知任何业务表结构。
   - **策略格式（JSONB）**：每条 API Key 持有 1~N 条策略 `{ "permission": "<module>:<action>", "resources": ["*"] | ["<resource_id>", ...] }`。
+- **用户级通用偏好（全局默认时区 & 模块开关）**：
+  - `users` 表内置 `timezone`（IANA 时区，默认 `Asia/Shanghai`）与 `disabled_modules`（`TEXT[]`，默认 `{}`），随 `GET /api/v1/auth/me` 下发，并通过 `PATCH /api/v1/auth/preferences`（仅 OIDC 会话）在「系统设置 → 通用」Tab 统一管理。
+  - **全局默认时区**：各业务模块（如 `screen-time` 后台拉取、`ai-usage` 看板默认时区、`planner` 新建日程默认时区）统一复用平台默认时区，不再在各自设置页重复维护全局时区项（需要单条目特例的模块如 `planner` 仍可保留单条覆盖）。
+  - **用户级模块开关**：叠加在部署级 `DISABLED_MODULES` 之上；关闭某模块仅隐藏其侧边栏/首页/设置 Tab 入口，并由该模块后台任务跳过对应用户，**绝不删除历史数据**，重新打开即刻恢复；模块内不再重复设计冗余的「模块启用开关」。
 - **敏感凭证静态加密**：用户填入的外部密钥统一经 `core/crypto`（AES-256-GCM，主密钥由 `APP_SECRET_KEY` 注入）加密落库，接口层永不回传明文。
 
 ### 2. 对称能力的统一消息中枢与自定义推送终结点（`core/messenger`）
@@ -211,3 +215,4 @@ flowchart LR
 | **Stage 5** | AI Agent 用量统计模块（`ai-usage` + `collector/`，详见 [ai-usage-module.md](./ai-usage-module.md)） | ✅ 已完成 |
 | **Stage 6** | 物品价值计算模块（`assets`，详见 [assets-module.md](./assets-module.md)） | ✅ 已完成 |
 | **Stage 7** | 剪切板模块（`clipboard`，详见 [clipboard-module.md](./clipboard-module.md)） | ✅ 已完成 |
+| **Stage 8** | 平台用户偏好升级（全局默认时区 + 用户级模块开关）+ 使用时间模块（`screen-time`，详见 [screen-time-module.md](./screen-time-module.md)） | 📝 设计完成 |

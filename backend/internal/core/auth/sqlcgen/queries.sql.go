@@ -94,17 +94,19 @@ func (q *Queries) FindAPIKeyByHash(ctx context.Context, keyHash string) (ApiKey,
 }
 
 const findUserByID = `-- name: FindUserByID :one
-SELECT id, oidc_sub, username, email, avatar_url
+SELECT id, oidc_sub, username, email, avatar_url, timezone, disabled_modules
 FROM users
 WHERE id = $1
 `
 
 type FindUserByIDRow struct {
-	ID        int64
-	OidcSub   string
-	Username  string
-	Email     string
-	AvatarUrl string
+	ID              int64
+	OidcSub         string
+	Username        string
+	Email           string
+	AvatarUrl       string
+	Timezone        string
+	DisabledModules []string
 }
 
 func (q *Queries) FindUserByID(ctx context.Context, id int64) (FindUserByIDRow, error) {
@@ -116,6 +118,8 @@ func (q *Queries) FindUserByID(ctx context.Context, id int64) (FindUserByIDRow, 
 		&i.Username,
 		&i.Email,
 		&i.AvatarUrl,
+		&i.Timezone,
+		&i.DisabledModules,
 	)
 	return i, err
 }
@@ -286,6 +290,46 @@ func (q *Queries) UpdateAPIKey(ctx context.Context, arg UpdateAPIKeyParams) (Api
 	return i, err
 }
 
+const updateUserPreferences = `-- name: UpdateUserPreferences :one
+UPDATE users
+SET timezone = $2,
+    disabled_modules = $3,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, oidc_sub, username, email, avatar_url, timezone, disabled_modules
+`
+
+type UpdateUserPreferencesParams struct {
+	ID              int64
+	Timezone        string
+	DisabledModules []string
+}
+
+type UpdateUserPreferencesRow struct {
+	ID              int64
+	OidcSub         string
+	Username        string
+	Email           string
+	AvatarUrl       string
+	Timezone        string
+	DisabledModules []string
+}
+
+func (q *Queries) UpdateUserPreferences(ctx context.Context, arg UpdateUserPreferencesParams) (UpdateUserPreferencesRow, error) {
+	row := q.db.QueryRow(ctx, updateUserPreferences, arg.ID, arg.Timezone, arg.DisabledModules)
+	var i UpdateUserPreferencesRow
+	err := row.Scan(
+		&i.ID,
+		&i.OidcSub,
+		&i.Username,
+		&i.Email,
+		&i.AvatarUrl,
+		&i.Timezone,
+		&i.DisabledModules,
+	)
+	return i, err
+}
+
 const upsertUserByOIDCSub = `-- name: UpsertUserByOIDCSub :one
 INSERT INTO users (oidc_sub, username, email, avatar_url)
 VALUES ($1, $2, $3, $4)
@@ -294,7 +338,7 @@ SET username = EXCLUDED.username,
     email = EXCLUDED.email,
     avatar_url = EXCLUDED.avatar_url,
     updated_at = NOW()
-RETURNING id, oidc_sub, username, email, avatar_url
+RETURNING id, oidc_sub, username, email, avatar_url, timezone, disabled_modules
 `
 
 type UpsertUserByOIDCSubParams struct {
@@ -305,11 +349,13 @@ type UpsertUserByOIDCSubParams struct {
 }
 
 type UpsertUserByOIDCSubRow struct {
-	ID        int64
-	OidcSub   string
-	Username  string
-	Email     string
-	AvatarUrl string
+	ID              int64
+	OidcSub         string
+	Username        string
+	Email           string
+	AvatarUrl       string
+	Timezone        string
+	DisabledModules []string
 }
 
 func (q *Queries) UpsertUserByOIDCSub(ctx context.Context, arg UpsertUserByOIDCSubParams) (UpsertUserByOIDCSubRow, error) {
@@ -326,6 +372,8 @@ func (q *Queries) UpsertUserByOIDCSub(ctx context.Context, arg UpsertUserByOIDCS
 		&i.Username,
 		&i.Email,
 		&i.AvatarUrl,
+		&i.Timezone,
+		&i.DisabledModules,
 	)
 	return i, err
 }

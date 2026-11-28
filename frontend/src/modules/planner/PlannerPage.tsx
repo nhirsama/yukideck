@@ -43,15 +43,16 @@ import {
 import { ItemModal } from './ItemModal';
 import { NotificationModal } from './NotificationModal';
 import { PauseModal } from './PauseModal';
+import { formatDateISOInTimezone, formatDateTimeInTimezone, getActiveUserTimezone, useUserTimezone } from '@/core/timezone';
 
 type TabKey = 'list' | 'calendar' | 'logs';
 type ListFilter = 'pending' | 'today' | 'overdue' | 'upcoming' | 'undated' | 'done';
 type LogFilter = '' | LogStatus;
 
-function formatDateTimeShort(iso?: string): string {
+function formatDateTimeShort(iso?: string, tz = getActiveUserTimezone()): string {
   if (!iso) return '';
-  const d = new Date(iso);
-  return d.toLocaleString('zh-CN', {
+  return formatDateTimeInTimezone(iso, tz, {
+    year: undefined,
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
@@ -78,6 +79,7 @@ function logStatusBadge(status: LogStatus): { label: string; cls: string } {
 
 export default function PlannerPage() {
   const qc = useQueryClient();
+  const userTimezone = useUserTimezone();
   const [tab, setTab] = useState<TabKey>('list');
   const [filter, setFilter] = useState<ListFilter>('pending');
   const [logFilter, setLogFilter] = useState<LogFilter>('');
@@ -213,9 +215,7 @@ export default function PlannerPage() {
   const filteredItems = useMemo(() => {
     const now = new Date();
     const nowMs = now.getTime();
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
-      now.getDate(),
-    ).padStart(2, '0')}`;
+    const todayStr = formatDateISOInTimezone(now, userTimezone);
 
     return items.filter((it) => {
       if (filter === 'done') return it.status === 'done';
@@ -227,7 +227,7 @@ export default function PlannerPage() {
       if (filter === 'upcoming') return Boolean(it.target_at);
       return true;
     });
-  }, [items, filter]);
+  }, [items, filter, userTimezone]);
 
   const calendarEvents = useMemo(
     () =>

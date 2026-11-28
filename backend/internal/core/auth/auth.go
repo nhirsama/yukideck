@@ -32,11 +32,67 @@ const (
 	sessionCookieName = "yukideck_session"
 	stateCookieName   = "yukideck_oidc_state"
 	sessionTTL        = 7 * 24 * time.Hour
+
+	// DefaultTimezone is the platform-wide fallback IANA timezone for users.
+	DefaultTimezone = "Asia/Shanghai"
 )
+
+// NormalizeTimezone trims tz and returns DefaultTimezone if empty.
+func NormalizeTimezone(tz string) string {
+	trimmed := strings.TrimSpace(tz)
+	if trimmed == "" {
+		return DefaultTimezone
+	}
+	return trimmed
+}
+
+// ValidateTimezone ensures tz is a non-empty valid IANA timezone name.
+func ValidateTimezone(tz string) (string, error) {
+	trimmed := strings.TrimSpace(tz)
+	if trimmed == "" {
+		return "", errors.New("时区不能为空")
+	}
+	if _, err := time.LoadLocation(trimmed); err != nil {
+		return "", fmt.Errorf("无效的时区 %q", trimmed)
+	}
+	return trimmed, nil
+}
+
+// IsModuleDisabled reports whether the user has disabled moduleID in preferences.
+func (u *User) IsModuleDisabled(moduleID string) bool {
+	if u == nil {
+		return false
+	}
+	id := strings.TrimSpace(moduleID)
+	if id == "" {
+		return false
+	}
+	for _, disabled := range u.DisabledModules {
+		if disabled == id {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeUser(u *User) *User {
+	if u == nil {
+		return nil
+	}
+	cp := *u
+	cp.Timezone = NormalizeTimezone(cp.Timezone)
+	if cp.DisabledModules == nil {
+		cp.DisabledModules = []string{}
+	} else {
+		cp.DisabledModules = append([]string(nil), cp.DisabledModules...)
+	}
+	return &cp
+}
 
 type UserStore interface {
 	UpsertByOIDCSub(ctx context.Context, sub, username, email, avatarURL string) (*User, error)
 	FindByID(ctx context.Context, id int64) (*User, error)
+	UpdatePreferences(ctx context.Context, userID int64, timezone string, disabledModules []string) (*User, error)
 }
 
 type pgUserStore struct {
@@ -57,13 +113,15 @@ func (s *pgUserStore) UpsertByOIDCSub(ctx context.Context, sub, username, email,
 	if err != nil {
 		return nil, fmt.Errorf("upsert oidc user: %w", err)
 	}
-	return &User{
-		ID:        row.ID,
-		OIDCSub:   row.OidcSub,
-		Username:  row.Username,
-		Email:     row.Email,
-		AvatarURL: row.AvatarUrl,
-	}, nil
+	return normalizeUser(&User{
+		ID:              row.ID,
+		OIDCSub:         row.OidcSub,
+		Username:        row.Username,
+		Email:           row.Email,
+		AvatarURL:       row.AvatarUrl,
+		Timezone:        row.Timezone,
+		DisabledModules: row.DisabledModules,
+	}), nil
 }
 
 func (s *pgUserStore) FindByID(ctx context.Context, id int64) (*User, error) {
@@ -74,13 +132,41 @@ func (s *pgUserStore) FindByID(ctx context.Context, id int64) (*User, error) {
 	if err != nil {
 		return nil, fmt.Errorf("find user by id: %w", err)
 	}
-	return &User{
-		ID:        row.ID,
-		OIDCSub:   row.OidcSub,
-		Username:  row.Username,
-		Email:     row.Email,
-		AvatarURL: row.AvatarUrl,
-	}, nil
+	return normalizeUser(&User{
+		ID:              row.ID,
+		OIDCSub:         row.OidcSub,
+		Username:        row.Username,
+		Email:           row.Email,
+		AvatarURL:       row.AvatarUrl,
+		Timezone:        row.Timezone,
+		DisabledModules: row.DisabledModules,
+	}), nil
+}
+
+func (s *pgUserStore) UpdatePreferences(ctx context.Context, userID int64, timezone string, disabledModules []string) (*User, error) {
+	if disabledModules == nil {
+		disabledModules = []string{}
+	}
+	row, err := s.q.UpdateUserPreferences(ctx, sqlcgen.UpdateUserPreferencesParams{
+		ID:              userID,
+		Timezone:        NormalizeTimezone(timezone),
+		DisabledModules: disabledModules,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("update user preferences: %w", err)
+	}
+	return normalizeUser(&User{
+		ID:              row.ID,
+		OIDCSub:         row.OidcSub,
+		Username:        row.Username,
+		Email:           row.Email,
+		AvatarURL:       row.AvatarUrl,
+		Timezone:        row.Timezone,
+		DisabledModules: row.DisabledModules,
+	}), nil
 }
 
 type sessionPayload struct {
@@ -111,15 +197,16 @@ func sanitizeNextPath(raw string) string {
 }
 
 type Service struct {
-	cfg      *config.Config
-	box      *crypto.Box
-	store    UserStore
-	apiKeys  APIKeyStore
-	permReg  *PermissionRegistry
-	logger   *slog.Logger
-	provider *oidc.Provider
-	oauthCfg *oauth2.Config
-	verifier *oidc.IDTokenVerifier
+	cfg          *config.Config
+	box          *crypto.Box
+	store        UserStore
+	apiKeys      APIKeyStore
+	permReg      *PermissionRegistry
+	knownModules map[string]struct{}
+	logger       *slog.Logger
+	provider     *oidc.Provider
+	oauthCfg     *oauth2.Config
+	verifier     *oidc.IDTokenVerifier
 }
 
 func Migrations() fs.FS {
@@ -188,15 +275,31 @@ func (s *Service) Permissions() *PermissionRegistry {
 	return s.permReg
 }
 
+// SetKnownModuleIDs configures the deployed business module IDs allowed in user disabled_modules preferences.
+func (s *Service) SetKnownModuleIDs(ids []string) {
+	if len(ids) == 0 {
+		s.knownModules = nil
+		return
+	}
+	m := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			m[trimmed] = struct{}{}
+		}
+	}
+	s.knownModules = m
+}
+
 func (s *Service) RegisterRoutes(r chi.Router) {
 	r.Get("/login", httpx.Handle(s.logger, s.handleLogin))
 	r.Get("/callback", httpx.Handle(s.logger, s.handleCallback))
 	r.Post("/logout", httpx.Handle(s.logger, s.handleLogout))
 
-	// Session-only identity & API Key management endpoints (never accessible via API Key).
+	// Session-only identity, preferences & API Key management endpoints (never accessible via API Key).
 	r.Group(func(sess chi.Router) {
 		sess.Use(s.RequireSession)
 		sess.Get("/me", httpx.Handle(s.logger, s.handleMe))
+		sess.Patch("/preferences", httpx.Handle(s.logger, s.handleUpdatePreferences))
 
 		sess.Get("/api-keys/schema", httpx.Handle(s.logger, s.handleAPIKeySchema))
 		sess.Get("/api-keys", httpx.Handle(s.logger, s.handleListAPIKeys))
@@ -340,7 +443,60 @@ func (s *Service) handleMe(w http.ResponseWriter, r *http.Request) error {
 	if !ok {
 		return httpx.Unauthorized("未登录")
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{"user": user})
+	httpx.JSON(w, http.StatusOK, map[string]any{"user": normalizeUser(user)})
+	return nil
+}
+
+func (s *Service) handleUpdatePreferences(w http.ResponseWriter, r *http.Request) error {
+	user, ok := UserFromContext(r.Context())
+	if !ok {
+		return httpx.Unauthorized("未登录")
+	}
+	var in UpdateUserPreferencesInput
+	if err := httpx.DecodeJSON(w, r, s.cfg.RequestMaxBodyBytes, &in); err != nil {
+		return err
+	}
+
+	tz := NormalizeTimezone(user.Timezone)
+	if in.Timezone != nil {
+		validated, err := ValidateTimezone(*in.Timezone)
+		if err != nil {
+			return httpx.BadRequest(err.Error())
+		}
+		tz = validated
+	}
+
+	disabled := append([]string{}, user.DisabledModules...)
+	if in.DisabledModules != nil {
+		seen := make(map[string]struct{}, len(*in.DisabledModules))
+		cleaned := make([]string, 0, len(*in.DisabledModules))
+		for _, raw := range *in.DisabledModules {
+			id := strings.TrimSpace(raw)
+			if id == "" {
+				continue
+			}
+			if len(s.knownModules) > 0 {
+				if _, exists := s.knownModules[id]; !exists {
+					return httpx.BadRequest(fmt.Sprintf("未知的模块标识: %s", id))
+				}
+			}
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			cleaned = append(cleaned, id)
+		}
+		disabled = cleaned
+	}
+
+	updated, err := s.store.UpdatePreferences(r.Context(), user.ID, tz, disabled)
+	if err != nil {
+		return httpx.Internal("更新偏好设置失败", err)
+	}
+	if updated == nil {
+		return httpx.Unauthorized("用户不存在")
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"user": normalizeUser(updated)})
 	return nil
 }
 

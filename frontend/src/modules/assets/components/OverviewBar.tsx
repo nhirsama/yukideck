@@ -1,6 +1,7 @@
 import { AlertTriangle, Eye, EyeOff, Plus, RefreshCw, ShieldAlert } from 'lucide-react';
 import { InfoTooltip } from '@/components/InfoTooltip';
 import { Tooltip } from '@/components/Tooltip';
+import { formatDateTimeInTimezone, useUserTimezone } from '@/core/timezone';
 import {
   formatMoney,
   formatMoneyExact,
@@ -39,6 +40,7 @@ export function OverviewBar({
   onCreateItem,
   onFilterWarranty,
 }: OverviewBarProps) {
+  const userTimezone = useUserTimezone();
   const cur = settings.display_currency;
   const hidden = settings.hide_amounts;
 
@@ -150,7 +152,7 @@ export function OverviewBar({
                       <div>1 EUR ≈ ¥{eurInCNY}</div>
                       {rates?.fetched_at && (
                         <div className="font-sans text-zinc-400">
-                          更新：{new Date(rates.fetched_at).toLocaleString('zh-CN')}
+                          更新：{formatDateTimeInTimezone(rates.fetched_at, userTimezone)}
                         </div>
                       )}
                     </div>

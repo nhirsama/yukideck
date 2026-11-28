@@ -354,7 +354,7 @@ func parseQueryFilter(r *http.Request, defaultDays int) (QueryFilter, error) {
 	q := r.URL.Query()
 	tz := strings.TrimSpace(q.Get("tz"))
 	if tz == "" {
-		tz = "UTC"
+		tz = auth.UserTimezone(r.Context())
 	}
 	loc := loadTimezone(tz)
 

@@ -3,11 +3,19 @@ package auth
 import "time"
 
 type User struct {
-	ID        int64  `json:"id"`
-	OIDCSub   string `json:"-"`
-	Username  string `json:"username"`
-	Email     string `json:"email"`
-	AvatarURL string `json:"avatar_url"`
+	ID              int64    `json:"id"`
+	OIDCSub         string   `json:"-"`
+	Username        string   `json:"username"`
+	Email           string   `json:"email"`
+	AvatarURL       string   `json:"avatar_url"`
+	Timezone        string   `json:"timezone"`
+	DisabledModules []string `json:"disabled_modules"`
+}
+
+// UpdateUserPreferencesInput updates user-scoped platform preferences (global default timezone & module toggles).
+type UpdateUserPreferencesInput struct {
+	Timezone        *string   `json:"timezone,omitempty"`
+	DisabledModules *[]string `json:"disabled_modules,omitempty"`
 }
 
 // ResourceOption represents a selectable module-owned resource exposed for fine-grained API Key policies.
