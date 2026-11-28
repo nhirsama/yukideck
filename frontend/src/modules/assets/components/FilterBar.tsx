@@ -12,6 +12,7 @@ import {
   SlidersHorizontal,
   X,
 } from 'lucide-react';
+import { DatePicker } from '@/components/DatePicker';
 import { Select } from '@/components/Select';
 import { Tooltip } from '@/components/Tooltip';
 import {
@@ -522,18 +523,24 @@ export function FilterBar({
                 </div>
               </div>
               <div className="flex items-center gap-1.5">
-                <input
-                  type="date"
+                <DatePicker
+                  ariaLabel="购买开始日期"
+                  placeholder="开始日期"
+                  clearable
                   value={query.purchased_from ?? ''}
-                  onChange={(e) => onChangeQuery({ purchased_from: e.target.value })}
-                  className="yd-input-sm min-w-0 flex-1"
+                  max={query.purchased_to || undefined}
+                  onChange={(v) => onChangeQuery({ purchased_from: v })}
+                  className="min-w-0 flex-1"
                 />
                 <span className="text-zinc-400">~</span>
-                <input
-                  type="date"
+                <DatePicker
+                  ariaLabel="购买结束日期"
+                  placeholder="结束日期"
+                  clearable
                   value={query.purchased_to ?? ''}
-                  onChange={(e) => onChangeQuery({ purchased_to: e.target.value })}
-                  className="yd-input-sm min-w-0 flex-1"
+                  min={query.purchased_from || undefined}
+                  onChange={(v) => onChangeQuery({ purchased_to: v })}
+                  className="min-w-0 flex-1"
                 />
               </div>
             </div>

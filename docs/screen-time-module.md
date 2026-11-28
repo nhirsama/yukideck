@@ -5,8 +5,10 @@
 在 YukiDeck 中接入垂直切片模块 **`screen-time`（使用时间）**，并同步补齐平台级**用户通用偏好（全局默认时区 + 用户级模块开关）**。模块首期聚焦 **WakaTime 编码使用时间的零侵入接入、永久归档与多维可视化**：
 
 - **零侵入接入、本地零改动**：不修改本地 IDE 插件或 `~/.wakatime.cfg`，沿用用户现有的 WakaTime 官方（或兼容 WakaTime v1 API 的自托管 Wakapi）上报链路；用户在 YukiDeck 设置页独立配置自己的 API Key（BYOC），由服务端拉取。
-- **突破官方免费版 14 天限制**：WakaTime 免费账号仅保留最近 14 天历史；YukiDeck 通过「每 7 天后台全量 14 天兜底 + 进页面按需增量拉取」将其持久化至用户自己的 PostgreSQL，自动形成永久历史归档，零手动维护负担。
-- **日级多维明细 + 精确时间段双轨存储**：同时拉取 WakaTime `/summaries`（日级多维聚合）与 `/durations`（精确起止时间块），既支撑项目/语言/编辑器/设备/系统/分类全维度统计，又能绘制精确的**每日编码时间轴**与**24 小时活跃分布**。
+- **突破官方免费版 14 天限制，且支持全量历史导入**：
+  - 日常通过「每 7 天后台拉取最近 8 天 + 进页面按需增量拉取」持续归档，轻量无冗余；
+  - 设置页提供**「同步历史数据」**一键能力，通过 WakaTime `data_dumps`（`type: "heartbeats"`）导出并流式解析：首次执行下载账号创立至今全量历史，后续执行自动按本地已有日期去重，仅补齐空白缺口（例如因密钥过期导致的 >14 天空白），全程展示实时进度条。
+- **精简原始心跳 + 日级聚合 + 精确时间段三轨存储**：保留脱敏精简后的原始心跳（`screen_time_heartbeats`，丢弃文件路径 `entity`、分支、依赖、行号等敏感/冗余字段），并始终按 WakaTime 账号自带的 `timeout` 参数聚合生成日级多维统计与精确编码时间轴，便于后续扩展与屏幕使用时间对比分析。
 - **极简克制、复用平台底座**：
   - 时区与模块启用开关全部收口至平台「系统设置 → 通用」（详见 [architecture.md](./architecture.md)），`screen-time` 自身不再重复配置时区与启用开关；
   - 前端不堆砌手动刷新按钮，设置页不堆砌复杂调度参数；本期仅覆盖 WakaTime，**不改动 `collector/`**，不接入 ManicTime / ActivityWatch / 浏览器扩展。
@@ -45,21 +47,23 @@ WakaTime 官方仅提供面向公开主页的滚动 7 天聚合快照（`/users/
 
 | WakaTime v1 接口 | 用途 | 调用时机 |
 | :--- | :--- | :--- |
-| `GET /users/current` | 校验 Key 有效性，获取用户名与套餐信息 | 「测试连接」与保存配置 |
-| `GET /users/current/summaries?start=YYYY-MM-DD&end=YYYY-MM-DD&timezone=<tz>` | 批量拉取区间内每日总时长及 6 维度明细（单次最多 14 天） | 后台 7 天兜底同步 / 进页面增量同步 |
-| `GET /users/current/durations?date=YYYY-MM-DD&timezone=<tz>` | 拉取指定日期的精确编码时间段（`[started_at, duration, project]`） | 仅对 `summaries` 中有编码记录的日期按日拉取 |
+| `GET /users/current` | 校验 Key 有效性，获取用户名、时区、套餐及账号默认 `timeout`（分钟） | 「测试连通性」、保存配置与每次同步 |
+| `GET /users/current/summaries?start=YYYY-MM-DD&end=YYYY-MM-DD&timezone=<tz>` | 批量拉取区间内每日总时长及 6 维度明细 | 后台 7 天定时同步 / 进页面增量同步 |
+| `GET /users/current/heartbeats?date=YYYY-MM-DD` | 按日拉取原始心跳，脱敏精简后存入 `screen_time_heartbeats` 并用 `timeout` 计算时间轴区块（不可用时自动降级 `/durations`） | 仅对有编码记录的日期按日拉取 |
+| `GET /users/current/machine_names` & `GET /users/current/user_agents` | 解析心跳里的 `machine_name_id` 与 `user_agent_id` 为可读设备名、编辑器与系统名 | 拉取心跳与导入历史数据时 |
+| `GET/POST /users/current/data_dumps` | 创建/复用并轮询 `type: "heartbeats"` 历史导出任务，流式下载解析账号创立至今的所有历史心跳 | 设置页手动点击「同步历史数据」 |
 
-- **鉴权方式**：统一使用 HTTP Header `Authorization: Basic base64(api_key + ":")`，避免把密钥放进 URL Query 泄露到代理或访问日志。
-- **兼容自托管上游**：支持用户自定义 `api_base_url`（默认 `https://api.wakatime.com/api/v1`），顺带兼容自托管 **Wakapi** 等 WakaTime v1 兼容服务。
+- **鉴权方式**：支持从 `https://wakatime.com/oauth` 获取的可读密钥与标准 API Key，按格式自动匹配 `Authorization: Basic base64(api_key)` / `Authorization: Bearer <token>`（401 时自动回退一次另一方案），避免把密钥放进 URL Query 泄露到代理或访问日志。
+- **兼容自托管上游**：支持用户自定义 `api_base_url`（默认 `https://wakatime.com/api/v1`），顺带兼容自托管 **Wakapi** 等 WakaTime v1 兼容服务。
 - **时区来源**：拉取 WakaTime 接口时统一传入用户的平台默认时区（`users.timezone`）。
 
-### 2. 双模式自动同步策略（7 天全量兜底 + 进页面增量拉取）
+### 2. 三路径同步策略（7 天轻量定时 + 进页面增量 + 按需历史导入）
 
 ```mermaid
 flowchart TD
-    subgraph BG["路径 A：后台 7 天全量兜底 (core/scheduler)"]
-        Cron["每 30 分钟检查\n已配 Key、模块未关闭且\nnext_scheduled_sync_at <= NOW()"] --> Full14["全量拉取最近 14 天\n(summaries + 剪枝 durations)"]
-        Full14 --> MergeA["按日原子覆盖去重合并"]
+    subgraph BG["路径 A：后台 7 天轻量定时 (core/scheduler)"]
+        Cron["每 30 分钟检查\n已配 Key、模块未关闭且\nnext_scheduled_sync_at <= NOW()"] --> Recent8["拉取最近 8 天\n(summaries + 精简 heartbeats)"]
+        Recent8 --> MergeA["按日原子覆盖去重合并"]
         MergeA --> Next7["next_scheduled_sync_at += 7 天"]
     end
 
@@ -71,47 +75,58 @@ flowchart TD
         Incr --> MergeB["按日原子覆盖去重合并"]
         MergeB --> Refresh["前端无感刷新最新数据"]
     end
+
+    subgraph History["路径 C：设置页「同步历史数据」(data_dumps)"]
+        Trigger["点击「同步历史数据」\nPOST /history-import"] --> Poll["复用或创建 heartbeats 导出\n实时轮询导出进度"]
+        Poll --> Stream["流式下载解析 JSON\n首次 full 全量 / 再次 gap 仅补缺口"]
+        Stream --> SaveH["逐日落库精简心跳与聚合统计"]
+    end
 ```
 
-两条同步链路职责清晰、互为补充：
+三条同步链路职责清晰、互为补充：
 
 1. **配置保存即生效（无冗余开关）**：
    - 只要「使用时间」模块未被用户在平台通用设置中关闭，且已保存有效的 WakaTime API Key，即自动进入同步状态；
-   - 首次配置保存 API Key 时，服务端以当前时间为基准设定 `next_scheduled_sync_at = NOW() + 7 days`，并异步触发一次最近 **14 天**的首次全量拉取，让看板开箱即有近两周数据；
+   - 首次配置保存 API Key 时，服务端以当前时间为基准设定 `next_scheduled_sync_at = NOW() + 7 days`，同步账号 `timeout_minutes`，并异步触发一次最近 **8 天**的初始化拉取；
    - 若用户清除 API Key，则清空 `next_scheduled_sync_at` 并停止同步（保留已归档的历史数据）。
-2. **后台 7 天全量兜底同步（`core/scheduler`）**：
+2. **后台 7 天轻量定时同步（`core/scheduler`）**：
    - 模块通过 `RegisterJobs` 注册轻量检查任务 `screen-time:scheduled-sync`（每 30 分钟扫描一次：已配 API Key、状态非 `auth_error`、用户未在 `users.disabled_modules` 中关闭 `screen-time`、且 `next_scheduled_sync_at <= NOW()`）；
-   - 每满 **7 天**（自配置保存起算），无论期间用户是否打开过页面，都**全量拉取最近 14 天**的数据并按日自动去重覆盖合并，随后将 `next_scheduled_sync_at` 顺延至下一个 7 天周期；
-   - 即使连续数周不打开页面，也能稳稳兜住 WakaTime 免费版 14 天窗口、一天不漏，同时具备近两周自动纠偏能力。
+   - 每满 **7 天**（自配置保存起算）拉取最近 **8 天**（7 天 + 1 天重叠容错）的数据并按日去重覆盖合并，随后将 `next_scheduled_sync_at` 顺延至下一个 7 天周期；有了历史数据一键补齐能力后，不再硬性每次重拉 14 天。
 3. **进入页面按需增量同步（30 分钟最短冷却）**：
    - 用户进入 `/screen-time` 页面时，前端**不阻塞首屏渲染**，立即展示本地 PostgreSQL 已归档数据，同时静默调用 `POST /api/v1/screen-time/sync`；
    - **最短拉取冷却（30 分钟）**：若距离 `last_synced_at` 不足 **30 分钟**，服务端直接返回 `skipped: true`，不请求 WakaTime；若上次同步失败，则仅施加 **1 分钟**短防抖，不锁死 30 分钟；
-   - **动态回看窗口**：满足冷却条件时，起点计算为 `max(今天 - 13 天, min(今天 - 1 天, last_synced_date - 1 天))`，终点为用户平台时区下的 `今天`（首次未同步则拉最近 14 天）。天天看时仅拉「昨天 + 今天」秒级完成；隔几天再看则自动补齐中间天数；
-   - 页面**不放置手动刷新按钮**，顶部仅展示轻量同步状态指示（同步中 / 最近同步时间 / 鉴权失效提示）。
-4. **去重合并、剪枝节流与安全护栏**：
-   - **单日事务原子替换**：每一天在一个 PostgreSQL 事务内完成 `UPSERT screen_time_daily_totals` + 按 `(user_id, stat_date)` 删除重建 `screen_time_daily_dimensions` 与 `screen_time_durations`，天然去重幂等，绝不破坏范围之外的历史归档；
-   - **无效请求剪枝**：拉完 `summaries` 后，只对 `total_seconds > 0`（或本地原本有数据需清空）的日期拉取 `/durations`，逐日请求间加 **200ms** 温和间隔防止触发 429；
-   - **进程内单用户互斥锁**：避免 7 天后台任务与打开页面触发并发拉取同一用户；
-   - **外部 HTTP 护栏**：单请求超时 **15 秒**、响应体上限 **10 MiB**，重定向时**禁止向跨域主机透传 `Authorization` 头**；
+   - **动态回看窗口**：满足冷却条件时，起点计算为 `max(今天 - 13 天, min(今天 - 1 天, last_synced_date - 1 天))`，终点为用户平台时区下的 `今天`（首次未同步则拉最近 8 天）。天天看时仅拉「昨天 + 今天」秒级完成；
+   - 页面**不放置手动刷新按钮**，顶部仅展示轻量同步状态指示（同步中 / 鉴权失效提示）。
+4. **一键同步历史数据（`data_dumps` 全量 / 缺口模式 + 实时进度条）**：
+   - 设置页点击**「同步历史数据」**后，后端调用 `data_dumps`（优先复用已有未过期的 `Completed` 或 `is_processing` heartbeats 导出任务，否则创建新导出），流式下载并逐日解析心跳 JSON（单文件硬上限 512 MiB，零全量内存加载，下载预签名 S3/GCS 链接时不附带 `Authorization` 头）；
+   - **智能模式选择**：若 `history_imported_at IS NULL`（从未同步过历史），执行 **`full` 全量模式**导入账号创立至今所有数据；若此前已导入过历史，则自动切换为 **`gap` 补齐模式**，跳过本地 `screen_time_daily_totals` 已有记录的日期，只补齐中间空白（例如因 Key 失效导致超过 14 天的缺口）；
+   - 前端通过 `GET /api/v1/screen-time/history-import` 轮询实时阶段（申请导出 / 云端生成百分比 / 流式下载与解析字节与天数 / 完成统计）并渲染实时进度条。
+5. **去重合并、剪枝节流与安全护栏**：
+   - **单日事务原子替换**：每一天在一个 PostgreSQL 事务内完成 `UPSERT screen_time_daily_totals` + 按 `(user_id, stat_date)` 原子重建 `screen_time_daily_dimensions`、`screen_time_durations` 与 `screen_time_heartbeats`，天然去重幂等；
+   - **心跳脱敏精简与 `timeout` 聚合**：仅保留 `(heartbeat_at, project, language, editor, os, category, machine)`，直接丢弃 `entity`（完整文件路径）、`branch`、`dependencies`、`lines`、`lineno`、`cursorpos` 等敏感与冗余字段；持续时间区块严格按用户 WakaTime 账号自带的 `timeout_minutes` 归并，无需额外手工配置；
+   - **进程内单用户互斥锁**：避免后台任务、进页面刷新与历史导入并发写入同一用户；
+   - **外部 HTTP 护栏**：常规接口超时 **15 秒** / 上限 **10 MiB**，历史导出流式下载超时 **15 分钟** / 上限 **512 MiB**，重定向或跨域下载时**禁止透传 `Authorization` 头**；
    - **错误降级**：遇到 `401 / 403` 时置状态为 `auth_error` 并暂停自动同步，界面提示检查 API Key（用户重新保存配置后自动恢复）；遇到网络抖动 / `429` / `5xx` 记录 `error`，不影响已有历史展示。
 
 ---
 
-## 三、数据模型（4 张模块自治表）
+## 三、数据模型（5 张模块自治表）
 
-迁移文件位于 `backend/internal/modules/screen_time/migrations/001_screen_time.sql`：
+迁移文件位于 `backend/internal/modules/screen_time/migrations/001_screen_time.sql` 与 `002_heartbeats_and_history.sql`：
 
 ### 1. `screen_time_configs`（用户同步凭证与状态表）
 
-每个 `user_id` 一行，极简保存 WakaTime 接入凭证与同步运行态（时区与模块总开关统一由 `users` 表管理，此处不冗余存储）：
+每个 `user_id` 一行，极简保存 WakaTime 接入凭证、账号自动同步的 `timeout_minutes`、历史导入标记 `history_imported_at` 与同步运行态（时区与模块总开关统一由 `users` 表管理，此处不冗余存储）：
 
 ```sql
 CREATE TABLE IF NOT EXISTS screen_time_configs (
     user_id                BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    api_base_url           TEXT NOT NULL DEFAULT 'https://api.wakatime.com/api/v1',
+    api_base_url           TEXT NOT NULL DEFAULT 'https://wakatime.com/api/v1',
     api_key_enc            TEXT NOT NULL DEFAULT '',
     api_key_hint           TEXT NOT NULL DEFAULT '',
     wakatime_username      TEXT NOT NULL DEFAULT '',
+    timeout_minutes        INT NOT NULL DEFAULT 15 CHECK (timeout_minutes >= 1 AND timeout_minutes <= 120),
+    history_imported_at    TIMESTAMPTZ,
     last_synced_at         TIMESTAMPTZ,
     last_sync_attempt_at   TIMESTAMPTZ,
     last_synced_date       DATE,
@@ -121,10 +136,6 @@ CREATE TABLE IF NOT EXISTS screen_time_configs (
     created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-
-CREATE INDEX IF NOT EXISTS idx_screen_time_configs_due
-    ON screen_time_configs(next_scheduled_sync_at)
-    WHERE api_key_enc <> '' AND last_sync_status <> 'auth_error' AND next_scheduled_sync_at IS NOT NULL;
 ```
 
 ### 2. `screen_time_daily_totals`（按日编码总览表）
@@ -185,6 +196,30 @@ CREATE INDEX IF NOT EXISTS idx_screen_time_durations_user_started
 
 - **24 小时分布精确切分算法**：服务端读取区间内的 `screen_time_durations` 后，按查询时区（默认用户平台时区 `users.timezone`）将每个 `[started_at, started_at + duration_seconds]` 区块按整点边界精确拆分累加至对应的 `0..23` 小时桶（例如 `10:50 ~ 11:20` 自动拆为 10 点 `600s` + 11 点 `1200s`），确保跨小时与跨时区统计准确无失真。
 
+### 5. `screen_time_heartbeats`（脱敏精简原始心跳表）
+
+保留原始心跳时间与核心维度字段，直接丢弃文件路径（`entity`）、依赖、分支、行号等敏感或冗余字段，既满足完整历史留存与未来屏幕时间对比分析，又保持极低存储体积：
+
+```sql
+CREATE TABLE IF NOT EXISTS screen_time_heartbeats (
+    id           BIGSERIAL PRIMARY KEY,
+    user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    stat_date    DATE NOT NULL,
+    heartbeat_at TIMESTAMPTZ NOT NULL,
+    project      TEXT NOT NULL DEFAULT '',
+    language     TEXT NOT NULL DEFAULT '',
+    editor       TEXT NOT NULL DEFAULT '',
+    os           TEXT NOT NULL DEFAULT '',
+    category     TEXT NOT NULL DEFAULT '',
+    machine      TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_screen_time_heartbeats_user_date
+    ON screen_time_heartbeats(user_id, stat_date, heartbeat_at ASC);
+CREATE INDEX IF NOT EXISTS idx_screen_time_heartbeats_user_ts
+    ON screen_time_heartbeats(user_id, heartbeat_at DESC);
+```
+
 ---
 
 ## 四、后端权限声明与 HTTP 接口（`/api/v1/screen-time/*`）
@@ -206,8 +241,10 @@ CREATE INDEX IF NOT EXISTS idx_screen_time_durations_user_started
 | `GET /api/v1/screen-time/hourly` | Cookie / Bearer | `screen-time:read` | 区间内按用户平台时区（支持可选 `tz` 覆盖）精确切分的 24 小时活跃分布（0~23 点累计秒数与活跃日均值） |
 | `GET /api/v1/screen-time/timeline` | Cookie / Bearer | `screen-time:read` | 指定日期（`date=YYYY-MM-DD`，默认今天）的每日编码时间轴（当日总时长、项目明细与有序 `[started_at, ended_at, duration_seconds, project, color]` 片段列表） |
 | `POST /api/v1/screen-time/sync` | 仅 OIDC Cookie | — | 进页面自动增量同步入口：自动校验模块开启态、已配 Key、30 分钟冷却与并发锁，命中冷却返回 `skipped: true`，否则按动态回看窗口拉取并合并，返回同步结果与最新同步时间 |
-| `GET /api/v1/screen-time/config` | 仅 OIDC Cookie | — | 获取当前用户的 WakaTime 配置与最近同步状态（仅返回 `has_api_key` 与脱敏尾号 `api_key_hint`，永不返回明文 Key） |
-| `PUT /api/v1/screen-time/config` | 仅 OIDC Cookie | — | 保存必要配置（`api_base_url`、`api_key` 留空保持原密文、可选 `clear_api_key`）；首次保存 Key 时自当前时间起算 7 天周期并异步触发 14 天初始化同步 |
+| `GET /api/v1/screen-time/history-import` | 仅 OIDC Cookie | — | 查询当前用户的历史数据导入状态与实时进度（阶段、百分比、已下载字节、已导入/跳过天数、心跳数与错误详情） |
+| `POST /api/v1/screen-time/history-import` | 仅 OIDC Cookie | — | 启动历史数据导入（异步执行，通过 `data_dumps` 导出 `heartbeats`；首次全量 `full`，已有历史则按本地日期跳过自动走缺口补齐 `gap`） |
+| `GET /api/v1/screen-time/config` | 仅 OIDC Cookie | — | 获取当前用户的 WakaTime 配置与最近同步状态（仅返回脱敏尾号 `api_key_hint`、`timeout_minutes`、`history_imported_at`，永不返回明文 Key） |
+| `PUT /api/v1/screen-time/config` | 仅 OIDC Cookie | — | 保存必要配置（`api_base_url`、`api_key` 留空保持原密文、可选 `clear_api_key`）；首次保存 Key 时自当前时间起算 7 天周期并异步触发最近 8 天初始化同步 |
 | `POST /api/v1/screen-time/config/test` | 仅 OIDC Cookie | — | 测试 WakaTime 连通性（支持传入待保存的临时 `api_base_url`/`api_key` 或复用已保存配置，返回识别到的 `username`、`timezone`、`plan`） |
 
 ---
@@ -245,10 +282,10 @@ CREATE INDEX IF NOT EXISTS idx_screen_time_durations_user_started
 
 挂载于平台统一设置页的「使用时间」Tab，保持极致简洁，**只保留最必要的 2 个字段**：
 
-- **API Base URL**（默认 `https://api.wakatime.com/api/v1`，提示兼容自托管 Wakapi）
-- **WakaTime API Key**（密码输入框；已配置时展示脱敏尾号如 `waka_...3f9a`，留空保存不覆盖原 Key，支持清空）
-- **操作按钮**：**「测试连接」**（校验 Key 并回显识别到的 WakaTime 用户名）+ **「保存配置」**
-- **状态摘要与引导**：只读展示当前同步状态、最近同步时间（及异常原因），底部一行小字提示「全局默认时区与模块启用开关可在『通用』中统一管理」。
+- **API Base URL**（默认 `https://wakatime.com/api/v1`，提示兼容自托管 Wakapi）
+- **WakaTime API Key**（密码输入框，附「获取 API Key」外链直达 `https://wakatime.com/oauth`；已配置时展示脱敏尾号如 `waka_...3f9a`，留空保存不覆盖原 Key）
+- **操作按钮**：**「同步历史数据」**（已配置后可见，首次执行全量导入，后续自动按空白缺口补齐，附实时阶段与百分比进度条）+ **「测试连通性」**（校验 Key 并回显识别到的 WakaTime 用户名）+ **「保存配置」**
+- **状态摘要**：只读展示当前同步状态、账号、最近同步时间、历史导入时间、自动同步的 `timeout` 分钟数及异常原因（不额外暴露手动超时或调度间隔配置项）。
 
 ---
 

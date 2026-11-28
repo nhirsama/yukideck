@@ -2,6 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { BarChart3, ChevronLeft, ChevronRight, Cpu, Layers, Settings, Terminal, X } from 'lucide-react';
+import { DatePicker } from '@/components/DatePicker';
+import {
+  HeatmapRangeOverlay,
+  useTemporaryRangeHighlight,
+} from '@/components/HeatmapRangeOverlay';
 import { InfoTooltip } from '@/components/InfoTooltip';
 import { LoadingState } from '@/components/LoadingState';
 import { Select } from '@/components/Select';
@@ -61,6 +66,8 @@ export default function AIUsagePage() {
   const [activeTrendBucket, setActiveTrendBucket] = useState<string | null>(null);
   const [activeHeatmapDate, setActiveHeatmapDate] = useState<string | null>(null);
   const [activeHourBucket, setActiveHourBucket] = useState<string | null>(null);
+  const { visible: rangeHighlightVisible, trigger: triggerRangeHighlight } =
+    useTemporaryRangeHighlight(3000);
   const heatmapScrollRef = useRef<HTMLDivElement>(null);
 
   const prevTzRef = useRef(tz);
@@ -77,6 +84,7 @@ export default function AIUsagePage() {
     const days = p === '7d' ? 6 : p === '30d' ? 29 : p === '90d' ? 89 : 364;
     setStartDate(localDateISO(-days, tz));
     setEndDate(localDateISO(0, tz));
+    triggerRangeHighlight();
     setPage(1);
   };
 
@@ -333,24 +341,30 @@ export default function AIUsagePage() {
           </div>
 
           <div className="grid w-full grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:flex sm:w-auto sm:flex-wrap items-center gap-1.5">
-            <input
-              type="date"
+            <DatePicker
+              ariaLabel="开始日期"
               value={startDate}
-              onChange={(e) => {
-                setStartDate(e.target.value);
+              max={endDate || undefined}
+              onChange={(v) => {
+                if (!v) return;
+                setStartDate(v);
+                triggerRangeHighlight();
                 setPage(1);
               }}
-              className="yd-input-sm w-full sm:w-auto min-w-0 tabular-nums"
+              className="w-full sm:w-[132px] min-w-0"
             />
             <span className="text-xs text-zinc-400 text-center">~</span>
-            <input
-              type="date"
+            <DatePicker
+              ariaLabel="结束日期"
               value={endDate}
-              onChange={(e) => {
-                setEndDate(e.target.value);
+              min={startDate || undefined}
+              onChange={(v) => {
+                if (!v) return;
+                setEndDate(v);
+                triggerRangeHighlight();
                 setPage(1);
               }}
-              className="yd-input-sm w-full sm:w-auto min-w-0 tabular-nums"
+              className="w-full sm:w-[132px] min-w-0"
             />
           </div>
         </div>
@@ -736,37 +750,45 @@ export default function AIUsagePage() {
                   );
                 })}
               </div>
-              <div
-                className="grid w-full gap-[2px] sm:gap-[3px]"
-                style={{ gridTemplateColumns: `repeat(${Math.max(heatmapGrid.length, 1)}, minmax(0, 1fr))` }}
-              >
-                {heatmapGrid.map((week, wi) => (
-                  <div key={wi} className="grid grid-rows-7 gap-[2px] sm:gap-[3px]">
-                    {week.map((cell) => {
-                      const lvl = cell.day?.level ?? 0;
-                      return (
-                        <Tooltip
-                          key={cell.date}
-                          delay={80}
-                          content={
-                            cell.day
-                              ? `${cell.date}: ${formatTokens(cell.day.total_tokens)} · ${formatUSD(cell.day.cost_usd)} · ${cell.day.session_count} 会话`
-                              : `${cell.date}: 无记录`
-                          }
-                        >
-                          <div
-                            onClick={() => {
-                              if (isTouchPrimary()) {
-                                setActiveHeatmapDate((cur) => (cur === cell.date ? null : cell.date));
-                              }
-                            }}
-                            className={`w-full aspect-square rounded-[2px] ring-1 ring-inset ring-black/[0.04] transition-opacity hover:opacity-75 ${HEATMAP_CLASSES[lvl] ?? HEATMAP_CLASSES[0]}`}
-                          />
-                        </Tooltip>
-                      );
-                    })}
-                  </div>
-                ))}
+              <div className="relative">
+                <div
+                  className="grid w-full gap-[2px] sm:gap-[3px]"
+                  style={{ gridTemplateColumns: `repeat(${Math.max(heatmapGrid.length, 1)}, minmax(0, 1fr))` }}
+                >
+                  {heatmapGrid.map((week, wi) => (
+                    <div key={wi} className="grid grid-rows-7 gap-[2px] sm:gap-[3px]">
+                      {week.map((cell) => {
+                        const lvl = cell.day?.level ?? 0;
+                        return (
+                          <Tooltip
+                            key={cell.date}
+                            delay={80}
+                            content={
+                              cell.day
+                                ? `${cell.date}: ${formatTokens(cell.day.total_tokens)} · ${formatUSD(cell.day.cost_usd)} · ${cell.day.session_count} 会话`
+                                : `${cell.date}: 无记录`
+                            }
+                          >
+                            <div
+                              onClick={() => {
+                                if (isTouchPrimary()) {
+                                  setActiveHeatmapDate((cur) => (cur === cell.date ? null : cell.date));
+                                }
+                              }}
+                              className={`w-full aspect-square rounded-[2px] ring-1 ring-inset ring-black/[0.04] transition-opacity hover:opacity-75 ${HEATMAP_CLASSES[lvl] ?? HEATMAP_CLASSES[0]}`}
+                            />
+                          </Tooltip>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+                <HeatmapRangeOverlay
+                  weeks={heatmapGrid}
+                  startDate={startDate}
+                  endDate={endDate}
+                  visible={rangeHighlightVisible}
+                />
               </div>
             </div>
           </div>

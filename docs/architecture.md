@@ -215,4 +215,4 @@ flowchart LR
 | **Stage 5** | AI Agent 用量统计模块（`ai-usage` + `collector/`，详见 [ai-usage-module.md](./ai-usage-module.md)） | ✅ 已完成 |
 | **Stage 6** | 物品价值计算模块（`assets`，详见 [assets-module.md](./assets-module.md)） | ✅ 已完成 |
 | **Stage 7** | 剪切板模块（`clipboard`，详见 [clipboard-module.md](./clipboard-module.md)） | ✅ 已完成 |
-| **Stage 8** | 平台用户偏好升级（全局默认时区 + 用户级模块开关）+ 使用时间模块（`screen-time`，详见 [screen-time-module.md](./screen-time-module.md)） | 📝 设计完成 |
+| **Stage 8** | 平台用户偏好升级（全局默认时区 + 用户级模块开关）+ 使用时间模块（`screen-time`，详见 [screen-time-module.md](./screen-time-module.md)） | ✅ 已完成 |

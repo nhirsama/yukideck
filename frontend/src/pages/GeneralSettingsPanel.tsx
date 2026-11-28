@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Clock, Globe, Puzzle } from 'lucide-react';
+import { Clock } from 'lucide-react';
 import { Select } from '@/components/Select';
 import { useToast } from '@/components/Toast';
 import { coreApi, type UpdateUserPreferencesInput } from '@/core/api';
@@ -121,20 +121,15 @@ export function GeneralSettingsPanel() {
   const enabledCount = availableModules.filter((m) => !disabledSet.has(m.id)).length;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       {/* Global Default Timezone */}
       <section className="yd-card p-4 sm:p-6 space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-          <div className="flex items-start gap-3">
-            <div className="h-9 w-9 rounded-lg bg-sky-50 text-sky-600 flex items-center justify-center shrink-0">
-              <Globe className="h-4 w-4" />
-            </div>
-            <div>
-              <h2 className="text-sm font-medium text-zinc-800">全局默认时区</h2>
-              <p className="text-xs text-zinc-500 mt-0.5 leading-relaxed">
-                用于 AI 用量、日程新建默认时区、资产日期计算及后续使用时间同步等全部模块。
-              </p>
-            </div>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-semibold text-zinc-800">全局默认时区</h2>
+            <p className="text-xs text-zinc-500 mt-0.5">
+              供全站各模块日期统计、日程默认时区与同步任务共用。
+            </p>
           </div>
 
           {browserTz && browserTz !== timezone && (
@@ -142,14 +137,14 @@ export function GeneralSettingsPanel() {
               type="button"
               disabled={mutation.isPending}
               onClick={() => handleSaveTimezone(browserTz)}
-              className="yd-btn-secondary text-xs shrink-0 self-start sm:self-center"
+              className="yd-btn-secondary shrink-0"
             >
               使用当前浏览器时区 ({browserTz})
             </button>
           )}
         </div>
 
-        <div className="flex flex-col sm:flex-row sm:items-center gap-3 pt-1">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3">
           <div className="w-full sm:w-96">
             <Select
               value={timezone}
@@ -171,17 +166,12 @@ export function GeneralSettingsPanel() {
 
       {/* Per-user Module Management */}
       <section className="yd-card p-4 sm:p-6 space-y-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-start gap-3">
-            <div className="h-9 w-9 rounded-lg bg-[#f3f6fa] text-zinc-600 flex items-center justify-center shrink-0">
-              <Puzzle className="h-4 w-4" />
-            </div>
-            <div>
-              <h2 className="text-sm font-medium text-zinc-800">功能模块管理</h2>
-              <p className="text-xs text-zinc-500 mt-0.5 leading-relaxed">
-                控制各模块的显示与隐藏，关闭后不会删除已有数据。
-              </p>
-            </div>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-semibold text-zinc-800">功能模块管理</h2>
+            <p className="text-xs text-zinc-500 mt-0.5">
+              控制各模块的显示与隐藏，关闭后不会删除已有数据。
+            </p>
           </div>
           <span className="yd-badge yd-badge-neutral shrink-0 tabular-nums">
             已开启 {enabledCount} / {availableModules.length}

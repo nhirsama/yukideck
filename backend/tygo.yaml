@@ -59,3 +59,10 @@ packages:
     type_mappings:
       time.Time: "string"
     output_path: "../frontend/src/modules/clipboard/api.gen.ts"
+
+  - path: "yukideck/internal/modules/screen_time"
+    include_files:
+      - "dto.go"
+    type_mappings:
+      time.Time: "string"
+    output_path: "../frontend/src/modules/screen_time/api.gen.ts"

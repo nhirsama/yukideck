@@ -14,6 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import { LoadingState } from '@/components/LoadingState';
+import { DatePicker } from '@/components/DatePicker';
 import { Select } from '@/components/Select';
 import { Tooltip } from '@/components/Tooltip';
 import {
@@ -119,15 +120,16 @@ export function RetireModal({
 
         <div className="space-y-4 overflow-y-auto p-4 sm:p-6">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <label className="block space-y-1.5">
-              <span className="yd-label">退役日期</span>
-              <input
-                type="date"
+            <div className="space-y-1.5">
+              <span className="yd-label block">退役日期</span>
+              <DatePicker
+                size="md"
                 value={retiredAt}
-                onChange={(e) => setRetiredAt(e.target.value)}
-                className="yd-input"
+                onChange={setRetiredAt}
+                ariaLabel="选择退役日期"
+                className="w-full"
               />
-            </label>
+            </div>
             <div className="space-y-1.5">
               <span className="yd-label block">退役原因</span>
               <Select
@@ -659,15 +661,17 @@ export function ItemModal({
                           />
                         </div>
                       </label>
-                      <label className="block space-y-1.5">
-                        <span className="yd-label">购买日期</span>
-                        <input
-                          type="date"
+                      <div className="space-y-1.5">
+                        <span className="yd-label block">购买日期</span>
+                        <DatePicker
+                          size="md"
+                          clearable
                           value={purchasedAt}
-                          onChange={(e) => setPurchasedAt(e.target.value)}
-                          className="yd-input"
+                          onChange={setPurchasedAt}
+                          ariaLabel="选择购买日期"
+                          className="w-full"
                         />
-                      </label>
+                      </div>
                       <div className="space-y-1.5">
                         <span className="yd-label block">分类</span>
                         <Select
@@ -824,24 +828,28 @@ export function ItemModal({
 
                       {/* Warranty & Expected Retire */}
                       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <label className="block space-y-1.5">
-                          <span className="yd-label">保修 / 保质期到期日</span>
-                          <input
-                            type="date"
+                        <div className="space-y-1.5">
+                          <span className="yd-label block">保修 / 保质期到期日</span>
+                          <DatePicker
+                            size="md"
+                            clearable
                             value={warrantyUntil}
-                            onChange={(e) => setWarrantyUntil(e.target.value)}
-                            className="yd-input"
+                            onChange={setWarrantyUntil}
+                            ariaLabel="选择保修或保质期到期日"
+                            className="w-full"
                           />
-                        </label>
-                        <label className="block space-y-1.5">
-                          <span className="yd-label">预计退役日期</span>
-                          <input
-                            type="date"
+                        </div>
+                        <div className="space-y-1.5">
+                          <span className="yd-label block">预计退役日期</span>
+                          <DatePicker
+                            size="md"
+                            clearable
                             value={expectedRetireAt}
-                            onChange={(e) => setExpectedRetireAt(e.target.value)}
-                            className="yd-input"
+                            onChange={setExpectedRetireAt}
+                            ariaLabel="选择预计退役日期"
+                            className="w-full"
                           />
-                        </label>
+                        </div>
                       </div>
 
                       {/* Parent Item Assignment (Option A) */}
@@ -1080,11 +1088,12 @@ export function ItemModal({
                           className="w-full"
                           ariaLabel="选择收支币种"
                         />
-                        <input
-                          type="date"
+                        <DatePicker
+                          size="sm"
                           value={txDate}
-                          onChange={(e) => setTxDate(e.target.value)}
-                          className="yd-input-sm min-w-0"
+                          onChange={setTxDate}
+                          ariaLabel="选择收支日期"
+                          className="min-w-0 w-full"
                         />
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
